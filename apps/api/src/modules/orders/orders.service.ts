@@ -64,6 +64,19 @@ export class OrdersService {
         throw new BadRequestException('One or more products are unavailable');
       }
 
+      // A customerId from the client is verified, never trusted. RLS scopes
+      // this lookup to the tenant, so another restaurant's customer simply is
+      // not found — attaching one is impossible rather than merely discouraged.
+      if (dto.customerId) {
+        const customer = await db.customer.findFirst({
+          where: { id: dto.customerId },
+          select: { id: true },
+        });
+        if (!customer) {
+          throw new BadRequestException('Unknown customer');
+        }
+      }
+
       const branch = await db.branch.findFirstOrThrow({
         where: { isActive: true },
         select: { id: true },
@@ -102,6 +115,7 @@ export class OrdersService {
         data: {
           restaurantId,
           branchId: branch.id,
+          customerId: dto.customerId ?? null,
           orderNumber,
           status: 'PLACED',
           placedAt: new Date(),
@@ -349,6 +363,7 @@ export class OrdersService {
         payments: {
           select: { id: true, method: true, status: true, amountMinor: true },
         },
+        customer: { select: { id: true, name: true, phone: true } },
       },
     });
   }

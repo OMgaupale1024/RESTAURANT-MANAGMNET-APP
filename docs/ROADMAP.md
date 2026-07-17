@@ -3,8 +3,8 @@
 **Purpose:** this file is the source of truth for where the build is. Read it
 first in a new session. It exists so progress does not depend on chat history.
 
-**Last updated:** end of Step 11 (2026-07-17).
-**Next action:** Step 12 — Customers. *Do not start until the user says so.*
+**Last updated:** end of Step 12 (2026-07-17).
+**Next action:** Step 13 — Inventory. *Do not start until the user says so.*
 
 ---
 
@@ -39,8 +39,8 @@ first in a new session. It exists so progress does not depend on chat history.
 | 9 | Dashboard (Home) | **Done** | `/dashboard` shell + nav, silent refresh on reload |
 | 10 | POS | **Done** | Catalogue + order taking; closed backlog #6, #11 |
 | 11 | Orders | **Done** | List, detail, timeline, state-machine transitions, void |
-| 12 | **Customers** | **NEXT** | |
-| 13 | Inventory | Pending | |
+| 12 | Customers | **Done** | CRM, phone identity, order linkage, derived stats |
+| 13 | **Inventory** | **NEXT** | |
 | 14 | Employees | Pending | |
 | 15 | Kitchen Display | Pending | |
 | 16 | Analytics | Pending | |
@@ -63,13 +63,13 @@ packages/   empty (created when something is actually shared)
 docs/       BLUEPRINT, ARCHITECTURE, BACKLOG, ROADMAP
 ```
 
-**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`.
-**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`.
+**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`.
+**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`.
 
 **Database (Neon, ap-southeast-1):** `restaurants`, `branches`, `users`,
 `roles`, `permissions`, `role_permissions`, `memberships`, `audit_logs`,
-`orders`, `order_items`, `order_events`, `payments`, `refresh_tokens`, `security_events`, `categories`, `products`.
-Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 12 permissions, 29 mappings.
+`orders`, `order_items`, `order_events`, `payments`, `refresh_tokens`, `security_events`, `categories`, `products`, `customers`.
+Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 14 permissions, 35 mappings.
 
 ---
 
@@ -85,6 +85,8 @@ Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 12 permissions, 29 mappings.
 - **Placed orders are financial records.** DELETE is revoked; money columns are frozen by trigger once status leaves DRAFT. Status may still change.
 - **Order status moves only along the whitelist** in `orders/order-status.ts`. Terminal states (COMPLETED/CANCELLED/VOIDED) are dead ends — corrections are new rows, never a status rewind.
 - **Voiding requires `order.void`**, checked in addition to `order.update`. A cashier may move an order along but must never make a sale disappear.
+- **Phone is customer identity, and normalisation is ONE shared function** (`customers/phone.ts`). Every write and every lookup must use it — if the paths diverge, one person becomes two records and the till cannot find them. India-only rule (drops +91 / leading 0).
+- **`customers` is PII.** KITCHEN deliberately holds no customer permission. Phone is unique per tenant, never globally: the same human eats at two restaurants and neither may learn of the other.
 - **One session = one token family.** Anything that re-issues a refresh token mid-session must continue the existing family (`rotateForReissue`), never mint a new one — a new family orphans a live token that survives logout.
 - **Access token lives in memory only** (`AuthProvider`). Restored after reload via `/auth/refresh`; never localStorage. The client-side route guard is UX, not security — the API + RLS are the boundary.
 
@@ -97,8 +99,8 @@ pnpm install
 
 # API
 pnpm --filter @oraos/api dev              # :3001
-pnpm --filter @oraos/api test:e2e         # 73 tests (needs DB)
-pnpm --filter @oraos/api verify:rls       # 18 tenant-isolation checks
+pnpm --filter @oraos/api test:e2e         # 92 tests (needs DB)
+pnpm --filter @oraos/api verify:rls       # 22 tenant-isolation checks
 pnpm --filter @oraos/api db:migrate
 pnpm --filter @oraos/api db:seed
 pnpm --filter @oraos/api db:setup-app-role  # once per environment
@@ -129,6 +131,7 @@ conventional commit. Milestones get an annotated tag. Never commit broken code.
 - Branch: `master`. **No remote configured** — commits are local only.
 - `v0.4-pos` — steps 1-10 baseline (POS milestone)
 - `v0.5-orders` — step 11 (order lifecycle)
+- `v0.6-customers` — step 12 (CRM + order linkage)
 
 ---
 

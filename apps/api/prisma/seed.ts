@@ -26,6 +26,8 @@ const PERMISSIONS: Record<string, string> = {
   'member.manage': 'Invite, edit, and remove staff',
   'product.read': 'View the menu',
   'product.manage': 'Add, edit and deactivate menu items',
+  'customer.read': 'View customers and their history',
+  'customer.manage': 'Add and edit customer records',
   'order.create': 'Take an order',
   'order.read': 'View orders',
   'order.update': 'Change order contents or status',
@@ -47,6 +49,8 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
       'member.read',
       'product.read',
       'product.manage',
+      'customer.read',
+      'customer.manage',
       'order.create',
       'order.read',
       'order.update',
@@ -59,7 +63,14 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
     name: 'Cashier',
     // Deliberately cannot void or refund: those are the theft vectors, and
     // the blueprint's threat model puts the cashier at the top of the list.
-    permissions: ['product.read', 'order.create', 'order.read', 'order.update'],
+    permissions: [
+      'product.read',
+      'customer.read',
+      'customer.manage',
+      'order.create',
+      'order.read',
+      'order.update',
+    ],
   },
   KITCHEN: {
     name: 'Kitchen',

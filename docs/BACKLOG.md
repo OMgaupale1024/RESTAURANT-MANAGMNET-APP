@@ -26,6 +26,10 @@ arrives and it is still open, it blocks that step.
 | 15 | **Refunds not implemented** — voiding stops an order but does not reverse a captured payment | Step 11 | When a payments provider exists | The `order.refund` permission is seeded and `payments` supports it, but a refund against CASH/UPI is a counter action, not an API one. |
 | 16 | **No realtime on Orders/Kitchen** — the list does not update until reloaded | Step 11 | Step 15 (Kitchen Display) | Socket.IO is in the architecture but unbuilt. A kitchen screen genuinely needs push; an orders list can be reloaded. Build it where it matters. |
 
+| 17 | **Customer stats are aggregated on read, not materialised** | Step 12 | Step 16 (Analytics) or when a profile is measurably slow | The blueprint calls for `customer_stats`. Correct at a million orders; today a cached counter buys a staleness bug and saves nothing. Postgres aggregates thousands of rows in ms. Revisit with real data volume. |
+| 18 | **Phone normalisation is India-only** — drops +91 / leading 0 | Step 12 | First non-Indian tenant | `customers/phone.ts` implements one documented rule. Real international support means libphonenumber and a per-restaurant country. Non-Indian numbers pass through as digits rather than being mangled. |
+| 19 | **No customer delete / GDPR erasure** | Step 12 | Before launch in a regulated market | `orders.customerId` is `onDelete: Restrict`, so a customer with history cannot be erased without deciding what happens to the money. Right default; needs an explicit anonymise-in-place path (keep the order, blank the person). |
+
 ## Rules
 
 - An item is closed only when its fix is verified, not when it is written.

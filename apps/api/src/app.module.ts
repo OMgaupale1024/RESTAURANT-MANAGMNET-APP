@@ -15,6 +15,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { RestaurantsModule } from './modules/restaurants/restaurants.module';
 import { CatalogueModule } from './modules/catalogue/catalogue.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { CustomersModule } from './modules/customers/customers.module';
 
 @Module({
   imports: [
@@ -68,6 +69,7 @@ import { OrdersModule } from './modules/orders/orders.module';
     RestaurantsModule,
     CatalogueModule,
     OrdersModule,
+    CustomersModule,
   ],
   controllers: [HealthController],
   providers: [

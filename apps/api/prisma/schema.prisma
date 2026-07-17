@@ -303,6 +303,44 @@ model Product {
 }
 
 // ---------------------------------------------------------------------------
+// Customers
+// ---------------------------------------------------------------------------
+
+/// Tenant-scoped, and this table is PII: a real person's name, phone and
+/// birthday. RLS is the boundary, as everywhere, but the stakes are higher here
+/// than for a menu item — a leak is a privacy breach, not a lost recipe.
+///
+/// phone is unique PER TENANT, never globally. The same person eats at two
+/// restaurants; each keeps its own record and neither may see the other's. A
+/// global unique index would both break that and leak, via conflict errors,
+/// that a number is known to some other restaurant.
+///
+/// Deliberately NO cached stats (visits, totalSpent). They are derived from
+/// orders on read. The blueprint calls for materialising them, and it is right
+/// at a million orders — but caching a number now buys a staleness bug and
+/// saves nothing. See BACKLOG.
+model Customer {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  restaurantId String    @map("restaurant_id") @db.Uuid
+  name         String
+  /// Digits only, normalised on write, so lookup is exact rather than fuzzy.
+  phone        String
+  email        String?
+  /// Date only — a birthday has no timezone, and storing it as an instant
+  /// makes it drift across one.
+  birthday     DateTime? @db.Date
+  notes        String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  orders Order[]
+
+  @@unique([restaurantId, phone])
+  @@index([restaurantId, name])
+  @@map("customers")
+}
+
+// ---------------------------------------------------------------------------
 // Orders — the money model
 // ---------------------------------------------------------------------------
 
@@ -353,6 +391,10 @@ model Order {
   id            String      @id @default(uuid(7)) @db.Uuid
   restaurantId  String      @map("restaurant_id") @db.Uuid
   branchId      String      @map("branch_id") @db.Uuid
+  /// Nullable and always will be: most restaurant orders are anonymous
+  /// walk-ins. Restrict on delete — a customer with order history cannot be
+  /// erased without deciding what happens to the money.
+  customerId    String?     @map("customer_id") @db.Uuid
   orderNumber   Int         @map("order_number")
   status        OrderStatus @default(DRAFT)
   subtotalMinor Int         @map("subtotal_minor")
@@ -367,6 +409,7 @@ model Order {
 
   restaurant Restaurant   @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   branch     Branch       @relation(fields: [branchId], references: [id])
+  customer   Customer?    @relation(fields: [customerId], references: [id], onDelete: Restrict)
   items      OrderItem[]
   events     OrderEvent[]
   payments   Payment[]
@@ -374,6 +417,7 @@ model Order {
   @@unique([restaurantId, orderNumber])
   @@index([restaurantId, createdAt])
   @@index([restaurantId, status])
+  @@index([customerId])
   @@map("orders")
 }
 

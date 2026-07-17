@@ -375,6 +375,59 @@ async function main() {
   }
   check('negative product price is rejected by CHECK', negativePrice);
 
+  console.log('\nCustomer PII isolation (Step 12)');
+
+  await asTenant(idA, null, (tx) =>
+    tx.customer.create({
+      data: { restaurantId: idA, name: 'Private Person', phone: '9876500001' },
+    }),
+  );
+  // The same real human, known to both restaurants. Each keeps its own record.
+  await asTenant(idB, null, (tx) =>
+    tx.customer.create({
+      data: { restaurantId: idB, name: 'Private Person', phone: '9876500001' },
+    }),
+  );
+
+  const bCustomers = await asTenant(idB, null, (tx) => tx.customer.findMany());
+  check(
+    'tenant B sees only its own customers',
+    bCustomers.length === 1 && bCustomers[0].restaurantId === idB,
+    `saw ${bCustomers.length}`,
+  );
+
+  const aCustomer = await asTenant(idA, null, (tx) =>
+    tx.customer.findFirstOrThrow({ where: { restaurantId: idA } }),
+  );
+  const stolenCustomer = await asTenant(idB, null, (tx) =>
+    tx.customer.findUnique({ where: { id: aCustomer.id } }),
+  );
+  check(
+    "tenant B cannot read tenant A's customer by id (PII)",
+    stolenCustomer === null,
+  );
+
+  const phoneProbe = await asTenant(idB, null, (tx) =>
+    tx.customer.findMany({ where: { phone: '9876500001' } }),
+  );
+  check(
+    'phone lookup never crosses tenants (no enumeration)',
+    phoneProbe.length === 1 && phoneProbe[0].restaurantId === idB,
+    `saw ${phoneProbe.length}`,
+  );
+
+  let malformedPhone = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.customer.create({
+        data: { restaurantId: idA, name: 'Bad', phone: '+91 98765' },
+      }),
+    );
+  } catch {
+    malformedPhone = true;
+  }
+  check('non-digit phone is rejected by CHECK', malformedPhone);
+
   console.log('\nEmail normalisation');
 
   let upperEmailBlocked = false;

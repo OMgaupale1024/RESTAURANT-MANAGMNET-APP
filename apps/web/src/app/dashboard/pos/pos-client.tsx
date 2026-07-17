@@ -11,6 +11,7 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatMinor, parseRupeesToMinor } from '@/lib/money';
+import { CustomerPicker } from './customer-picker';
 
 type CartLine = { product: Product; quantity: number };
 
@@ -21,6 +22,9 @@ export function PosClient() {
   const [error, setError] = useState<string | null>(null);
   const [placing, setPlacing] = useState(false);
   const [lastOrder, setLastOrder] = useState<Order | null>(null);
+  const [customer, setCustomer] = useState<{ id: string; name: string } | null>(
+    null,
+  );
 
   // Passed to authedFetch so a silent refresh updates the session in place
   // rather than bouncing the cashier to /login mid-order.
@@ -101,6 +105,9 @@ export function PosClient() {
           productId: l.product.id,
           quantity: l.quantity,
         })),
+        // Optional by design: most orders are anonymous walk-ins, and the till
+        // must never block on identifying someone.
+        ...(customer ? { customerId: customer.id } : {}),
         paymentMethod,
         // Guards against a double-tapped Pay button on a laggy tablet: a
         // retry with the same key returns the original order, not a second
@@ -109,6 +116,7 @@ export function PosClient() {
       });
       setLastOrder(order);
       setCart([]);
+      setCustomer(null);
     } catch (e) {
       setError(
         e instanceof ApiRequestError ? e.message : 'Could not place the order',
@@ -199,6 +207,14 @@ export function PosClient() {
           <h2 id="cart-heading" className="text-sm font-medium">
             Current order
           </h2>
+
+          <CustomerPicker
+            accessToken={accessToken}
+            onNewToken={onNewToken}
+            customer={customer}
+            setCustomer={setCustomer}
+            setError={setError}
+          />
 
           {cart.length === 0 ? (
             <p className="mt-3 text-sm text-black/60 dark:text-white/60">

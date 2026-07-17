@@ -259,3 +259,61 @@ export const updateOrderStatus = (
     method: 'PATCH',
     body: JSON.stringify(reason ? { status, reason } : { status }),
   });
+
+export type CustomerSummary = {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+  createdAt: string;
+};
+
+export type CustomerDetail = CustomerSummary & {
+  birthday: string | null;
+  notes: string | null;
+  stats: {
+    visits: number;
+    totalSpentMinor: number;
+    averageBillMinor: number;
+    firstVisit: string | null;
+    lastVisit: string | null;
+  };
+  recentOrders: Array<{
+    id: string;
+    orderNumber: number;
+    status: string;
+    totalMinor: number;
+    createdAt: string;
+  }>;
+};
+
+export const listCustomers = (token: string, onNewToken: Retry, q?: string) =>
+  authedFetch<CustomerSummary[]>(
+    q ? `/customers?q=${encodeURIComponent(q)}` : '/customers',
+    token,
+    onNewToken,
+  );
+
+export const getCustomer = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<CustomerDetail>(`/customers/${id}`, token, onNewToken);
+
+export const findCustomerByPhone = (
+  token: string,
+  onNewToken: Retry,
+  phone: string,
+) =>
+  authedFetch<{ id: string; name: string; phone: string } | Record<string, never>>(
+    `/customers/by-phone/${encodeURIComponent(phone)}`,
+    token,
+    onNewToken,
+  );
+
+export const createCustomer = (
+  token: string,
+  onNewToken: Retry,
+  body: { name: string; phone: string; email?: string },
+) =>
+  authedFetch<CustomerSummary>('/customers', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });

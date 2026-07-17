@@ -50,6 +50,17 @@ export class CreateOrderDto {
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;
 
+  /**
+   * Optional: most orders are anonymous walk-ins.
+   *
+   * A client-supplied id is safe here for the same reason as
+   * select-restaurant: the server verifies it belongs to this tenant before
+   * using it. It is a request, not a claim.
+   */
+  @IsOptional()
+  @IsUUID()
+  customerId?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)
