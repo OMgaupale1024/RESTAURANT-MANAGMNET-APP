@@ -1,10 +1,14 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type { CreateOrderDto } from './dto/create-order.dto';
+import type { OrderStatus } from '../../generated/prisma/enums';
+import { VOID_STATUSES, canTransition } from './order-status';
 
 @Injectable()
 export class OrdersService {
@@ -145,11 +149,15 @@ export class OrdersService {
     });
   }
 
-  /** Today's orders, newest first. The POS needs a short recent list, not a report. */
-  list(limit = 20) {
+  /** Recent orders, newest first, optionally filtered by status. */
+  list(opts: { limit?: number; status?: OrderStatus } = {}) {
+    const take = Math.min(opts.limit ?? 50, 100);
     return this.prisma.tx((db) =>
       db.order.findMany({
-        take: Math.min(limit, 100),
+        take,
+        // RLS scopes this to the tenant; there is deliberately no
+        // `where: { restaurantId }` that could be forgotten.
+        where: opts.status ? { status: opts.status } : undefined,
         orderBy: { createdAt: 'desc' },
         select: {
           id: true,
@@ -157,10 +165,132 @@ export class OrdersService {
           status: true,
           totalMinor: true,
           createdAt: true,
+          placedAt: true,
           _count: { select: { items: true } },
         },
       }),
     );
+  }
+
+  /**
+   * The order timeline — the append-only trail of what happened and who did it.
+   *
+   * This is the evidence in a dispute, which is precisely why order_events
+   * cannot be updated or deleted by anyone short of dropping the trigger.
+   */
+  async timeline(orderId: string) {
+    return this.prisma.tx(async (db) => {
+      // Confirm the order is visible to this tenant first. Without it, an
+      // attacker could read another tenant's events by id — the events table
+      // is RLS-protected too, but relying on a second table's policy for a
+      // check this cheap is how holes appear.
+      const order = await db.order.findFirst({
+        where: { id: orderId },
+        select: { id: true },
+      });
+      if (!order) throw new NotFoundException('Order not found');
+
+      return db.orderEvent.findMany({
+        where: { orderId },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true,
+          type: true,
+          fromStatus: true,
+          toStatus: true,
+          actorUserId: true,
+          metadata: true,
+          createdAt: true,
+        },
+      });
+    });
+  }
+
+  /**
+   * Moves an order through its lifecycle.
+   *
+   * Two independent gates:
+   *   1. The state machine (order-status.ts) — is this move legal at all?
+   *   2. The permission (checked in the controller) — may THIS user make it?
+   *
+   * Both are needed. A cashier with order.update must not be able to jump
+   * PLACED -> COMPLETED and skip payment; a manager with order.void must still
+   * not be able to un-void.
+   */
+  async updateStatus(
+    orderId: string,
+    to: OrderStatus,
+    reason?: string,
+    opts: { requireVoidPermission?: boolean } = {},
+  ) {
+    const ctx = this.prisma.requireContext();
+
+    // Voiding reverses money that was already rung up — the classic way a
+    // cashier makes a sale disappear. order.update is not enough.
+    if (opts.requireVoidPermission && !ctx.permissions.includes('order.void')) {
+      throw new ForbiddenException('Missing permission: order.void');
+    }
+
+    return this.prisma.tx(async (db) => {
+      const order = await db.order.findFirst({
+        where: { id: orderId },
+        select: { id: true, status: true, orderNumber: true },
+      });
+      // Another tenant's order does not exist here. Same 404 as a bad id, so
+      // this cannot be used to probe which ids are real.
+      if (!order) throw new NotFoundException('Order not found');
+
+      const from = order.status;
+      if (from === to) {
+        // Idempotent: a double-tapped button is not an error.
+        return this.load(db, orderId);
+      }
+
+      if (!canTransition(from, to)) {
+        throw new ConflictException(
+          `Cannot move an order from ${from} to ${to}`,
+        );
+      }
+
+      await db.order.update({
+        where: { id: orderId },
+        // Only status. The money columns are frozen by trigger anyway, but not
+        // touching them is the honest expression of intent.
+        data: { status: to },
+      });
+
+      await db.orderEvent.create({
+        data: {
+          restaurantId: ctx.restaurantId,
+          orderId,
+          type: 'STATUS_CHANGED',
+          fromStatus: from,
+          toStatus: to,
+          actorUserId: ctx.userId,
+          metadata: reason ? { reason } : undefined,
+        },
+      });
+
+      // Voids are the theft vector, so they also land in the tenant audit log
+      // — the record an owner reviews, separate from the order's own timeline.
+      if (VOID_STATUSES.includes(to)) {
+        await db.auditLog.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            userId: ctx.userId,
+            action: 'order.voided',
+            entityType: 'order',
+            entityId: orderId,
+            metadata: {
+              orderNumber: order.orderNumber,
+              reason: reason ?? null,
+            },
+          },
+        });
+      }
+
+      return this.load(db, orderId);
+    });
   }
 
   async getById(id: string) {

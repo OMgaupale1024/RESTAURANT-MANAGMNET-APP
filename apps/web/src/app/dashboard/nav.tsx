@@ -15,7 +15,7 @@ import { usePathname } from 'next/navigation';
 const ITEMS: Array<{ label: string; href: string | null }> = [
   { label: 'Dashboard', href: '/dashboard' },
   { label: 'POS', href: '/dashboard/pos' },
-  { label: 'Orders', href: null },
+  { label: 'Orders', href: '/dashboard/orders' },
   { label: 'Customers', href: null },
   { label: 'Inventory', href: null },
   { label: 'Employees', href: null },

@@ -3,8 +3,8 @@
 **Purpose:** this file is the source of truth for where the build is. Read it
 first in a new session. It exists so progress does not depend on chat history.
 
-**Last updated:** end of Step 10 (2026-07-17).
-**Next action:** Step 11 — Orders. *Do not start until the user says so.*
+**Last updated:** end of Step 11 (2026-07-17).
+**Next action:** Step 12 — Customers. *Do not start until the user says so.*
 
 ---
 
@@ -38,8 +38,8 @@ first in a new session. It exists so progress does not depend on chat history.
 | 8 | Restaurant Setup | **Done** | `/setup`, security_events; closed backlog #3, #4 |
 | 9 | Dashboard (Home) | **Done** | `/dashboard` shell + nav, silent refresh on reload |
 | 10 | POS | **Done** | Catalogue + order taking; closed backlog #6, #11 |
-| 11 | **Orders** | **NEXT** | Status transitions, timeline (order_events already written by POS) |
-| 12 | Customers | Pending | |
+| 11 | Orders | **Done** | List, detail, timeline, state-machine transitions, void |
+| 12 | **Customers** | **NEXT** | |
 | 13 | Inventory | Pending | |
 | 14 | Employees | Pending | |
 | 15 | Kitchen Display | Pending | |
@@ -63,8 +63,8 @@ packages/   empty (created when something is actually shared)
 docs/       BLUEPRINT, ARCHITECTURE, BACKLOG, ROADMAP
 ```
 
-**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`.
-**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`.
+**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`.
+**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`.
 
 **Database (Neon, ap-southeast-1):** `restaurants`, `branches`, `users`,
 `roles`, `permissions`, `role_permissions`, `memberships`, `audit_logs`,
@@ -83,6 +83,8 @@ Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 12 permissions, 29 mappings.
 - **Auth is on by default.** `JwtAuthGuard` is global; routes opt out with `@Public()`.
 - **The server prices every order.** Order DTOs accept productId + quantity, never a price. A client-supplied price is the classic POS attack.
 - **Placed orders are financial records.** DELETE is revoked; money columns are frozen by trigger once status leaves DRAFT. Status may still change.
+- **Order status moves only along the whitelist** in `orders/order-status.ts`. Terminal states (COMPLETED/CANCELLED/VOIDED) are dead ends — corrections are new rows, never a status rewind.
+- **Voiding requires `order.void`**, checked in addition to `order.update`. A cashier may move an order along but must never make a sale disappear.
 - **One session = one token family.** Anything that re-issues a refresh token mid-session must continue the existing family (`rotateForReissue`), never mint a new one — a new family orphans a live token that survives logout.
 - **Access token lives in memory only** (`AuthProvider`). Restored after reload via `/auth/refresh`; never localStorage. The client-side route guard is UX, not security — the API + RLS are the boundary.
 
@@ -95,7 +97,7 @@ pnpm install
 
 # API
 pnpm --filter @oraos/api dev              # :3001
-pnpm --filter @oraos/api test:e2e         # 56 tests (needs DB)
+pnpm --filter @oraos/api test:e2e         # 73 tests (needs DB)
 pnpm --filter @oraos/api verify:rls       # 18 tenant-isolation checks
 pnpm --filter @oraos/api db:migrate
 pnpm --filter @oraos/api db:seed
@@ -116,6 +118,17 @@ pnpm typecheck && pnpm build
 **Env:** `apps/api/.env` needs `DATABASE_URL`, `DATABASE_URL_APP`, `JWT_SECRET`.
 `apps/web/.env.local` needs `NEXT_PUBLIC_API_URL`. Both gitignored; see the
 `.env.example` files.
+
+---
+
+## Version control
+
+Every completed step ends with: all tests + lint + typecheck + build green, then a
+conventional commit. Milestones get an annotated tag. Never commit broken code.
+
+- Branch: `master`. **No remote configured** — commits are local only.
+- `v0.4-pos` — steps 1-10 baseline (POS milestone)
+- `v0.5-orders` — step 11 (order lifecycle)
 
 ---
 

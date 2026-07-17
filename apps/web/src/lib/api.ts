@@ -216,3 +216,46 @@ export const createOrder = (
     method: 'POST',
     body: JSON.stringify(body),
   });
+
+export type OrderSummary = {
+  id: string;
+  orderNumber: number;
+  status: string;
+  totalMinor: number;
+  createdAt: string;
+  _count: { items: number };
+};
+
+export type TimelineEvent = {
+  id: string;
+  type: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export const listOrders = (token: string, onNewToken: Retry, status?: string) =>
+  authedFetch<OrderSummary[]>(
+    status ? `/orders?status=${encodeURIComponent(status)}` : '/orders',
+    token,
+    onNewToken,
+  );
+
+export const getOrder = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<Order>(`/orders/${id}`, token, onNewToken);
+
+export const getTimeline = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<TimelineEvent[]>(`/orders/${id}/timeline`, token, onNewToken);
+
+export const updateOrderStatus = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  status: string,
+  reason?: string,
+) =>
+  authedFetch<Order>(`/orders/${id}/status`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(reason ? { status, reason } : { status }),
+  });

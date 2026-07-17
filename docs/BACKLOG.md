@@ -21,6 +21,11 @@ arrives and it is still open, it blocks that step.
 | 12 | **Multi-tab silent refresh race** (partially mitigated: single-flight now dedupes refreshes *within* a tab; cross-tab remains) — two tabs reloading together may both present the same refresh token; the loser trips reuse detection and both are logged out | Step 9 | Step 10 (POS) | Not reproduced (single-tab verified). Rotation + reuse detection make this structural. Fix is a short reuse leeway server-side, or single-flight refresh via BroadcastChannel. Revisit when POS makes multi-tab realistic. |
 | 10 | **Least-privilege role for prod is manual** — `db:setup-app-role` writes to `.env` | Step 4 | Step 20 | Production must source the password from a secret manager, not a generated file. |
 
+| ~~13~~ | ~~**API lint had never been run**~~ — 119 problems had accumulated | Step 11 | **CLOSED in Step 11** | Only `@oraos/web` lint was being run; earlier steps claimed lint passed on half the workspace. Source errors fixed properly (typed cookie accessor, narrowed `req.id`); the type-aware unsafe-* rules are scoped to tests only, where supertest genuinely returns `any`. Both apps lint clean and it is now part of the pre-commit gate. |
+| 14 | **Discounts hardcoded to 0** — no discount UI or API | Step 10 | When asked | `discount_minor` exists with its CHECK (discount <= subtotal) and is in the total formula. Purely additive; nothing is blocked. |
+| 15 | **Refunds not implemented** — voiding stops an order but does not reverse a captured payment | Step 11 | When a payments provider exists | The `order.refund` permission is seeded and `payments` supports it, but a refund against CASH/UPI is a counter action, not an API one. |
+| 16 | **No realtime on Orders/Kitchen** — the list does not update until reloaded | Step 11 | Step 15 (Kitchen Display) | Socket.IO is in the architecture but unbuilt. A kitchen screen genuinely needs push; an orders list can be reloaded. Build it where it matters. |
+
 ## Rules
 
 - An item is closed only when its fix is verified, not when it is written.
