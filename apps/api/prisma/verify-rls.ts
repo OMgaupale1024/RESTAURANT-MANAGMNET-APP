@@ -85,6 +85,9 @@ async function purge(restaurantId: string) {
   await owner.$executeRawUnsafe(
     `ALTER TABLE attendance_events DISABLE TRIGGER attendance_events_append_only`,
   );
+  await owner.$executeRawUnsafe(
+    `ALTER TABLE coupon_redemptions DISABLE TRIGGER coupon_redemptions_append_only`,
+  );
   try {
     await owner.restaurant.deleteMany({ where: { id: restaurantId } });
   } finally {
@@ -99,6 +102,9 @@ async function purge(restaurantId: string) {
     );
     await owner.$executeRawUnsafe(
       `ALTER TABLE attendance_events ENABLE TRIGGER attendance_events_append_only`,
+    );
+    await owner.$executeRawUnsafe(
+      `ALTER TABLE coupon_redemptions ENABLE TRIGGER coupon_redemptions_append_only`,
     );
   }
 }
@@ -684,6 +690,111 @@ async function main() {
     "raw aggregate SQL never sums another tenant's revenue",
     Number(rawAsB[0].revenue) === 0,
     `saw ${rawAsB[0].revenue}`,
+  );
+
+  console.log('\nMarketing isolation & redemption ledger (Step 18)');
+
+  const couponA = await asTenant(idA, null, (tx) =>
+    tx.coupon.create({
+      data: {
+        restaurantId: idA,
+        code: 'ASECRET',
+        type: 'FIXED',
+        amountMinor: 5000,
+      },
+    }),
+  );
+  // Same code in B — must be independent, no leak via unique conflict.
+  await asTenant(idB, null, (tx) =>
+    tx.coupon.create({
+      data: {
+        restaurantId: idB,
+        code: 'ASECRET',
+        type: 'FIXED',
+        amountMinor: 1000,
+      },
+    }),
+  );
+
+  const bCoupons = await asTenant(idB, null, (tx) => tx.coupon.findMany());
+  check(
+    'tenant B sees only its own coupons',
+    bCoupons.length === 1 && bCoupons[0].restaurantId === idB,
+    `saw ${bCoupons.length}`,
+  );
+
+  const stolenCoupon = await asTenant(idB, null, (tx) =>
+    tx.coupon.findMany({ where: { id: couponA.id } }),
+  );
+  check(
+    "tenant B cannot read tenant A's coupon by id",
+    stolenCoupon.length === 0,
+  );
+
+  // A malformed coupon (PERCENT with no percent) is rejected by CHECK.
+  let badCoupon = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.coupon.create({
+        data: { restaurantId: idA, code: 'BADSHAPE', type: 'PERCENT' },
+      }),
+    );
+  } catch {
+    badCoupon = true;
+  }
+  check('a PERCENT coupon with no percent value is rejected by CHECK', badCoupon);
+
+  const branchAForCoupon = await asTenant(idA, null, (tx) =>
+    tx.branch.findFirstOrThrow({ where: { restaurantId: idA } }),
+  );
+  const orderForRedeem = await asTenant(idA, null, (tx) =>
+    tx.order.create({
+      data: {
+        restaurantId: idA,
+        branchId: branchAForCoupon.id,
+        orderNumber: 8888,
+        status: 'PLACED',
+        subtotalMinor: 10000,
+        discountMinor: 2000,
+        taxMinor: 500,
+        totalMinor: 8500,
+      },
+    }),
+  );
+  await asTenant(idA, null, (tx) =>
+    tx.couponRedemption.create({
+      data: {
+        restaurantId: idA,
+        couponId: couponA.id,
+        orderId: orderForRedeem.id,
+        discountMinor: 2000,
+      },
+    }),
+  );
+
+  let redemptionUpdateBlocked = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.couponRedemption.updateMany({
+        where: { orderId: orderForRedeem.id },
+        data: { discountMinor: 1 },
+      }),
+    );
+  } catch {
+    redemptionUpdateBlocked = true;
+  }
+  check(
+    'coupon_redemptions cannot be UPDATEd (money given is immutable)',
+    redemptionUpdateBlocked,
+  );
+
+  const bRedemptions = await asTenant(idB, null, (tx) =>
+    tx.couponRedemption.findMany(),
+  );
+  check(
+    "tenant B cannot see tenant A's coupon redemptions",
+    bRedemptions.length === 0,
+    `saw ${bRedemptions.length}`,
   );
 
   console.log('\nEmail normalisation');

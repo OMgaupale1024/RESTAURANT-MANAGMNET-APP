@@ -308,6 +308,70 @@ model Product {
 }
 
 // ---------------------------------------------------------------------------
+// Marketing
+// ---------------------------------------------------------------------------
+
+enum CouponType {
+  /// A percentage off the subtotal, in basis points (1000 = 10%).
+  PERCENT
+  /// A flat amount off, in paise.
+  FIXED
+
+  @@map("coupon_type")
+}
+
+/// A discount code. The RULES are deterministic and enforced server-side — a
+/// coupon never lets a client choose its own discount, and every redemption is
+/// recomputed from the coupon and the order, never trusted from input.
+model Coupon {
+  id           String     @id @default(uuid(7)) @db.Uuid
+  restaurantId String     @map("restaurant_id") @db.Uuid
+  /// Uppercased, unique per tenant. Two restaurants may both have "DIWALI10".
+  code         String
+  type         CouponType
+  /// PERCENT only, basis points (1000 = 10%). Null for FIXED.
+  percentBp    Int?       @map("percent_bp")
+  /// FIXED only, paise. Null for PERCENT.
+  amountMinor  Int?       @map("amount_minor")
+  /// Optional cap on a PERCENT discount, paise.
+  maxDiscountMinor Int?   @map("max_discount_minor")
+  /// The order subtotal must reach this for the coupon to apply. 0 = no minimum.
+  minSubtotalMinor Int    @default(0) @map("min_subtotal_minor")
+  /// Total times this code may be redeemed across the restaurant. Null = unlimited.
+  maxRedemptions Int?     @map("max_redemptions")
+  validFrom    DateTime?  @map("valid_from")
+  validUntil   DateTime?  @map("valid_until")
+  isActive     Boolean    @default(true) @map("is_active")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  redemptions CouponRedemption[]
+
+  @@unique([restaurantId, code])
+  @@index([restaurantId, isActive])
+  @@map("coupons")
+}
+
+/// Append-only record of a coupon being used on an order. This is money, so it
+/// is immutable like every other financial record: the discount that was given
+/// cannot be quietly rewritten after the fact.
+model CouponRedemption {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  restaurantId  String   @map("restaurant_id") @db.Uuid
+  couponId      String   @map("coupon_id") @db.Uuid
+  /// The order it was applied to. One coupon per order (unique).
+  orderId       String   @unique @map("order_id") @db.Uuid
+  /// The discount actually granted, recomputed server-side. Paise.
+  discountMinor Int      @map("discount_minor")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Restrict)
+
+  @@index([restaurantId, couponId])
+  @@map("coupon_redemptions")
+}
+
+// ---------------------------------------------------------------------------
 // Staff
 // ---------------------------------------------------------------------------
 

@@ -22,6 +22,7 @@ const ITEMS: Array<{ label: string; href: string | null }> = [
   { label: 'Kitchen', href: '/dashboard/kitchen' },
   { label: 'Analytics', href: '/dashboard/analytics' },
   { label: 'AI Center', href: '/dashboard/ai' },
+  { label: 'Marketing', href: '/dashboard/marketing' },
 ];
 
 export function Nav() {

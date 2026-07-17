@@ -11,6 +11,7 @@ import type { OrderStatus } from '../../generated/prisma/enums';
 import { VOID_STATUSES, canTransition } from './order-status';
 import { InventoryService } from '../inventory/inventory.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { MarketingService } from '../marketing/marketing.service';
 
 @Injectable()
 export class OrdersService {
@@ -18,6 +19,7 @@ export class OrdersService {
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly realtime: RealtimeGateway,
+    private readonly marketing: MarketingService,
   ) {}
 
   /**
@@ -118,7 +120,32 @@ export class OrdersService {
 
       const subtotal = lines.reduce((s, l) => s + l.lineTotalMinor, 0);
       const tax = lines.reduce((s, l) => s + l.taxMinor, 0);
-      const total = subtotal + tax; // discounts arrive with their own step
+
+      // Coupon discount, computed server-side inside this transaction. The
+      // client sends only a code — never an amount — so it can never dictate
+      // the discount. A bad/expired/exhausted code is rejected, not silently
+      // ignored, so the cashier knows it did not apply.
+      let discount = 0;
+      let couponRedemption: { couponId: string; discountMinor: number } | null =
+        null;
+      if (dto.couponCode) {
+        const result = await this.marketing.validateAndComputeDiscount(
+          db,
+          dto.couponCode,
+          subtotal,
+        );
+        if (!result.ok) throw new BadRequestException(result.reason);
+        discount = result.discountMinor;
+        couponRedemption = {
+          couponId: result.couponId,
+          discountMinor: result.discountMinor,
+        };
+      }
+
+      // total = subtotal - discount + tax. The DB CHECK enforces this exact
+      // identity and that discount <= subtotal, so a computation bug fails the
+      // insert rather than surfacing in a GST return.
+      const total = subtotal - discount + tax;
 
       // Per-tenant sequence. RLS already scopes the aggregate to this tenant,
       // so no restaurantId filter is needed. Two concurrent orders can pick the
@@ -135,17 +162,25 @@ export class OrdersService {
           status: 'PLACED',
           placedAt: new Date(),
           subtotalMinor: subtotal,
-          discountMinor: 0,
+          discountMinor: discount,
           taxMinor: tax,
-          // The DB CHECK asserts total = subtotal - discount + tax. If this
-          // arithmetic is ever wrong, the insert fails rather than the error
-          // surfacing in a GST return.
           totalMinor: total,
           notes: dto.notes ?? null,
           items: { create: lines.map((l) => ({ restaurantId, ...l })) },
         },
         select: { id: true, orderNumber: true, totalMinor: true },
       });
+
+      // Record the redemption (append-only) now that the order exists.
+      if (couponRedemption) {
+        await this.marketing.recordRedemption(
+          db,
+          restaurantId,
+          couponRedemption.couponId,
+          order.id,
+          couponRedemption.discountMinor,
+        );
+      }
 
       if (dto.paymentMethod) {
         await db.payment.create({

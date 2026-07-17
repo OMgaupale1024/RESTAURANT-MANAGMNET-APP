@@ -518,3 +518,64 @@ export const getInsights = (token: string, onNewToken: Retry) =>
     token,
     onNewToken,
   );
+
+export type Coupon = {
+  id: string;
+  code: string;
+  type: 'PERCENT' | 'FIXED';
+  percentBp: number | null;
+  amountMinor: number | null;
+  maxDiscountMinor: number | null;
+  minSubtotalMinor: number;
+  maxRedemptions: number | null;
+  validFrom: string | null;
+  validUntil: string | null;
+  isActive: boolean;
+  createdAt: string;
+  _count?: { redemptions: number };
+};
+
+export type Segment = { key: string; label: string; rule: string; count: number };
+export type SegmentsResponse = {
+  segments: Segment[];
+  recommendations: Array<{
+    method: string;
+    title: string;
+    detail: string;
+    basis: string;
+  }>;
+};
+
+export const listCoupons = (token: string, onNewToken: Retry) =>
+  authedFetch<Coupon[]>('/marketing/coupons', token, onNewToken);
+
+export const createCoupon = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    code: string;
+    type: 'PERCENT' | 'FIXED';
+    percentBp?: number;
+    amountMinor?: number;
+    minSubtotalMinor?: number;
+    maxRedemptions?: number;
+  },
+) =>
+  authedFetch<Coupon>('/marketing/coupons', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const setCouponActive = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  isActive: boolean,
+) =>
+  authedFetch<Coupon>(`/marketing/coupons/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify({ isActive }),
+  });
+
+export const getSegments = (token: string, onNewToken: Retry) =>
+  authedFetch<SegmentsResponse>('/marketing/segments', token, onNewToken);

@@ -22,7 +22,7 @@ arrives and it is still open, it blocks that step.
 | 10 | **Least-privilege role for prod is manual** — `db:setup-app-role` writes to `.env` | Step 4 | Step 20 | Production must source the password from a secret manager, not a generated file. |
 
 | ~~13~~ | ~~**API lint had never been run**~~ — 119 problems had accumulated | Step 11 | **CLOSED in Step 11** | Only `@oraos/web` lint was being run; earlier steps claimed lint passed on half the workspace. Source errors fixed properly (typed cookie accessor, narrowed `req.id`); the type-aware unsafe-* rules are scoped to tests only, where supertest genuinely returns `any`. Both apps lint clean and it is now part of the pre-commit gate. |
-| 14 | **Discounts hardcoded to 0** — no discount UI or API | Step 10 | When asked | `discount_minor` exists with its CHECK (discount <= subtotal) and is in the total formula. Purely additive; nothing is blocked. |
+| ~~14~~ | ~~**Discounts hardcoded to 0**~~ | Step 10 | **PARTIALLY CLOSED in Step 18** | Coupon discounts now flow through order.discountMinor (server-computed). Manual/ad-hoc line discounts at POS are still not exposed — add if a real till needs them. |
 | 15 | **Refunds not implemented** — voiding stops an order but does not reverse a captured payment | Step 11 | When a payments provider exists | The `order.refund` permission is seeded and `payments` supports it, but a refund against CASH/UPI is a counter action, not an API one. |
 | ~~16~~ | ~~**No realtime on Orders/Kitchen**~~ | Step 11 | **CLOSED in Step 15** | Socket.IO gateway, per-tenant rooms, JWT-verified on connect. Kitchen board updates live on order.created / order.status_changed. Verified in browser (New column 3->4 with no reload) and by e2e cross-tenant leak test. |
 
@@ -49,6 +49,10 @@ arrives and it is still open, it blocks that step.
 | 32 | **Python `apps/ai` service not built** — Phase 1+2 (rules + moving average) run in Nest instead | Step 17 | Phase 3+ (regression/XGBoost/Prophet) | DELIBERATE. Standing up a Python service, read-only role, queue and cross-service auth to compute AVG(daily_sales) that SQL does natively would be speculative infra. Python earns its place when a TRAINED model needs it — which needs training data that does not exist yet. Blueprint escalator: each phase ships only when the prior is measurably insufficient. |
 | 33 | **No LLM business advisor** (the "ask your data" chat) | Step 17 | After a provider + cost ceiling is chosen (blueprint §14) | Needs an LLM provider decision and the whitelisted-parameterised-query infra from ARCHITECTURE (never text-to-SQL). Deferred rather than half-built. When added: outputs labelled method=LLM, tenant scope injected outside the prompt. |
 | 34 | **Forecasts are not persisted, so accuracy is not tracked** | Step 17 | Phase 3+ | Insights recompute live (correct for now, no staleness). Measuring "was the forecast right?" needs a predictions table — which is also what a trained model would need. Build together. |
+
+| 35 | **No marketing campaign delivery** (WhatsApp/email send) | Step 18 | Step 20 (needs a channel) | Segments give the honest "who to contact" list; a campaign with fake "sent" status would violate the no-fabrication rule. Delivery needs WhatsApp Business API / email (same dep as #1/#2/#26). |
+| 36 | **Coupon tax treatment: discount is post-tax** (tax on pre-discount lines) | Step 18 | When a tax accountant reviews | total = subtotal - discount + tax, with tax computed on full line values. Defensible for a "₹X off" coupon and never under-charges tax, but Indian GST may want discount to reduce taxable value. Revisit with the tax_rates work. |
+| 37 | **maxRedemptions is count-then-insert, not atomic** | Step 18 | If a coupon is heavily contended | A burst of concurrent redemptions could exceed the cap by a small margin (same class as order-number, but no unique index to catch it). Low stakes for coupons; add a counter or advisory lock if it matters. |
 
 ## Rules
 

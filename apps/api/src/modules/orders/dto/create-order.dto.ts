@@ -61,6 +61,16 @@ export class CreateOrderDto {
   @IsUUID()
   customerId?: string;
 
+  /**
+   * A discount code. The client sends only the code — never an amount. The
+   * server looks it up, validates it, and computes the discount itself, so a
+   * coupon can never be used to set an arbitrary price.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  couponCode?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)

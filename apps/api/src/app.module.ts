@@ -21,6 +21,7 @@ import { StaffModule } from './modules/staff/staff.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AiModule } from './modules/ai/ai.module';
+import { MarketingModule } from './modules/marketing/marketing.module';
 
 @Module({
   imports: [
@@ -80,6 +81,7 @@ import { AiModule } from './modules/ai/ai.module';
     RealtimeModule,
     AnalyticsModule,
     AiModule,
+    MarketingModule,
   ],
   controllers: [HealthController],
   providers: [
