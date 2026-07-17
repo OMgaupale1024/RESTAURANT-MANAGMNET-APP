@@ -1,0 +1,9 @@
+# Normalise to LF in the repo. Deploys and CI run on Linux; CRLF in a shell
+# script or Dockerfile fails there while working fine on Windows.
+* text=auto eol=lf
+
+# Binary — never touch
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary

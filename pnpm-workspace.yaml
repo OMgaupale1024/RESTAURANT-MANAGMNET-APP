@@ -1,0 +1,14 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+# Native postinstall builds must be approved explicitly. Only add a package
+# here after knowing why it needs to run code at install time.
+allowBuilds:
+  '@prisma/engines': true # downloads the query engine binary
+  bcrypt: true # native password hashing
+  prisma: true # CLI postinstall
+  sharp: true # native image codec used by next/image optimisation
+  unrs-resolver: true # native module resolver used by eslint-plugin-import-x
+
+# apps/ai (Python, Phase 6) lives in this repo but not in this workspace —
+# pnpm does not manage Python dependencies.

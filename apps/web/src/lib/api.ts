@@ -1,0 +1,218 @@
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api/v1';
+
+export type ApiError = {
+  statusCode: number;
+  error: string;
+  message: string | string[];
+  requestId?: string;
+};
+
+export class ApiRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: ApiError | null,
+  ) {
+    super(
+      Array.isArray(body?.message)
+        ? body.message.join(', ')
+        : (body?.message ?? 'Request failed'),
+    );
+    this.name = 'ApiRequestError';
+  }
+}
+
+/**
+ * Calls the OraOS API.
+ *
+ * `credentials: 'include'` is required for the refresh cookie to travel: the
+ * web app and API are different origins (different port in dev, likely
+ * different subdomain in production). The API answers with an explicit CORS
+ * allowlist, never a reflected origin, which is what makes this safe.
+ */
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit & { accessToken?: string } = {},
+): Promise<T> {
+  const { accessToken, headers, ...rest } = options;
+
+  const res = await fetch(`${API_URL}${path}`, {
+    ...rest,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...headers,
+    },
+  });
+
+  if (res.status === 204) return undefined as T;
+
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiRequestError(res.status, body as ApiError | null);
+  return body as T;
+}
+
+/**
+ * Single-flight refresh (backlog #11).
+ *
+ * Access tokens last 15 minutes; a POS session lasts a shift. Without this,
+ * the first call after expiry fails and the cashier is bounced to /login
+ * mid-order.
+ *
+ * The in-flight promise is shared deliberately. Refresh tokens rotate with
+ * reuse detection (Step 5), so two concurrent refreshes would send the same
+ * token twice — the second read as theft, revoking the family and logging the
+ * user out. One refresh at a time, everyone awaits the same result.
+ *
+ * This adds no credential and no storage. It calls the same endpoint the app
+ * already uses on load.
+ */
+let inFlightRefresh: Promise<string> | null = null;
+
+export function refreshOnce(): Promise<string> {
+  if (!inFlightRefresh) {
+    inFlightRefresh = refreshSession()
+      .then((r) => r.accessToken)
+      .finally(() => {
+        inFlightRefresh = null;
+      });
+  }
+  return inFlightRefresh;
+}
+
+/**
+ * apiFetch that transparently refreshes once on 401 and retries.
+ *
+ * Only 401 triggers a retry. A 403 means authenticated-but-not-permitted —
+ * refreshing would change nothing and would hide a real permissions bug.
+ */
+export async function authedFetch<T>(
+  path: string,
+  accessToken: string,
+  onNewToken: (token: string) => void,
+  options: RequestInit = {},
+): Promise<T> {
+  try {
+    return await apiFetch<T>(path, { ...options, accessToken });
+  } catch (err) {
+    if (!(err instanceof ApiRequestError) || err.status !== 401) throw err;
+
+    // Expired, not forged. Try exactly one refresh, then retry once.
+    const fresh = await refreshOnce();
+    onNewToken(fresh);
+    return apiFetch<T>(path, { ...options, accessToken: fresh });
+  }
+}
+
+export type LoginResponse = {
+  accessToken: string;
+  expiresIn: number;
+  tokenType: string;
+};
+
+export type MeResponse = {
+  user: { id: string; email: string; name: string; createdAt: string };
+  memberships: Array<{
+    id: string;
+    restaurant: { id: string; name: string; slug: string };
+    role: { key: string; name: string };
+  }>;
+};
+
+export const login = (email: string, password: string) =>
+  apiFetch<LoginResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+
+export const getMe = (accessToken: string) =>
+  apiFetch<MeResponse>('/auth/me', { accessToken });
+
+export type CreateRestaurantResponse = {
+  restaurant: { id: string; name: string; slug: string; createdAt: string };
+  branch: { id: string; name: string; address: string | null };
+  membershipId: string;
+};
+
+export const createRestaurant = (
+  accessToken: string,
+  body: { name: string; branchName?: string; branchAddress?: string },
+) =>
+  apiFetch<CreateRestaurantResponse>('/restaurants', {
+    method: 'POST',
+    accessToken,
+    body: JSON.stringify(body),
+  });
+
+/** Swaps the token for one scoped to a restaurant. Membership is verified server-side. */
+export const selectRestaurant = (accessToken: string, restaurantId: string) =>
+  apiFetch<LoginResponse>('/auth/select-restaurant', {
+    method: 'POST',
+    accessToken,
+    body: JSON.stringify({ restaurantId }),
+  });
+
+/**
+ * Exchanges the httpOnly refresh cookie for a fresh access token.
+ * No argument: the browser supplies the cookie, JS never sees it.
+ */
+export const refreshSession = () =>
+  apiFetch<LoginResponse>('/auth/refresh', { method: 'POST' });
+
+export const logout = () =>
+  apiFetch<void>('/auth/logout', { method: 'POST' });
+
+export type Product = {
+  id: string;
+  name: string;
+  priceMinor: number;
+  taxRateBp: number;
+  categoryId: string | null;
+};
+
+export type Order = {
+  id: string;
+  orderNumber: number;
+  status: string;
+  subtotalMinor: number;
+  discountMinor: number;
+  taxMinor: number;
+  totalMinor: number;
+  items: Array<{
+    id: string;
+    nameSnapshot: string;
+    unitPriceMinor: number;
+    quantity: number;
+    lineTotalMinor: number;
+  }>;
+  payments: Array<{ id: string; method: string; amountMinor: number }>;
+};
+
+type Retry = (t: string) => void;
+
+export const listProducts = (token: string, onNewToken: Retry) =>
+  authedFetch<Product[]>('/products', token, onNewToken);
+
+export const createProduct = (
+  token: string,
+  onNewToken: Retry,
+  body: { name: string; priceMinor: number },
+) =>
+  authedFetch<Product>('/products', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const createOrder = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    items: Array<{ productId: string; quantity: number }>;
+    paymentMethod?: string;
+    idempotencyKey?: string;
+  },
+) =>
+  authedFetch<Order>('/orders', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });

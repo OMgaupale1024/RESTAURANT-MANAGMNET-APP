@@ -1,0 +1,16 @@
+{
+  "name": "oraos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OraOS — AI Restaurant Operating System",
+  "packageManager": "pnpm@11.13.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

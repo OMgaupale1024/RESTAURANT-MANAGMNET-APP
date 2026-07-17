@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+
+  /* Brand: yellow primary, black secondary (see docs/BLUEPRINT.md).
+     Yellow is a background-and-accent colour only — yellow text on white
+     fails contrast, so anything sitting on brand uses --brand-ink. */
+  --brand: #facc15;
+  --brand-ink: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* Removes the ~300ms double-tap-zoom delay on touch targets without
+   disabling pinch zoom. POS runs on tablets; taps must feel instant. */
+button,
+a,
+[role="button"],
+input,
+select {
+  touch-action: manipulation;
+}
