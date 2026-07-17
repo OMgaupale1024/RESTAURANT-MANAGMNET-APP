@@ -9,10 +9,14 @@ import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { OrderStatus } from '../../generated/prisma/enums';
 import { VOID_STATUSES, canTransition } from './order-status';
+import { InventoryService } from '../inventory/inventory.service';
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly inventory: InventoryService,
+  ) {}
 
   /**
    * Places an order.
@@ -146,6 +150,22 @@ export class OrdersService {
           },
         });
       }
+
+      // Stock depletion runs in the SAME transaction as the sale: either both
+      // commit or neither does. A sale that succeeded while its stock movement
+      // failed would silently corrupt food cost.
+      //
+      // This does NOT block on insufficient stock — see depleteForOrder.
+      await this.inventory.depleteForOrder(
+        db,
+        restaurantId,
+        userId,
+        order.id,
+        dto.items.map((i) => ({
+          productId: i.productId,
+          quantity: i.quantity,
+        })),
+      );
 
       // Append-only trail. This is what the order timeline reads.
       await db.orderEvent.create({

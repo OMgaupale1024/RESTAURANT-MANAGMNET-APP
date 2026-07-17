@@ -295,11 +295,118 @@ model Product {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  category Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  recipeItems RecipeItem[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
   @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+/// All stock is stored as an INTEGER count of the smallest unit — grams, not
+/// kilograms; millilitres, not litres. Same discipline as money: 0.1 + 0.2 is
+/// not 0.3 in binary floating point, and a drifting stock level is a drifting
+/// food cost.
+enum StockUnit {
+  GRAM
+  MILLILITRE
+  PIECE
+
+  @@map("stock_unit")
+}
+
+enum StockMovementType {
+  /// Stock arriving. Positive.
+  PURCHASE
+  /// Sold through a recipe. Negative, written automatically when an order is placed.
+  CONSUMPTION
+  /// Spoiled, dropped, burnt. Negative. Kept distinct from CONSUMPTION because
+  /// the difference between "sold" and "wasted" is the whole point of tracking.
+  WASTE
+  /// A stock count correcting reality. Signed.
+  ADJUSTMENT
+
+  @@map("stock_movement_type")
+}
+
+model Ingredient {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  restaurantId String    @map("restaurant_id") @db.Uuid
+  name         String
+  unit         StockUnit
+  /// Below this, the ingredient is flagged low. Null means "do not track".
+  reorderLevel Int?      @map("reorder_level")
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  movements   StockMovement[]
+  recipeItems RecipeItem[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId, isActive])
+  @@map("ingredients")
+}
+
+/// The stock ledger. Append-only, enforced by trigger.
+///
+/// There is deliberately NO `quantity` column on Ingredient. Current stock is
+/// SUM(quantity) over this table.
+///
+/// A mutable counter would be a lie the moment two things touched it at once,
+/// and it would throw away the only question an owner actually asks: not "how
+/// much cheese is there" but "where did the cheese go". A ledger answers both;
+/// a counter answers neither honestly. It also makes concurrent depletion
+/// correct for free — two simultaneous orders each append a row rather than
+/// racing to overwrite the same number.
+///
+/// quantity is signed: PURCHASE is positive, CONSUMPTION and WASTE negative.
+model StockMovement {
+  id           String            @id @default(uuid(7)) @db.Uuid
+  restaurantId String            @map("restaurant_id") @db.Uuid
+  ingredientId String            @map("ingredient_id") @db.Uuid
+  type         StockMovementType
+  /// Signed, in the ingredient's base unit.
+  quantity     Int
+  /// Set on CONSUMPTION so a depletion can be traced back to the sale that
+  /// caused it. No FK: the movement must outlive any order tidy-up, same
+  /// reasoning as order_items.productId.
+  orderId      String?           @map("order_id") @db.Uuid
+  note         String?
+  actorUserId  String?           @map("actor_user_id") @db.Uuid
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@index([restaurantId, ingredientId, createdAt])
+  @@index([orderId])
+  @@map("stock_movements")
+}
+
+/// What one unit of a product consumes.
+///
+/// No separate Recipe entity: a product's recipe IS its list of items. An empty
+/// list means the product does not deplete anything, which is a legitimate
+/// state (a bottled drink bought and sold as-is).
+model RecipeItem {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  ingredientId String   @map("ingredient_id") @db.Uuid
+  /// Per ONE unit sold, in the ingredient's base unit.
+  quantity     Int
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([productId, ingredientId])
+  @@index([restaurantId])
+  @@map("recipe_items")
 }
 
 // ---------------------------------------------------------------------------

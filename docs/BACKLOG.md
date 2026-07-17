@@ -30,6 +30,11 @@ arrives and it is still open, it blocks that step.
 | 18 | **Phone normalisation is India-only** — drops +91 / leading 0 | Step 12 | First non-Indian tenant | `customers/phone.ts` implements one documented rule. Real international support means libphonenumber and a per-restaurant country. Non-Indian numbers pass through as digits rather than being mangled. |
 | 19 | **No customer delete / GDPR erasure** | Step 12 | Before launch in a regulated market | `orders.customerId` is `onDelete: Restrict`, so a customer with history cannot be erased without deciding what happens to the money. Right default; needs an explicit anonymise-in-place path (keep the order, blank the person). |
 
+| 20 | **No supplier or purchase-order tracking** | Step 13 | When procurement is asked for | The roadmap has no Suppliers step and the blueprint treats it as a separate screen. PURCHASE movements record that stock arrived, not who sold it or what it cost. Food-cost reporting needs the cost side. |
+| 21 | **No ingredient cost, so no food-cost or margin** | Step 13 | Step 16 (Analytics) | Recipes give quantity consumed; without a per-unit cost there is no COGS. Additive: a cost on PURCHASE movements gives weighted-average cost without reshaping anything. |
+| 22 | **Stock is summed on read, not materialised** | Step 13 | When an ingredient list is measurably slow | Same call as customer stats (#17). `groupBy` keeps it to 2 queries regardless of ingredient count. Revisit with real movement volume, not before. |
+| 23 | **Recipes do not handle yield or waste factors** | Step 13 | When a real kitchen complains | A recipe says 50g paneer per plate. It cannot express "1kg paneer yields 900g usable". Trim loss currently has to be recorded as WASTE, which is honest but manual. |
+
 ## Rules
 
 - An item is closed only when its fix is verified, not when it is written.

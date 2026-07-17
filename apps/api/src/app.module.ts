@@ -16,6 +16,7 @@ import { RestaurantsModule } from './modules/restaurants/restaurants.module';
 import { CatalogueModule } from './modules/catalogue/catalogue.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { InventoryModule } from './modules/inventory/inventory.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { CustomersModule } from './modules/customers/customers.module';
     CatalogueModule,
     OrdersModule,
     CustomersModule,
+    InventoryModule,
   ],
   controllers: [HealthController],
   providers: [

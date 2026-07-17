@@ -28,6 +28,8 @@ const PERMISSIONS: Record<string, string> = {
   'product.manage': 'Add, edit and deactivate menu items',
   'customer.read': 'View customers and their history',
   'customer.manage': 'Add and edit customer records',
+  'inventory.read': 'View stock levels and movements',
+  'inventory.manage': 'Receive stock, record waste, edit recipes',
   'order.create': 'Take an order',
   'order.read': 'View orders',
   'order.update': 'Change order contents or status',
@@ -51,6 +53,8 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
       'product.manage',
       'customer.read',
       'customer.manage',
+      'inventory.read',
+      'inventory.manage',
       'order.create',
       'order.read',
       'order.update',
@@ -74,7 +78,13 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
   },
   KITCHEN: {
     name: 'Kitchen',
-    permissions: ['product.read', 'order.read', 'order.update'],
+    permissions: [
+      'product.read',
+      'inventory.read',
+      'inventory.manage',
+      'order.read',
+      'order.update',
+    ],
   },
 };
 

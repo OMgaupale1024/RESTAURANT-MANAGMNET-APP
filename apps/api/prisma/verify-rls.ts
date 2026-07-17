@@ -79,6 +79,9 @@ async function purge(restaurantId: string) {
   await owner.$executeRawUnsafe(
     `ALTER TABLE order_events DISABLE TRIGGER order_events_append_only`,
   );
+  await owner.$executeRawUnsafe(
+    `ALTER TABLE stock_movements DISABLE TRIGGER stock_movements_append_only`,
+  );
   try {
     await owner.restaurant.deleteMany({ where: { id: restaurantId } });
   } finally {
@@ -87,6 +90,9 @@ async function purge(restaurantId: string) {
     );
     await owner.$executeRawUnsafe(
       `ALTER TABLE order_events ENABLE TRIGGER order_events_append_only`,
+    );
+    await owner.$executeRawUnsafe(
+      `ALTER TABLE stock_movements ENABLE TRIGGER stock_movements_append_only`,
     );
   }
 }
@@ -427,6 +433,114 @@ async function main() {
     malformedPhone = true;
   }
   check('non-digit phone is rejected by CHECK', malformedPhone);
+
+  console.log('\nInventory isolation & ledger (Step 13)');
+
+  const ingA = await asTenant(idA, null, (tx) =>
+    tx.ingredient.create({
+      data: { restaurantId: idA, name: 'Secret Spice', unit: 'GRAM' },
+    }),
+  );
+  await asTenant(idB, null, (tx) =>
+    tx.ingredient.create({
+      data: { restaurantId: idB, name: 'B Spice', unit: 'GRAM' },
+    }),
+  );
+
+  const bIngredients = await asTenant(idB, null, (tx) =>
+    tx.ingredient.findMany(),
+  );
+  check(
+    'tenant B sees only its own ingredients',
+    bIngredients.length === 1 && bIngredients[0].restaurantId === idB,
+    `saw ${bIngredients.length}`,
+  );
+
+  const stolenIngredient = await asTenant(idB, null, (tx) =>
+    tx.ingredient.findUnique({ where: { id: ingA.id } }),
+  );
+  check(
+    "tenant B cannot read tenant A's ingredient by id",
+    stolenIngredient === null,
+  );
+
+  await asTenant(idA, null, (tx) =>
+    tx.stockMovement.create({
+      data: {
+        restaurantId: idA,
+        ingredientId: ingA.id,
+        type: 'PURCHASE',
+        quantity: 1000,
+      },
+    }),
+  );
+
+  const bMovements = await asTenant(idB, null, (tx) =>
+    tx.stockMovement.findMany(),
+  );
+  check(
+    "tenant B cannot see tenant A's stock movements",
+    bMovements.length === 0,
+    `saw ${bMovements.length}`,
+  );
+
+  let ledgerUpdateBlocked = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.stockMovement.updateMany({
+        where: { ingredientId: ingA.id },
+        data: { quantity: 1 },
+      }),
+    );
+  } catch {
+    ledgerUpdateBlocked = true;
+  }
+  check('stock_movements cannot be UPDATEd (ledger is append-only)', ledgerUpdateBlocked);
+
+  let ledgerDeleteBlocked = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.stockMovement.deleteMany({ where: { ingredientId: ingA.id } }),
+    );
+  } catch {
+    ledgerDeleteBlocked = true;
+  }
+  check('stock_movements cannot be DELETEd (covering up waste)', ledgerDeleteBlocked);
+
+  let wrongDirection = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.stockMovement.create({
+        data: {
+          restaurantId: idA,
+          ingredientId: ingA.id,
+          // A WASTE that adds stock is always a bug.
+          type: 'WASTE',
+          quantity: 500,
+        },
+      }),
+    );
+  } catch {
+    wrongDirection = true;
+  }
+  check('a WASTE that increases stock is rejected by CHECK', wrongDirection);
+
+  let zeroMovement = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.stockMovement.create({
+        data: {
+          restaurantId: idA,
+          ingredientId: ingA.id,
+          type: 'ADJUSTMENT',
+          quantity: 0,
+        },
+      }),
+    );
+  } catch {
+    zeroMovement = true;
+  }
+  check('a zero-quantity movement is rejected by CHECK', zeroMovement);
 
   console.log('\nEmail normalisation');
 

@@ -317,3 +317,80 @@ export const createCustomer = (
     method: 'POST',
     body: JSON.stringify(body),
   });
+
+export type StockUnit = 'GRAM' | 'MILLILITRE' | 'PIECE';
+
+export type IngredientRow = {
+  id: string;
+  name: string;
+  unit: StockUnit;
+  reorderLevel: number | null;
+  currentStock: number;
+  isLow: boolean;
+};
+
+export type IngredientDetail = Omit<IngredientRow, 'isLow'> & {
+  isLow: boolean;
+  movements: Array<{
+    id: string;
+    type: string;
+    quantity: number;
+    note: string | null;
+    orderId: string | null;
+    createdAt: string;
+  }>;
+};
+
+export const listIngredients = (token: string, onNewToken: Retry, lowOnly?: boolean) =>
+  authedFetch<IngredientRow[]>(
+    lowOnly ? '/ingredients?lowStock=true' : '/ingredients',
+    token,
+    onNewToken,
+  );
+
+export const getIngredient = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<IngredientDetail>(`/ingredients/${id}`, token, onNewToken);
+
+export const createIngredient = (
+  token: string,
+  onNewToken: Retry,
+  body: { name: string; unit: StockUnit; reorderLevel?: number },
+) =>
+  authedFetch<IngredientRow>('/ingredients', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const recordMovement = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { type: 'PURCHASE' | 'WASTE'; quantity: number; note?: string },
+) =>
+  authedFetch<unknown>(`/ingredients/${id}/movements`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export type RecipeResponse = {
+  product: { id: string; name: string };
+  items: Array<{
+    id: string;
+    quantity: number;
+    ingredient: { id: string; name: string; unit: StockUnit };
+  }>;
+};
+
+export const getRecipe = (token: string, onNewToken: Retry, productId: string) =>
+  authedFetch<RecipeResponse>(`/products/${productId}/recipe`, token, onNewToken);
+
+export const setRecipe = (
+  token: string,
+  onNewToken: Retry,
+  productId: string,
+  items: Array<{ ingredientId: string; quantity: number }>,
+) =>
+  authedFetch<unknown>(`/products/${productId}/recipe`, token, onNewToken, {
+    method: 'PUT',
+    body: JSON.stringify({ items }),
+  });
