@@ -474,3 +474,7 @@ export const acceptInvite = (
     method: 'POST',
     body: JSON.stringify(body),
   });
+
+/** Active kitchen orders (PLACED/PREPARING/READY), for the kitchen display. */
+export const listActiveOrders = (token: string, onNewToken: Retry) =>
+  authedFetch<OrderSummary[]>('/orders?limit=100', token, onNewToken);

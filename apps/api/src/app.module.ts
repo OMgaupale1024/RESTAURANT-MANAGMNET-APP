@@ -18,6 +18,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { StaffModule } from './modules/staff/staff.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { StaffModule } from './modules/staff/staff.module';
     CustomersModule,
     InventoryModule,
     StaffModule,
+    RealtimeModule,
   ],
   controllers: [HealthController],
   providers: [

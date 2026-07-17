@@ -19,7 +19,7 @@ const ITEMS: Array<{ label: string; href: string | null }> = [
   { label: 'Customers', href: '/dashboard/customers' },
   { label: 'Inventory', href: '/dashboard/inventory' },
   { label: 'Employees', href: '/dashboard/staff' },
-  { label: 'Kitchen', href: null },
+  { label: 'Kitchen', href: '/dashboard/kitchen' },
   { label: 'Analytics', href: null },
 ];
 

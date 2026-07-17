@@ -10,12 +10,14 @@ import type { CreateOrderDto } from './dto/create-order.dto';
 import type { OrderStatus } from '../../generated/prisma/enums';
 import { VOID_STATUSES, canTransition } from './order-status';
 import { InventoryService } from '../inventory/inventory.service';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   /**
@@ -37,7 +39,16 @@ export class OrdersService {
     // Retry only on order_number collision (below). Anything else propagates.
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        return await this.insert(ctx.restaurantId, ctx.userId, dto);
+        const order = await this.insert(ctx.restaurantId, ctx.userId, dto);
+        // Emit AFTER commit: an event fired inside the transaction would
+        // announce an order to the kitchen that a rollback then erased. Scoped
+        // to this tenant's room only.
+        this.realtime.emitToTenant(ctx.restaurantId, 'order.created', {
+          id: order.id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+        });
+        return order;
       } catch (e) {
         if (isUniqueViolation(e, 'order_number')) continue;
         throw e;
@@ -265,7 +276,11 @@ export class OrdersService {
       throw new ForbiddenException('Missing permission: order.void');
     }
 
-    return this.prisma.tx(async (db) => {
+    // Whether an actual transition happened, decided inside the tx and read
+    // after it, so the realtime emit only fires on a real change post-commit.
+    let changed = false;
+
+    const result = await this.prisma.tx(async (db) => {
       const order = await db.order.findFirst({
         where: { id: orderId },
         select: { id: true, status: true, orderNumber: true },
@@ -279,6 +294,7 @@ export class OrdersService {
         // Idempotent: a double-tapped button is not an error.
         return this.load(db, orderId);
       }
+      changed = true;
 
       if (!canTransition(from, to)) {
         throw new ConflictException(
@@ -325,6 +341,16 @@ export class OrdersService {
 
       return this.load(db, orderId);
     });
+
+    // Post-commit, real-change-only. The kitchen screen advances live.
+    if (changed) {
+      this.realtime.emitToTenant(ctx.restaurantId, 'order.status_changed', {
+        id: result.id,
+        orderNumber: result.orderNumber,
+        status: result.status,
+      });
+    }
+    return result;
   }
 
   async getById(id: string) {

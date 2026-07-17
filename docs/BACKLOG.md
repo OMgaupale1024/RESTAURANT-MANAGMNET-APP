@@ -24,7 +24,7 @@ arrives and it is still open, it blocks that step.
 | ~~13~~ | ~~**API lint had never been run**~~ — 119 problems had accumulated | Step 11 | **CLOSED in Step 11** | Only `@oraos/web` lint was being run; earlier steps claimed lint passed on half the workspace. Source errors fixed properly (typed cookie accessor, narrowed `req.id`); the type-aware unsafe-* rules are scoped to tests only, where supertest genuinely returns `any`. Both apps lint clean and it is now part of the pre-commit gate. |
 | 14 | **Discounts hardcoded to 0** — no discount UI or API | Step 10 | When asked | `discount_minor` exists with its CHECK (discount <= subtotal) and is in the total formula. Purely additive; nothing is blocked. |
 | 15 | **Refunds not implemented** — voiding stops an order but does not reverse a captured payment | Step 11 | When a payments provider exists | The `order.refund` permission is seeded and `payments` supports it, but a refund against CASH/UPI is a counter action, not an API one. |
-| 16 | **No realtime on Orders/Kitchen** — the list does not update until reloaded | Step 11 | Step 15 (Kitchen Display) | Socket.IO is in the architecture but unbuilt. A kitchen screen genuinely needs push; an orders list can be reloaded. Build it where it matters. |
+| ~~16~~ | ~~**No realtime on Orders/Kitchen**~~ | Step 11 | **CLOSED in Step 15** | Socket.IO gateway, per-tenant rooms, JWT-verified on connect. Kitchen board updates live on order.created / order.status_changed. Verified in browser (New column 3->4 with no reload) and by e2e cross-tenant leak test. |
 
 | 17 | **Customer stats are aggregated on read, not materialised** | Step 12 | Step 16 (Analytics) or when a profile is measurably slow | The blueprint calls for `customer_stats`. Correct at a million orders; today a cached counter buys a staleness bug and saves nothing. Postgres aggregates thousands of rows in ms. Revisit with real data volume. |
 | 18 | **Phone normalisation is India-only** — drops +91 / leading 0 | Step 12 | First non-Indian tenant | `customers/phone.ts` implements one documented rule. Real international support means libphonenumber and a per-restaurant country. Non-Indian numbers pass through as digits rather than being mangled. |
@@ -39,6 +39,9 @@ arrives and it is still open, it blocks that step.
 | 25 | **No shift scheduling** | Step 14 | When asked | Attendance records what happened, not a planned roster. Predictive staffing (blueprint) needs the schedule side. |
 | 26 | **Invite email is not delivered** — the link is shown once in-app for manual sharing | Step 14 | Step 20 (email provider) | Deliberate: dodges the email dependency (#1/#2) and matches how Indian restaurants share links (WhatsApp). Auto-delivery is additive once a provider exists. |
 | 27 | **No attendance correction UI** — a manager can append a corrected clock event via API but there is no dedicated screen** | Step 14 | When a real manager needs it | The append-only model supports it (recordedBy marks manager-entered events); only the UI affordance is missing. |
+
+| 28 | **Kitchen board refetches on every event** rather than patching state | Step 15 | When order volume is high | Simplest correct approach; the active list is small. At high volume, apply the event payload to local state instead of refetching. |
+| 29 | **Socket has no reconnect backoff tuning / offline queue** | Step 15 | Phase 2 (offline) | socket.io default reconnection is on. A kitchen tablet that drops wifi shows "Reconnecting" and refetches on reconnect — fine for now; offline order capture is a separate concern. |
 
 ## Rules
 

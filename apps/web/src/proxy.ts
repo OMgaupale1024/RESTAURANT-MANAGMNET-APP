@@ -23,6 +23,8 @@ export function proxy(request: NextRequest) {
   // (different port in dev, likely a subdomain in production). Without this,
   // default-src 'self' silently blocks every login request.
   const apiOrigin = safeOrigin(process.env.NEXT_PUBLIC_API_URL);
+  // The same origin as a ws/wss scheme, for the Socket.IO connection.
+  const wsOrigin = apiOrigin ? apiOrigin.replace(/^http/, 'ws') : '';
 
   const csp = [
     `default-src 'self'`,
@@ -33,8 +35,10 @@ export function proxy(request: NextRequest) {
     `style-src 'self' 'nonce-${nonce}'`,
     `img-src 'self' blob: data:`,
     `font-src 'self'`,
-    // The API origin must be reachable by fetch; everything else must not.
-    `connect-src 'self'${apiOrigin ? ` ${apiOrigin}` : ''}`,
+    // The API origin must be reachable by fetch AND by WebSocket. CSP treats
+    // ws:// and wss:// as distinct schemes from http/https, so the socket
+    // origin must be listed explicitly or the kitchen's live feed is blocked.
+    `connect-src 'self'${apiOrigin ? ` ${apiOrigin} ${wsOrigin}` : ''}`,
     `object-src 'none'`,
     // Stops an injected <base> tag rewriting every relative URL to an
     // attacker's host.
