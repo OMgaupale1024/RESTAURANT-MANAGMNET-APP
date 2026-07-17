@@ -35,6 +35,11 @@ arrives and it is still open, it blocks that step.
 | 22 | **Stock is summed on read, not materialised** | Step 13 | When an ingredient list is measurably slow | Same call as customer stats (#17). `groupBy` keeps it to 2 queries regardless of ingredient count. Revisit with real movement volume, not before. |
 | 23 | **Recipes do not handle yield or waste factors** | Step 13 | When a real kitchen complains | A recipe says 50g paneer per plate. It cannot express "1kg paneer yields 900g usable". Trim loss currently has to be recorded as WASTE, which is honest but manual. |
 
+| 24 | **No payroll / wage rates** | Step 14 | When asked | Attendance gives hours; there is no pay rate or salary. Timesheet minutes are the input a payroll step would consume. Additive. |
+| 25 | **No shift scheduling** | Step 14 | When asked | Attendance records what happened, not a planned roster. Predictive staffing (blueprint) needs the schedule side. |
+| 26 | **Invite email is not delivered** — the link is shown once in-app for manual sharing | Step 14 | Step 20 (email provider) | Deliberate: dodges the email dependency (#1/#2) and matches how Indian restaurants share links (WhatsApp). Auto-delivery is additive once a provider exists. |
+| 27 | **No attendance correction UI** — a manager can append a corrected clock event via API but there is no dedicated screen** | Step 14 | When a real manager needs it | The append-only model supports it (recordedBy marks manager-entered events); only the UI affordance is missing. |
+
 ## Rules
 
 - An item is closed only when its fix is verified, not when it is written.

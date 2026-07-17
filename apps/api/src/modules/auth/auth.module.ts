@@ -31,6 +31,6 @@ import { SecurityEventService } from './security-event.service';
   providers: [AuthService, TokenService, SecurityEventService],
   // JwtModule is re-exported because the global JwtAuthGuard is registered in
   // AppModule and needs JwtService resolvable there.
-  exports: [TokenService, JwtModule],
+  exports: [TokenService, SecurityEventService, JwtModule],
 })
 export class AuthModule {}

@@ -41,6 +41,7 @@ model Restaurant {
   memberships Membership[]
   orders      Order[]
   auditLogs   AuditLog[]
+  staffInvites StaffInvite[]
 
   @@map("restaurants")
 }
@@ -178,8 +179,9 @@ model Role {
   key  String @unique
   name String
 
-  permissions RolePermission[]
-  memberships Membership[]
+  permissions  RolePermission[]
+  memberships  Membership[]
+  staffInvites StaffInvite[]
 
   @@map("roles")
 }
@@ -225,6 +227,8 @@ model Membership {
   restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   role       Role       @relation(fields: [roleId], references: [id])
   branch     Branch?    @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  attendance AttendanceEvent[]
 
   @@unique([userId, restaurantId])
   @@index([restaurantId])
@@ -301,6 +305,78 @@ model Product {
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
   @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// Staff
+// ---------------------------------------------------------------------------
+
+/// A pending invitation to join a restaurant.
+///
+/// Staff join by accepting a link, NOT by an owner typing a password for them.
+/// An owner who knows a cashier's password destroys attribution: every audit
+/// entry and every void becomes deniable ("the owner could have done that").
+/// The invitee sets their own password and nobody else ever knows it.
+///
+/// The token is stored only as a SHA-256 hash, same reasoning as refresh
+/// tokens: a database leak must not hand over working invitations. There is no
+/// email dependency — the link is shared however the restaurant already talks
+/// to its staff, which in practice is WhatsApp.
+model StaffInvite {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  restaurantId String    @map("restaurant_id") @db.Uuid
+  email        String
+  roleId       String    @map("role_id") @db.Uuid
+  tokenHash    String    @unique @map("token_hash")
+  expiresAt    DateTime  @map("expires_at")
+  acceptedAt   DateTime? @map("accepted_at")
+  revokedAt    DateTime? @map("revoked_at")
+  invitedBy    String?   @map("invited_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id])
+
+  @@index([restaurantId, acceptedAt])
+  @@index([expiresAt])
+  @@map("staff_invites")
+}
+
+enum AttendanceEventType {
+  CLOCK_IN
+  CLOCK_OUT
+
+  @@map("attendance_event_type")
+}
+
+/// The attendance ledger. Append-only, like every other history in this system.
+///
+/// There is deliberately NO `isClockedIn` flag or `currentShift` row. Whether
+/// someone is on shift is derived from their latest event; hours worked are
+/// derived by pairing events. A mutable flag would drift the first time a
+/// clock-out was missed, and it would erase the evidence of when.
+///
+/// This is timekeeping, which means it is pay. It gets the same immutability as
+/// money: a mistake is corrected by appending, never by editing.
+model AttendanceEvent {
+  id           String              @id @default(uuid(7)) @db.Uuid
+  restaurantId String              @map("restaurant_id") @db.Uuid
+  membershipId String              @map("membership_id") @db.Uuid
+  type         AttendanceEventType
+  /// When it happened. Separate from createdAt so a manager correcting a
+  /// forgotten clock-out can record the real time while the row still shows
+  /// when the correction was actually made.
+  at           DateTime
+  /// Null when someone clocks themselves in; set when a manager does it for
+  /// them. The difference matters in a dispute.
+  recordedBy   String?             @map("recorded_by") @db.Uuid
+  note         String?
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, membershipId, at])
+  @@map("attendance_events")
 }
 
 // ---------------------------------------------------------------------------

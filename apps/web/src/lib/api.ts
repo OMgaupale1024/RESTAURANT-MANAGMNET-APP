@@ -394,3 +394,83 @@ export const setRecipe = (
     method: 'PUT',
     body: JSON.stringify({ items }),
   });
+
+export type StaffMember = {
+  id: string;
+  isActive: boolean;
+  onShift: boolean;
+  lastEventAt: string | null;
+  user: { id: string; name: string; email: string };
+  role: { key: string; name: string };
+};
+
+export type PendingInvite = {
+  id: string;
+  email: string;
+  expiresAt: string;
+  role: { key: string; name: string };
+};
+
+export const listStaff = (token: string, onNewToken: Retry) =>
+  authedFetch<StaffMember[]>('/staff', token, onNewToken);
+
+export const listInvites = (token: string, onNewToken: Retry) =>
+  authedFetch<PendingInvite[]>('/staff/invites', token, onNewToken);
+
+export const createInvite = (
+  token: string,
+  onNewToken: Retry,
+  body: { email: string; role: string },
+) =>
+  authedFetch<{ inviteUrl: string; email: string }>('/staff/invites', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const revokeInvite = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<unknown>(`/staff/invites/${id}`, token, onNewToken, { method: 'DELETE' });
+
+export const updateMember = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { role?: string; isActive?: boolean },
+) =>
+  authedFetch<StaffMember>(`/staff/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const clockSelf = (token: string, onNewToken: Retry, type: 'CLOCK_IN' | 'CLOCK_OUT') =>
+  authedFetch<unknown>('/staff/me/clock', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ type }),
+  });
+
+export const clockMember = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  type: 'CLOCK_IN' | 'CLOCK_OUT',
+) =>
+  authedFetch<unknown>(`/staff/${id}/clock`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ type }),
+  });
+
+/** PUBLIC — no token: the invitee has no account yet. */
+export const describeInvite = (inviteToken: string) =>
+  apiFetch<{
+    email: string;
+    restaurantName: string;
+    role: { key: string; name: string };
+  }>(`/join/${inviteToken}`);
+
+export const acceptInvite = (
+  inviteToken: string,
+  body: { name: string; password: string },
+) =>
+  apiFetch<LoginResponse>(`/join/${inviteToken}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });

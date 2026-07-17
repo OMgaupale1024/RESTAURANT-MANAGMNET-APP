@@ -76,6 +76,27 @@ export class PrismaService
   }
 
   /**
+   * Runs work with an invite token in context, for the public /join routes.
+   *
+   * The invitee has no account and therefore no tenant, but staff_invites is
+   * RLS-protected. The policy grants read access to exactly the one row whose
+   * token hash matches this variable — possession of the token IS the
+   * authorization, which is what an invite means.
+   *
+   * Deliberately narrow: this does not set app.restaurant_id, so it opens
+   * nothing else. Writes still require a real tenant context.
+   */
+  async txWithInvite<T>(
+    tokenHash: string,
+    fn: (db: TxClient) => Promise<T>,
+  ): Promise<T> {
+    return this.$transaction(async (db) => {
+      await db.$executeRaw`SELECT set_config('app.invite_token_hash', ${tokenHash}, true)`;
+      return fn(db);
+    });
+  }
+
+  /**
    * Explicit-context variant, for the paths that run before a context can
    * exist — login, for instance, must read a user's memberships in order to
    * discover which restaurant they belong to.

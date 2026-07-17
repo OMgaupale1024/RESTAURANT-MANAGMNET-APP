@@ -82,6 +82,9 @@ async function purge(restaurantId: string) {
   await owner.$executeRawUnsafe(
     `ALTER TABLE stock_movements DISABLE TRIGGER stock_movements_append_only`,
   );
+  await owner.$executeRawUnsafe(
+    `ALTER TABLE attendance_events DISABLE TRIGGER attendance_events_append_only`,
+  );
   try {
     await owner.restaurant.deleteMany({ where: { id: restaurantId } });
   } finally {
@@ -93,6 +96,9 @@ async function purge(restaurantId: string) {
     );
     await owner.$executeRawUnsafe(
       `ALTER TABLE stock_movements ENABLE TRIGGER stock_movements_append_only`,
+    );
+    await owner.$executeRawUnsafe(
+      `ALTER TABLE attendance_events ENABLE TRIGGER attendance_events_append_only`,
     );
   }
 }
@@ -542,6 +548,109 @@ async function main() {
   }
   check('a zero-quantity movement is rejected by CHECK', zeroMovement);
 
+  console.log('\nStaff isolation & attendance ledger (Step 14)');
+
+  const roleA = await prisma.role.findFirstOrThrow({ where: { key: 'CASHIER' } });
+
+  const userA = await prisma.user.create({
+    data: {
+      email: `rls-a-${Date.now()}@example.com`,
+      name: 'A Staff',
+      passwordHash: 'x',
+    },
+  });
+  const memA = await asTenant(idA, null, (tx) =>
+    tx.membership.create({
+      data: { userId: userA.id, restaurantId: idA, roleId: roleA.id },
+    }),
+  );
+
+  const inviteA = await asTenant(idA, null, (tx) =>
+    tx.staffInvite.create({
+      data: {
+        restaurantId: idA,
+        email: `rls-inv-${Date.now()}@example.com`,
+        roleId: roleA.id,
+        tokenHash: `hash-${Date.now()}`,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    }),
+  );
+
+  const bInvites = await asTenant(idB, null, (tx) => tx.staffInvite.findMany());
+  check(
+    "tenant B cannot see tenant A's staff invites",
+    bInvites.length === 0,
+    `saw ${bInvites.length}`,
+  );
+
+  // The invite-token policy exception must grant exactly ONE row and no more.
+  const byToken = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.invite_token_hash', ${inviteA.tokenHash}, true)`;
+    return tx.staffInvite.findMany();
+  });
+  check(
+    'holding an invite token reveals exactly that one invite',
+    byToken.length === 1 && byToken[0].id === inviteA.id,
+    `saw ${byToken.length}`,
+  );
+
+  const wrongToken = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.invite_token_hash', ${'not-a-real-hash'}, true)`;
+    return tx.staffInvite.findMany();
+  });
+  check(
+    'a wrong invite token reveals nothing (no enumeration)',
+    wrongToken.length === 0,
+    `saw ${wrongToken.length}`,
+  );
+
+  await asTenant(idA, null, (tx) =>
+    tx.attendanceEvent.create({
+      data: {
+        restaurantId: idA,
+        membershipId: memA.id,
+        type: 'CLOCK_IN',
+        at: new Date(),
+      },
+    }),
+  );
+
+  const bAttendance = await asTenant(idB, null, (tx) =>
+    tx.attendanceEvent.findMany(),
+  );
+  check(
+    "tenant B cannot see tenant A's attendance",
+    bAttendance.length === 0,
+    `saw ${bAttendance.length}`,
+  );
+
+  let attendanceUpdateBlocked = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.attendanceEvent.updateMany({
+        where: { membershipId: memA.id },
+        data: { at: new Date(0) },
+      }),
+    );
+  } catch {
+    attendanceUpdateBlocked = true;
+  }
+  check(
+    'attendance cannot be UPDATEd (hours are pay)',
+    attendanceUpdateBlocked,
+  );
+
+  let attendanceDeleteBlocked = false;
+  try {
+    await asTenant(idA, null, (tx) =>
+      tx.attendanceEvent.deleteMany({ where: { membershipId: memA.id } }),
+    );
+  } catch {
+    attendanceDeleteBlocked = true;
+  }
+  check('attendance cannot be DELETEd', attendanceDeleteBlocked);
+
   console.log('\nEmail normalisation');
 
   let upperEmailBlocked = false;
@@ -568,6 +677,7 @@ async function main() {
   // act it should be. Production tenant removal is a soft delete.
   await purge(idA);
   await purge(idB);
+  await owner.user.deleteMany({ where: { email: { startsWith: 'rls-a-' } } });
 
   console.log(
     failures === 0

@@ -3,8 +3,8 @@
 **Purpose:** this file is the source of truth for where the build is. Read it
 first in a new session. It exists so progress does not depend on chat history.
 
-**Last updated:** end of Step 13 (2026-07-17).
-**Next action:** Step 14 — Employees. *Do not start until the user says so.*
+**Last updated:** end of Step 14 (2026-07-17).
+**Next action:** Step 15 — Kitchen Display. *Do not start until the user says so.*
 
 ---
 
@@ -41,8 +41,8 @@ first in a new session. It exists so progress does not depend on chat history.
 | 11 | Orders | **Done** | List, detail, timeline, state-machine transitions, void |
 | 12 | Customers | **Done** | CRM, phone identity, order linkage, derived stats |
 | 13 | Inventory | **Done** | Stock ledger, recipes, automatic depletion |
-| 14 | **Employees** | **NEXT** | |
-| 15 | Kitchen Display | Pending | |
+| 14 | Employees | **Done** | Invite-based staff, roles, append-only attendance |
+| 15 | **Kitchen Display** | **NEXT** | |
 | 16 | Analytics | Pending | |
 | 17 | AI Features | Pending | `apps/ai` (Python) is created here, not before |
 | 18 | Marketing | Pending | |
@@ -63,13 +63,13 @@ packages/   empty (created when something is actually shared)
 docs/       BLUEPRINT, ARCHITECTURE, BACKLOG, ROADMAP
 ```
 
-**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`.
-**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`, `/dashboard/inventory`.
+**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`, `GET|POST /api/v1/staff/invites`, `DELETE /api/v1/staff/invites/:id`, `GET|PATCH /api/v1/staff`, `POST /api/v1/staff/me/clock`, `POST /api/v1/staff/:id/clock`, `GET /api/v1/staff/timesheet`, `GET|POST /api/v1/join/:token`.
+**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`, `/dashboard/inventory`, `/dashboard/staff`, `/join/[token]`.
 
 **Database (Neon, ap-southeast-1):** `restaurants`, `branches`, `users`,
 `roles`, `permissions`, `role_permissions`, `memberships`, `audit_logs`,
-`orders`, `order_items`, `order_events`, `payments`, `refresh_tokens`, `security_events`, `categories`, `products`, `customers`, `ingredients`, `stock_movements`, `recipe_items`.
-Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 16 permissions, 41 mappings.
+`orders`, `order_items`, `order_events`, `payments`, `refresh_tokens`, `security_events`, `categories`, `products`, `customers`, `ingredients`, `stock_movements`, `recipe_items`, `staff_invites`, `attendance_events`.
+Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 18 permissions, 48 mappings.
 
 ---
 
@@ -91,6 +91,9 @@ Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 16 permissions, 41 mappings.
 - **Stock quantities are integers in the base unit** (grams, millilitres, pieces) — same discipline as money. Formatting to kg/l is display only.
 - **Movement sign comes from the type, never the client.** CONSUMPTION is server-only: a client that could post one could make stock vanish without a sale.
 - **Insufficient stock never blocks a sale.** A restaurant that cannot sell because a database says zero is worse than a negative number the owner can see. Reality wins over bookkeeping.
+- **Staff join by invite link, never by an owner setting a password.** The invitee sets their own — keeps every audit entry and void attributable. Token is 256-bit CSPRNG, stored hashed, single-use, expiring. Possession of the token is the authorization (an RLS policy exception, like memberships).
+- **Attendance is an append-only ledger; on-shift is DERIVED, never a flag.** Hours are pay, so immutable like money. A forgotten clock-out is corrected by appending, never editing. A cashier cannot backdate or record for others (needs attendance.manage).
+- **OWNER is not invitable or assignable via staff routes** — that path would be privilege escalation. Ownership transfer needs its own flow.
 - **One session = one token family.** Anything that re-issues a refresh token mid-session must continue the existing family (`rotateForReissue`), never mint a new one — a new family orphans a live token that survives logout.
 - **Access token lives in memory only** (`AuthProvider`). Restored after reload via `/auth/refresh`; never localStorage. The client-side route guard is UX, not security — the API + RLS are the boundary.
 
@@ -103,8 +106,8 @@ pnpm install
 
 # API
 pnpm --filter @oraos/api dev              # :3001
-pnpm --filter @oraos/api test:e2e         # 110 tests (needs DB)
-pnpm --filter @oraos/api verify:rls       # 29 tenant-isolation checks
+pnpm --filter @oraos/api test:e2e         # 141 tests (needs DB)
+pnpm --filter @oraos/api verify:rls       # 35 tenant-isolation checks
 pnpm --filter @oraos/api db:migrate
 pnpm --filter @oraos/api db:seed
 pnpm --filter @oraos/api db:setup-app-role  # once per environment
@@ -137,6 +140,7 @@ conventional commit. Milestones get an annotated tag. Never commit broken code.
 - `v0.5-orders` — step 11 (order lifecycle)
 - `v0.6-customers` — step 12 (CRM + order linkage)
 - `v0.7-inventory` — step 13 (stock ledger + recipes + depletion)
+- `v0.8-staff` — step 14 (invites, roles, attendance ledger)
 
 ---
 

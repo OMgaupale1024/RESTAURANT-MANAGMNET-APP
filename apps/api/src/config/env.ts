@@ -50,6 +50,9 @@ const envSchema = z
 
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
+    // Base URL of the web app, used to build staff invite links.
+    WEB_URL: z.string().url().default('http://localhost:3000'),
+
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
       .default('info'),
