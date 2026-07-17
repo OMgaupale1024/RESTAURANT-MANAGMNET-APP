@@ -20,7 +20,7 @@ const ITEMS: Array<{ label: string; href: string | null }> = [
   { label: 'Inventory', href: '/dashboard/inventory' },
   { label: 'Employees', href: '/dashboard/staff' },
   { label: 'Kitchen', href: '/dashboard/kitchen' },
-  { label: 'Analytics', href: null },
+  { label: 'Analytics', href: '/dashboard/analytics' },
 ];
 
 export function Nav() {

@@ -31,7 +31,7 @@ arrives and it is still open, it blocks that step.
 | 19 | **No customer delete / GDPR erasure** | Step 12 | Before launch in a regulated market | `orders.customerId` is `onDelete: Restrict`, so a customer with history cannot be erased without deciding what happens to the money. Right default; needs an explicit anonymise-in-place path (keep the order, blank the person). |
 
 | 20 | **No supplier or purchase-order tracking** | Step 13 | When procurement is asked for | The roadmap has no Suppliers step and the blueprint treats it as a separate screen. PURCHASE movements record that stock arrived, not who sold it or what it cost. Food-cost reporting needs the cost side. |
-| 21 | **No ingredient cost, so no food-cost or margin** | Step 13 | Step 16 (Analytics) | Recipes give quantity consumed; without a per-unit cost there is no COGS. Additive: a cost on PURCHASE movements gives weighted-average cost without reshaping anything. |
+| 21 | **No ingredient cost, so no food-cost or margin** | Step 13 | When ingredient cost is added (needs #20) | Analytics (Step 16) covers the revenue side. Margin needs COGS, which needs a per-unit ingredient cost that does not exist yet. Deliberately NOT faked. |
 | 22 | **Stock is summed on read, not materialised** | Step 13 | When an ingredient list is measurably slow | Same call as customer stats (#17). `groupBy` keeps it to 2 queries regardless of ingredient count. Revisit with real movement volume, not before. |
 | 23 | **Recipes do not handle yield or waste factors** | Step 13 | When a real kitchen complains | A recipe says 50g paneer per plate. It cannot express "1kg paneer yields 900g usable". Trim loss currently has to be recorded as WASTE, which is honest but manual. |
 
@@ -42,6 +42,9 @@ arrives and it is still open, it blocks that step.
 
 | 28 | **Kitchen board refetches on every event** rather than patching state | Step 15 | When order volume is high | Simplest correct approach; the active list is small. At high volume, apply the event payload to local state instead of refetching. |
 | 29 | **Socket has no reconnect backoff tuning / offline queue** | Step 15 | Phase 2 (offline) | socket.io default reconnection is on. A kitchen tablet that drops wifi shows "Reconnecting" and refetches on reconnect — fine for now; offline order capture is a separate concern. |
+
+| 30 | **Analytics timezone is hardcoded to IST** | Step 16 | When a non-IST restaurant exists | Day/hour buckets use Asia/Kolkata. Correct for India-first; a per-restaurant timezone is a settings concern (settings module does not exist). Same posture as phone rules (#18). |
+| 31 | **No custom date range on analytics** — only presets (today/7d/30d/90d) | Step 16 | Step 19 (Reports) | A real from/to date picker belongs with Reports and export. Presets cover the daily-driver dashboard. |
 
 ## Rules
 

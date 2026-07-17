@@ -478,3 +478,26 @@ export const acceptInvite = (
 /** Active kitchen orders (PLACED/PREPARING/READY), for the kitchen display. */
 export const listActiveOrders = (token: string, onNewToken: Retry) =>
   authedFetch<OrderSummary[]>('/orders?limit=100', token, onNewToken);
+
+export type AnalyticsOverview = {
+  range: string;
+  from: string;
+  to: string;
+  summary: {
+    revenueMinor: number;
+    orders: number;
+    averageBillMinor: number;
+    itemsSold: number;
+  };
+  revenueSeries: Array<{ date: string; revenueMinor: number; orders: number }>;
+  topProducts: Array<{ name: string; quantity: number; revenueMinor: number }>;
+  paymentBreakdown: Array<{ method: string; amountMinor: number; count: number }>;
+  peakHours: Array<{ hour: number; orders: number }>;
+};
+
+export const getAnalytics = (token: string, onNewToken: Retry, range: string) =>
+  authedFetch<AnalyticsOverview>(
+    `/analytics/overview?range=${encodeURIComponent(range)}`,
+    token,
+    onNewToken,
+  );

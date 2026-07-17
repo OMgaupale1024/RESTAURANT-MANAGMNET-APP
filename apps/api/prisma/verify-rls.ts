@@ -651,6 +651,41 @@ async function main() {
   }
   check('attendance cannot be DELETEd', attendanceDeleteBlocked);
 
+  console.log('\nRaw SQL respects RLS (Step 16 analytics)');
+
+  // Analytics uses $queryRaw for date bucketing. Raw SQL must be as
+  // tenant-scoped as the ORM — if RLS did not apply to it, every aggregate
+  // would leak. Give A an order, then run analytics' own raw query as B.
+  const branchA = await asTenant(idA, null, (tx) =>
+    tx.branch.findFirstOrThrow({ where: { restaurantId: idA } }),
+  );
+  await asTenant(idA, null, (tx) =>
+    tx.order.create({
+      data: {
+        restaurantId: idA,
+        branchId: branchA.id,
+        orderNumber: 7777,
+        status: 'PLACED',
+        subtotalMinor: 5000,
+        taxMinor: 250,
+        totalMinor: 5250,
+      },
+    }),
+  );
+
+  const rawAsB = await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(`SELECT set_config('app.restaurant_id', $1, true)`, idB);
+    return tx.$queryRawUnsafe<Array<{ revenue: bigint }>>(
+      `SELECT COALESCE(SUM(total_minor),0)::bigint AS revenue FROM orders
+       WHERE status NOT IN ('VOIDED','CANCELLED')`,
+    );
+  });
+  check(
+    "raw aggregate SQL never sums another tenant's revenue",
+    Number(rawAsB[0].revenue) === 0,
+    `saw ${rawAsB[0].revenue}`,
+  );
+
   console.log('\nEmail normalisation');
 
   let upperEmailBlocked = false;
