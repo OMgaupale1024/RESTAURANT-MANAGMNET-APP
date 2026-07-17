@@ -3,8 +3,8 @@
 **Purpose:** this file is the source of truth for where the build is. Read it
 first in a new session. It exists so progress does not depend on chat history.
 
-**Last updated:** end of Step 16 (2026-07-17).
-**Next action:** Step 17 — AI Features. *Do not start until the user says so.*
+**Last updated:** end of Step 17 (2026-07-17).
+**Next action:** Step 18 — Marketing. *Do not start until the user says so.*
 
 ---
 
@@ -44,8 +44,8 @@ first in a new session. It exists so progress does not depend on chat history.
 | 14 | Employees | **Done** | Invite-based staff, roles, append-only attendance |
 | 15 | Kitchen Display | **Done** | Socket.IO per-tenant rooms, live KDS board |
 | 16 | Analytics | **Done** | Server-aggregated overview: revenue, top items, payments, peak hours |
-| 17 | **AI Features** | **NEXT** | `apps/ai` (Python) is created here, not before |
-| 18 | Marketing | Pending | |
+| 17 | AI Features | **Done** | Rule-based + statistical insights (Phase 1+2). Python service & LLM advisor deferred with justification |
+| 18 | **Marketing** | **NEXT** | |
 | 19 | Reports | Pending | |
 | 20 | Deployment | Pending | Closes backlog #1, #2, #5, #10 |
 
@@ -63,13 +63,13 @@ packages/   empty (created when something is actually shared)
 docs/       BLUEPRINT, ARCHITECTURE, BACKLOG, ROADMAP
 ```
 
-**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`, `GET|POST /api/v1/staff/invites`, `DELETE /api/v1/staff/invites/:id`, `GET|PATCH /api/v1/staff`, `POST /api/v1/staff/me/clock`, `POST /api/v1/staff/:id/clock`, `GET /api/v1/staff/timesheet`, `GET|POST /api/v1/join/:token`, `GET /api/v1/analytics/overview`.
-**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`, `/dashboard/inventory`, `/dashboard/staff`, `/dashboard/kitchen`, `/dashboard/analytics`, `/join/[token]`.
+**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`, `GET|POST /api/v1/staff/invites`, `DELETE /api/v1/staff/invites/:id`, `GET|PATCH /api/v1/staff`, `POST /api/v1/staff/me/clock`, `POST /api/v1/staff/:id/clock`, `GET /api/v1/staff/timesheet`, `GET|POST /api/v1/join/:token`, `GET /api/v1/analytics/overview`, `GET /api/v1/ai/insights`.
+**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`, `/dashboard/inventory`, `/dashboard/staff`, `/dashboard/kitchen`, `/dashboard/analytics`, `/dashboard/ai`, `/join/[token]`.
 
 **Database (Neon, ap-southeast-1):** `restaurants`, `branches`, `users`,
 `roles`, `permissions`, `role_permissions`, `memberships`, `audit_logs`,
 `orders`, `order_items`, `order_events`, `payments`, `refresh_tokens`, `security_events`, `categories`, `products`, `customers`, `ingredients`, `stock_movements`, `recipe_items`, `staff_invites`, `attendance_events`.
-Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 19 permissions, 50 mappings.
+Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 20 permissions, 52 mappings.
 
 ---
 
@@ -96,6 +96,7 @@ Seeded: 4 roles (OWNER/MANAGER/CASHIER/KITCHEN), 19 permissions, 50 mappings.
 - **OWNER is not invitable or assignable via staff routes** — that path would be privilege escalation. Ownership transfer needs its own flow.
 - **A socket is a SEPARATE connection with SEPARATE auth.** The realtime gateway verifies the JWT itself on connect and joins each client to exactly ONE room — its own tenant's, from the verified token, never client input. A global broadcast or client-chosen room leaks one restaurant's live feed to all. Events emit AFTER the DB transaction commits.
 - **CSP connect-src must list the ws:// origin explicitly** — CSP treats ws/wss as distinct schemes from http/https. Missing it silently blocks the socket.
+- **AI insights are labelled by method (DETERMINISTIC/STATISTICAL) and carry a `basis`** — the real numbers behind them. No fabrication: a cold-start restaurant gets NO forecast, a thin one is marked LOW confidence. Reuses inventory rules and the voided-exclusion rule. Phase 1 (rules) + Phase 2 (14-day moving average) computed in Nest — no Python service, no LLM (deferred: models need training data that does not exist yet; LLM advisor needs a provider + whitelisted-query infra).
 - **Analytics aggregate SERVER-SIDE only** — raw order rows never leave the DB. Voided/cancelled excluded from revenue (same rule as customer stats). Raw $queryRaw for date_trunc runs inside the tenant tx, so RLS applies to it too (verified). Days/hours bucketed in IST (Asia/Kolkata).
 - **One session = one token family.** Anything that re-issues a refresh token mid-session must continue the existing family (`rotateForReissue`), never mint a new one — a new family orphans a live token that survives logout.
 - **Access token lives in memory only** (`AuthProvider`). Restored after reload via `/auth/refresh`; never localStorage. The client-side route guard is UX, not security — the API + RLS are the boundary.
@@ -109,7 +110,7 @@ pnpm install
 
 # API
 pnpm --filter @oraos/api dev              # :3001
-pnpm --filter @oraos/api test:e2e         # 159 tests (needs DB)
+pnpm --filter @oraos/api test:e2e         # 168 tests (needs DB)
 pnpm --filter @oraos/api verify:rls       # 35 tenant-isolation checks
 pnpm --filter @oraos/api db:migrate
 pnpm --filter @oraos/api db:seed
@@ -146,6 +147,7 @@ conventional commit. Milestones get an annotated tag. Never commit broken code.
 - `v0.8-staff` — step 14 (invites, roles, attendance ledger)
 - `v0.9-kitchen` — step 15 (realtime KDS, per-tenant socket rooms)
 - `v0.10-analytics` — step 16 (server-aggregated business analytics)
+- `v0.11-ai` — step 17 (rule-based + statistical insights)
 
 ---
 

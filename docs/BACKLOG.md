@@ -46,6 +46,10 @@ arrives and it is still open, it blocks that step.
 | 30 | **Analytics timezone is hardcoded to IST** | Step 16 | When a non-IST restaurant exists | Day/hour buckets use Asia/Kolkata. Correct for India-first; a per-restaurant timezone is a settings concern (settings module does not exist). Same posture as phone rules (#18). |
 | 31 | **No custom date range on analytics** — only presets (today/7d/30d/90d) | Step 16 | Step 19 (Reports) | A real from/to date picker belongs with Reports and export. Presets cover the daily-driver dashboard. |
 
+| 32 | **Python `apps/ai` service not built** — Phase 1+2 (rules + moving average) run in Nest instead | Step 17 | Phase 3+ (regression/XGBoost/Prophet) | DELIBERATE. Standing up a Python service, read-only role, queue and cross-service auth to compute AVG(daily_sales) that SQL does natively would be speculative infra. Python earns its place when a TRAINED model needs it — which needs training data that does not exist yet. Blueprint escalator: each phase ships only when the prior is measurably insufficient. |
+| 33 | **No LLM business advisor** (the "ask your data" chat) | Step 17 | After a provider + cost ceiling is chosen (blueprint §14) | Needs an LLM provider decision and the whitelisted-parameterised-query infra from ARCHITECTURE (never text-to-SQL). Deferred rather than half-built. When added: outputs labelled method=LLM, tenant scope injected outside the prompt. |
+| 34 | **Forecasts are not persisted, so accuracy is not tracked** | Step 17 | Phase 3+ | Insights recompute live (correct for now, no staleness). Measuring "was the forecast right?" needs a predictions table — which is also what a trained model would need. Build together. |
+
 ## Rules
 
 - An item is closed only when its fix is verified, not when it is written.

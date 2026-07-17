@@ -501,3 +501,20 @@ export const getAnalytics = (token: string, onNewToken: Retry, range: string) =>
     token,
     onNewToken,
   );
+
+export type AiInsight = {
+  type: string;
+  method: 'DETERMINISTIC' | 'STATISTICAL' | 'LLM';
+  severity: 'info' | 'warning';
+  title: string;
+  detail: string;
+  basis: string;
+  confidence?: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH';
+};
+
+export const getInsights = (token: string, onNewToken: Retry) =>
+  authedFetch<{ generatedAt: string; insights: AiInsight[] }>(
+    '/ai/insights',
+    token,
+    onNewToken,
+  );
