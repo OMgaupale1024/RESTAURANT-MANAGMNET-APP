@@ -31,6 +31,12 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api/v1');
 
+  // On a redeploy the platform sends SIGTERM. Without this, the process is
+  // killed mid-request and the Postgres pool is never drained. Shutdown hooks
+  // let Nest run onModuleDestroy (PrismaService.$disconnect) and finish
+  // in-flight work before exiting.
+  app.enableShutdownHooks();
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true, // strip unknown properties

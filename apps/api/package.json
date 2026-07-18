@@ -22,6 +22,7 @@
     "dev": "nest start --watch",
     "verify:rls": "ts-node prisma/verify-rls.ts",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:setup-app-role": "ts-node prisma/setup-app-role.ts",

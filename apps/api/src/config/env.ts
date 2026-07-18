@@ -70,6 +70,43 @@ const envSchema = z
           'disable tenant isolation. Run: pnpm db:setup-app-role',
       });
     }
+
+    // Production-only guards (Step 20). The same fail-to-boot philosophy as
+    // above: a misconfigured production deploy should never start serving, not
+    // start and be insecure. These do not fire in development or test, so local
+    // work with http://localhost and sslmode=require is untouched.
+    if (env.NODE_ENV !== 'production') return;
+
+    const fail = (path: string, message: string) =>
+      ctx.addIssue({ code: 'custom', path: [path], message });
+
+    // TLS must be *verified*, not merely requested. `sslmode=require` encrypts
+    // but does not authenticate the server, so it cannot detect a MITM. pg also
+    // changes require's meaning in v9 (BACKLOG #5) — pin verify-full explicitly
+    // so the behaviour cannot drift under a dependency bump.
+    for (const key of ['DATABASE_URL', 'DATABASE_URL_APP'] as const) {
+      if (!/sslmode=verify-full/.test(env[key])) {
+        fail(
+          key,
+          'must use sslmode=verify-full in production (see DEPLOYMENT.md)',
+        );
+      }
+    }
+
+    // Cookies are set Secure and the CORS allowlist is the CSRF boundary; both
+    // are meaningless over plaintext or against a localhost origin left in by
+    // mistake.
+    for (const origin of env.CORS_ORIGINS) {
+      if (!origin.startsWith('https://')) {
+        fail(
+          'CORS_ORIGINS',
+          `every origin must be https in production: ${origin}`,
+        );
+      }
+    }
+    if (!env.WEB_URL.startsWith('https://')) {
+      fail('WEB_URL', 'must be https in production');
+    }
   });
 
 export type Env = z.infer<typeof envSchema>;

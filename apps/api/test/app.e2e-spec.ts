@@ -16,12 +16,21 @@ describe('HealthController (e2e)', () => {
     await app.init();
   });
 
-  it('/health (GET)', () => {
+  it('/health (GET) — liveness', () => {
     return request(app.getHttpServer())
       .get('/health')
       .expect(200)
       .expect((res) => {
         expect(res.body.status).toBe('ok');
+      });
+  });
+
+  it('/health/ready (GET) — readiness reaches the database', () => {
+    return request(app.getHttpServer())
+      .get('/health/ready')
+      .expect(200)
+      .expect((res) => {
+        expect(res.body.status).toBe('ready');
       });
   });
 

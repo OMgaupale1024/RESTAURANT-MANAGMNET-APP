@@ -3,8 +3,11 @@
 **Purpose:** this file is the source of truth for where the build is. Read it
 first in a new session. It exists so progress does not depend on chat history.
 
-**Last updated:** end of Step 19 (2026-07-18).
-**Next action:** Step 20 — Deployment. *Do not start until the user says so.*
+**Last updated:** end of Step 20 (2026-07-18).
+**Next action:** All roadmap steps 1–20 done. Remaining work is in `BACKLOG.md`
+(password reset #1 / email verification #2 need an email-provider decision) and
+the Phase 2+ blueprint items (offline, multi-branch). *Do not start until the
+user says so.*
 
 ---
 
@@ -47,10 +50,11 @@ first in a new session. It exists so progress does not depend on chat history.
 | 17 | AI Features | **Done** | Rule-based + statistical insights (Phase 1+2). Python service & LLM advisor deferred with justification |
 | 18 | Marketing | **Done** | Coupons with server-computed redemption, deterministic segments |
 | 19 | Reports | **Done** | Custom from/to date window over the Analytics aggregation, CSV export. Closed backlog #31 |
-| 20 | **Deployment** | **NEXT** | Closes backlog #1, #2, #5, #10 |
+| 20 | Deployment | **Done** | Prod config fail-to-boot guards, `verify-full` TLS (#5), graceful shutdown, `/health/ready`, `migrate deploy`, prod secret path + `DEPLOYMENT.md` (#10). #1/#2 deferred — need an email provider |
 
 Companion docs: `BLUEPRINT.md` (product/vision/data model), `ARCHITECTURE.md`
-(binding technical decisions), `BACKLOG.md` (deferred issues by step).
+(binding technical decisions), `BACKLOG.md` (deferred issues by step),
+`DEPLOYMENT.md` (production runbook).
 
 ---
 
@@ -63,7 +67,7 @@ packages/   empty (created when something is actually shared)
 docs/       BLUEPRINT, ARCHITECTURE, BACKLOG, ROADMAP
 ```
 
-**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`, `GET|POST /api/v1/staff/invites`, `DELETE /api/v1/staff/invites/:id`, `GET|PATCH /api/v1/staff`, `POST /api/v1/staff/me/clock`, `POST /api/v1/staff/:id/clock`, `GET /api/v1/staff/timesheet`, `GET|POST /api/v1/join/:token`, `GET /api/v1/analytics/overview`, `GET /api/v1/ai/insights`, `GET|POST /api/v1/marketing/coupons`, `PATCH /api/v1/marketing/coupons/:id`, `GET /api/v1/marketing/segments`, `GET /api/v1/marketing/segments/:key/customers`, `GET /api/v1/reports/sales`.
+**API endpoints:** `GET /api/v1/health`, `GET /api/v1/health/ready`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`, `GET|POST /api/v1/staff/invites`, `DELETE /api/v1/staff/invites/:id`, `GET|PATCH /api/v1/staff`, `POST /api/v1/staff/me/clock`, `POST /api/v1/staff/:id/clock`, `GET /api/v1/staff/timesheet`, `GET|POST /api/v1/join/:token`, `GET /api/v1/analytics/overview`, `GET /api/v1/ai/insights`, `GET|POST /api/v1/marketing/coupons`, `PATCH /api/v1/marketing/coupons/:id`, `GET /api/v1/marketing/segments`, `GET /api/v1/marketing/segments/:key/customers`, `GET /api/v1/reports/sales`.
 **Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`, `/dashboard/inventory`, `/dashboard/staff`, `/dashboard/kitchen`, `/dashboard/analytics`, `/dashboard/reports`, `/dashboard/ai`, `/dashboard/marketing`, `/join/[token]`.
 
 **Database (Neon, ap-southeast-1):** `restaurants`, `branches`, `users`,
@@ -141,7 +145,7 @@ pnpm typecheck && pnpm build
 Every completed step ends with: all tests + lint + typecheck + build green, then a
 conventional commit. Milestones get an annotated tag. Never commit broken code.
 
-- Branch: `master`. **No remote configured** — commits are local only.
+- Branch: `main`. Remote: `origin` (GitHub) — `main` and tags are pushed.
 - `v0.4-pos` — steps 1-10 baseline (POS milestone)
 - `v0.5-orders` — step 11 (order lifecycle)
 - `v0.6-customers` — step 12 (CRM + order linkage)
@@ -152,6 +156,7 @@ conventional commit. Milestones get an annotated tag. Never commit broken code.
 - `v0.11-ai` — step 17 (rule-based + statistical insights)
 - `v0.12-marketing` — step 18 (coupons + deterministic segments)
 - `v0.13-reports` — step 19 (custom-range sales report + CSV export)
+- `v0.14-deploy` — step 20 (prod config guards, verify-full TLS, graceful shutdown, readiness, deploy runbook)
 
 ---
 
@@ -201,9 +206,15 @@ conventional commit. Milestones get an annotated tag. Never commit broken code.
 
 ## Production blockers (must clear before real users)
 
-From `BACKLOG.md`, the ones that genuinely gate launch:
+Step 20 closed the config/TLS/secret-sourcing blockers (see `DEPLOYMENT.md`).
+What remains genuinely gates launch:
 
-1. **Password reset (#1)** — a locked-out owner has no recovery path. Needs an email provider.
-2. **`SameSite=Strict` requires API on a subdomain** of the web app (`api.` + `app.` under one apex). A separate apex domain breaks refresh entirely.
-3. **Secret management (#10)** — `db:setup-app-role` writes to `.env`; production must source from a secret manager.
-4. **`oraos_api` still holds UPDATE/DELETE on `orders` (#6)** — revoke once POS defines status transitions.
+1. **Password reset (#1)** — a locked-out owner has no recovery path. Needs an email provider (open decision). The one blocker that becomes urgent on day one of a real restaurant.
+2. **Email verification (#2)** — same email-provider dependency; lower urgency than #1.
+
+Cleared in Step 20: **`SameSite=Strict` subdomain requirement** — documented in
+`DEPLOYMENT.md` as a deploy constraint (`api.`+`app.` under one apex).
+**Secret management (#10)** — `db:setup-app-role --print` sources the runtime
+password into a secret manager without touching disk; TLS pinned to
+`verify-full` (#5). **`oraos_api` UPDATE/DELETE on `orders` (#6)** — closed in
+Step 10.
