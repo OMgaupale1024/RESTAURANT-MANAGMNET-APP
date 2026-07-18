@@ -3,8 +3,8 @@
 **Purpose:** this file is the source of truth for where the build is. Read it
 first in a new session. It exists so progress does not depend on chat history.
 
-**Last updated:** end of Step 18 (2026-07-18).
-**Next action:** Step 19 — Reports. *Do not start until the user says so.*
+**Last updated:** end of Step 19 (2026-07-18).
+**Next action:** Step 20 — Deployment. *Do not start until the user says so.*
 
 ---
 
@@ -46,8 +46,8 @@ first in a new session. It exists so progress does not depend on chat history.
 | 16 | Analytics | **Done** | Server-aggregated overview: revenue, top items, payments, peak hours |
 | 17 | AI Features | **Done** | Rule-based + statistical insights (Phase 1+2). Python service & LLM advisor deferred with justification |
 | 18 | Marketing | **Done** | Coupons with server-computed redemption, deterministic segments |
-| 19 | **Reports** | **NEXT** | Closes backlog #31 (custom date range), #5 (sslmode) etc. |
-| 20 | Deployment | Pending | Closes backlog #1, #2, #5, #10 |
+| 19 | Reports | **Done** | Custom from/to date window over the Analytics aggregation, CSV export. Closed backlog #31 |
+| 20 | **Deployment** | **NEXT** | Closes backlog #1, #2, #5, #10 |
 
 Companion docs: `BLUEPRINT.md` (product/vision/data model), `ARCHITECTURE.md`
 (binding technical decisions), `BACKLOG.md` (deferred issues by step).
@@ -63,8 +63,8 @@ packages/   empty (created when something is actually shared)
 docs/       BLUEPRINT, ARCHITECTURE, BACKLOG, ROADMAP
 ```
 
-**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`, `GET|POST /api/v1/staff/invites`, `DELETE /api/v1/staff/invites/:id`, `GET|PATCH /api/v1/staff`, `POST /api/v1/staff/me/clock`, `POST /api/v1/staff/:id/clock`, `GET /api/v1/staff/timesheet`, `GET|POST /api/v1/join/:token`, `GET /api/v1/analytics/overview`, `GET /api/v1/ai/insights`, `GET|POST /api/v1/marketing/coupons`, `PATCH /api/v1/marketing/coupons/:id`, `GET /api/v1/marketing/segments`, `GET /api/v1/marketing/segments/:key/customers`.
-**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`, `/dashboard/inventory`, `/dashboard/staff`, `/dashboard/kitchen`, `/dashboard/analytics`, `/dashboard/ai`, `/dashboard/marketing`, `/join/[token]`.
+**API endpoints:** `GET /api/v1/health`, `POST /api/v1/auth/{register,login,refresh,logout,select-restaurant}`, `GET /api/v1/auth/me`, `POST|GET /api/v1/restaurants`, `POST|GET /api/v1/products`, `POST|GET /api/v1/categories`, `POST|GET /api/v1/orders`, `GET /api/v1/orders/:id`, `GET /api/v1/orders/:id/timeline`, `PATCH /api/v1/orders/:id/status`, `POST|GET /api/v1/customers`, `GET /api/v1/customers/:id`, `GET /api/v1/customers/by-phone/:phone`, `PATCH /api/v1/customers/:id`, `POST|GET /api/v1/ingredients`, `GET /api/v1/ingredients/:id`, `POST /api/v1/ingredients/:id/movements`, `POST /api/v1/ingredients/:id/adjustments`, `GET|PUT /api/v1/products/:id/recipe`, `GET|POST /api/v1/staff/invites`, `DELETE /api/v1/staff/invites/:id`, `GET|PATCH /api/v1/staff`, `POST /api/v1/staff/me/clock`, `POST /api/v1/staff/:id/clock`, `GET /api/v1/staff/timesheet`, `GET|POST /api/v1/join/:token`, `GET /api/v1/analytics/overview`, `GET /api/v1/ai/insights`, `GET|POST /api/v1/marketing/coupons`, `PATCH /api/v1/marketing/coupons/:id`, `GET /api/v1/marketing/segments`, `GET /api/v1/marketing/segments/:key/customers`, `GET /api/v1/reports/sales`.
+**Web routes:** `/` (landing), `/login`, `/setup`, `/dashboard`, `/dashboard/pos`, `/dashboard/orders`, `/dashboard/customers`, `/dashboard/inventory`, `/dashboard/staff`, `/dashboard/kitchen`, `/dashboard/analytics`, `/dashboard/reports`, `/dashboard/ai`, `/dashboard/marketing`, `/join/[token]`.
 
 **Database (Neon, ap-southeast-1):** `restaurants`, `branches`, `users`,
 `roles`, `permissions`, `role_permissions`, `memberships`, `audit_logs`,
@@ -112,7 +112,7 @@ pnpm install
 
 # API
 pnpm --filter @oraos/api dev              # :3001
-pnpm --filter @oraos/api test:e2e         # 189 tests (needs DB)
+pnpm --filter @oraos/api test:e2e         # 197 tests (needs DB)
 pnpm --filter @oraos/api verify:rls       # 35 tenant-isolation checks
 pnpm --filter @oraos/api db:migrate
 pnpm --filter @oraos/api db:seed
@@ -151,6 +151,7 @@ conventional commit. Milestones get an annotated tag. Never commit broken code.
 - `v0.10-analytics` — step 16 (server-aggregated business analytics)
 - `v0.11-ai` — step 17 (rule-based + statistical insights)
 - `v0.12-marketing` — step 18 (coupons + deterministic segments)
+- `v0.13-reports` — step 19 (custom-range sales report + CSV export)
 
 ---
 

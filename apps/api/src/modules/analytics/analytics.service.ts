@@ -32,7 +32,16 @@ export class AnalyticsService {
    */
   async overview(range: Range) {
     const { from, to } = this.bounds(range);
+    return { range, ...(await this.overviewBetween(from, to)) };
+  }
 
+  /**
+   * The overview for an explicit window. This is the single source of the sales
+   * figures — Reports (Step 19) calls it with a custom date range rather than
+   * recomputing anything, so an exported total is the same number the dashboard
+   * shows, by construction.
+   */
+  async overviewBetween(from: Date, to: Date) {
     return this.prisma.tx(async (db) => {
       const where: Prisma.OrderWhereInput = {
         status: COUNTABLE,
@@ -58,7 +67,6 @@ export class AnalyticsService {
         ]);
 
       return {
-        range,
         from,
         to,
         summary: {

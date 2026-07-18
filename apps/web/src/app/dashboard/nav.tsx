@@ -21,6 +21,7 @@ const ITEMS: Array<{ label: string; href: string | null }> = [
   { label: 'Employees', href: '/dashboard/staff' },
   { label: 'Kitchen', href: '/dashboard/kitchen' },
   { label: 'Analytics', href: '/dashboard/analytics' },
+  { label: 'Reports', href: '/dashboard/reports' },
   { label: 'AI Center', href: '/dashboard/ai' },
   { label: 'Marketing', href: '/dashboard/marketing' },
 ];

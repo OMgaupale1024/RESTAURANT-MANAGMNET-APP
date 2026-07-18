@@ -502,6 +502,21 @@ export const getAnalytics = (token: string, onNewToken: Retry, range: string) =>
     onNewToken,
   );
 
+/** A sales report for an explicit date window. Same shape as the overview, minus the preset `range`. */
+export type SalesReport = Omit<AnalyticsOverview, 'range'>;
+
+export const getSalesReport = (
+  token: string,
+  onNewToken: Retry,
+  from: string,
+  to: string,
+) =>
+  authedFetch<SalesReport>(
+    `/reports/sales?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    token,
+    onNewToken,
+  );
+
 export type AiInsight = {
   type: string;
   method: 'DETERMINISTIC' | 'STATISTICAL' | 'LLM';
