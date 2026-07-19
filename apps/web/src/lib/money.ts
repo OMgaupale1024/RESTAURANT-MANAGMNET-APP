@@ -10,6 +10,15 @@ export function formatMinor(minor: number): string {
   }).format(minor / 100);
 }
 
+/** Compact display for chart labels and axis ticks: ₹1.2k, ₹4.5L. */
+export function formatMinorCompact(minor: number): string {
+  const r = minor / 100;
+  if (r >= 10000000) return `₹${(r / 10000000).toFixed(1).replace(/\.0$/, '')}Cr`;
+  if (r >= 100000) return `₹${(r / 100000).toFixed(1).replace(/\.0$/, '')}L`;
+  if (r >= 1000) return `₹${(r / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+  return `₹${Math.round(r)}`;
+}
+
 /** Parses a rupee input ("150.50") into paise. Returns null if not valid. */
 export function parseRupeesToMinor(input: string): number | null {
   const trimmed = input.trim();
