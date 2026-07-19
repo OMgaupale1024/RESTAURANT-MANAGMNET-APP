@@ -15,6 +15,7 @@ import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor } from '@/lib/money';
 import { StatusBadge, timeShort } from '../orders/order-detail';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Field, Input, Textarea } from '@/components/ui/input';
@@ -44,6 +45,22 @@ const validPhone = (raw: string) => {
   const digits = raw.replace(/\D/g, '');
   return digits.length >= 7 && digits.length <= 15 ? digits : null;
 };
+
+/**
+ * Segment colour identity — presentation only. The segment itself is classified
+ * server-side (one shared classifier) and arrives on the customer payload; this
+ * page never reclassifies anyone.
+ */
+const SEGMENT_VARIANT: Record<string, 'brand' | 'info' | 'success' | 'warning' | 'neutral'> = {
+  VIP: 'brand',
+  REGULAR: 'info',
+  NEW: 'success',
+  LAPSED: 'warning',
+};
+
+function SegmentChip({ segment }: { segment: { key: string; label: string } }) {
+  return <Badge variant={SEGMENT_VARIANT[segment.key] ?? 'neutral'}>{segment.label}</Badge>;
+}
 
 export function CustomersClient() {
   const { accessToken, setAccessToken } = useAuth();
@@ -203,16 +220,19 @@ export function CustomersClient() {
                   className={cn('animate-fade-up', selectedId === c.id && 'bg-surface-2')}
                 >
                   <Td>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        open(c.id);
-                      }}
-                      className="rounded font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
-                    >
-                      {c.name}
-                    </button>
+                    <span className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          open(c.id);
+                        }}
+                        className="rounded font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                      >
+                        {c.name}
+                      </button>
+                      {c.segment && <SegmentChip segment={c.segment} />}
+                    </span>
                   </Td>
                   <Td className="hidden font-mono text-ink-2 tabular-nums sm:table-cell">
                     {c.phone}
@@ -380,6 +400,12 @@ function CustomerSheet({
           Customer since {dayShort(detail.createdAt)}
           {detail.birthday && ` · birthday ${dayShort(detail.birthday)}`}
         </p>
+        {detail.segment && (
+          <p className="mt-2 flex flex-wrap items-center gap-2">
+            <SegmentChip segment={detail.segment} />
+            <span className="text-[12px] text-ink-3">{detail.segment.rule}</span>
+          </p>
+        )}
       </div>
 
       <section>

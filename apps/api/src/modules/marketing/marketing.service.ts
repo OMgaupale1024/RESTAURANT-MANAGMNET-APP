@@ -7,16 +7,13 @@ import {
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import { OrderStatus } from '../../generated/prisma/enums';
 import type { CreateCouponDto, UpdateCouponDto } from './dto/coupon.dto';
-
-/**
- * Deterministic segmentation thresholds. Constants, not settings — a
- * per-restaurant tuning UI would be a settings concern that does not exist yet.
- * Every rule is stated back to the caller so a segment is never a black box.
- */
-const VIP_MIN_VISITS = 5;
-const VIP_MIN_SPENT_MINOR = 500_000; // ₹5,000
-const REGULAR_MIN_VISITS = 3;
-const LAPSED_AFTER_DAYS = 30;
+import {
+  SEGMENT_KEYS,
+  SEGMENT_META,
+  SEGMENT_THRESHOLDS,
+  classifySegment,
+  type SegmentKey,
+} from './segment';
 
 export type CouponValidation =
   | { ok: true; couponId: string; discountMinor: number }
@@ -196,46 +193,23 @@ export class MarketingService {
         _max: { createdAt: true },
       });
 
-      const lapsedCutoff = new Date(
-        Date.now() - LAPSED_AFTER_DAYS * 86_400_000,
-      );
-      const counts: Record<string, number> = {
+      const now = new Date();
+      const counts: Record<SegmentKey, number> = {
         VIP: 0,
         REGULAR: 0,
         NEW: 0,
         LAPSED: 0,
       };
-
       for (const g of grouped) {
-        counts[this.classify(g, lapsedCutoff)]++;
+        counts[this.classifyGroup(g, now)]++;
       }
 
-      const segments = [
-        {
-          key: 'VIP',
-          label: 'VIP',
-          rule: `${VIP_MIN_VISITS}+ visits and ${VIP_MIN_SPENT_MINOR / 100}+ spent`,
-          count: counts.VIP,
-        },
-        {
-          key: 'REGULAR',
-          label: 'Regular',
-          rule: `${REGULAR_MIN_VISITS}+ visits`,
-          count: counts.REGULAR,
-        },
-        {
-          key: 'NEW',
-          label: 'New',
-          rule: 'Fewer visits, seen recently',
-          count: counts.NEW,
-        },
-        {
-          key: 'LAPSED',
-          label: 'Lapsed',
-          rule: `No visit in ${LAPSED_AFTER_DAYS} days`,
-          count: counts.LAPSED,
-        },
-      ];
+      const segments = SEGMENT_KEYS.map((key) => ({
+        key,
+        label: SEGMENT_META[key].label,
+        rule: SEGMENT_META[key].rule,
+        count: counts[key],
+      }));
 
       const recommendations: Array<{
         method: 'DETERMINISTIC';
@@ -249,7 +223,7 @@ export class MarketingService {
           title: `${counts.LAPSED} lapsed customer(s) could be won back`,
           detail:
             'These customers used to visit but have not in a while. A win-back coupon may bring them back.',
-          basis: `${counts.LAPSED} customers with no non-void order in the last ${LAPSED_AFTER_DAYS} days`,
+          basis: `${counts.LAPSED} customers with no non-void order in the last ${SEGMENT_THRESHOLDS.LAPSED_AFTER_DAYS} days`,
         });
       }
 
@@ -259,8 +233,9 @@ export class MarketingService {
 
   /** The customers in one segment, so an owner can act on them. */
   async segmentCustomers(key: string) {
-    const valid = ['VIP', 'REGULAR', 'NEW', 'LAPSED'];
-    if (!valid.includes(key)) throw new BadRequestException('Unknown segment');
+    if (!SEGMENT_KEYS.includes(key as SegmentKey)) {
+      throw new BadRequestException('Unknown segment');
+    }
 
     return this.prisma.tx(async (db) => {
       const grouped = await db.order.groupBy({
@@ -274,11 +249,9 @@ export class MarketingService {
         _max: { createdAt: true },
       });
 
-      const lapsedCutoff = new Date(
-        Date.now() - LAPSED_AFTER_DAYS * 86_400_000,
-      );
+      const now = new Date();
       const ids = grouped
-        .filter((g) => this.classify(g, lapsedCutoff) === key)
+        .filter((g) => this.classifyGroup(g, now) === key)
         .map((g) => g.customerId!)
         .filter(Boolean);
 
@@ -293,23 +266,23 @@ export class MarketingService {
     });
   }
 
-  private classify(
+  /** Adapts a Prisma order groupBy row to the shared classifier. */
+  private classifyGroup(
     g: {
       _count: { _all: number };
       _sum: { totalMinor: number | null };
       _max: { createdAt: Date | null };
     },
-    lapsedCutoff: Date,
-  ): 'VIP' | 'REGULAR' | 'NEW' | 'LAPSED' {
-    const visits = g._count._all;
-    const spent = g._sum.totalMinor ?? 0;
-    const last = g._max.createdAt;
-
-    // Recency first: a lapsed VIP is a win-back target, not a VIP to reward.
-    if (last && last < lapsedCutoff) return 'LAPSED';
-    if (visits >= VIP_MIN_VISITS && spent >= VIP_MIN_SPENT_MINOR) return 'VIP';
-    if (visits >= REGULAR_MIN_VISITS) return 'REGULAR';
-    return 'NEW';
+    now: Date,
+  ): SegmentKey {
+    return classifySegment(
+      {
+        visits: g._count._all,
+        spentMinor: g._sum.totalMinor ?? 0,
+        lastVisit: g._max.createdAt,
+      },
+      now,
+    );
   }
 }
 

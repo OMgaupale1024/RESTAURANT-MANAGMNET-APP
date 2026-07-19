@@ -7,6 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { OrderStatus } from '../../generated/prisma/enums';
 import { normalizePhone } from './phone';
+import { SEGMENT_META, classifySegment } from '../marketing/segment';
 import type {
   CreateCustomerDto,
   FindCustomersQuery,
@@ -72,17 +73,38 @@ export class CustomersService {
         const g = byId.get(c.id);
         const visits = g?._count?._all ?? 0;
         const spent = g?._sum?.totalMinor ?? 0;
+        const lastVisit = g?._max?.createdAt ?? null;
         return {
           ...c,
           stats: {
             visits,
             totalSpentMinor: spent,
             averageBillMinor: visits ? Math.round(spent / visits) : 0,
-            lastVisit: g?._max?.createdAt ?? null,
+            lastVisit,
           },
+          segment: this.segmentFor(visits, spent, lastVisit),
         };
       });
     });
+  }
+
+  /**
+   * The customer's marketing segment, via the ONE shared classifier — so a
+   * customer's profile can never disagree with the marketing screen. Null when
+   * they have no countable orders yet (not classified into any segment).
+   */
+  private segmentFor(
+    visits: number,
+    spentMinor: number,
+    lastVisit: Date | null,
+  ) {
+    if (visits <= 0) return null;
+    const key = classifySegment({ visits, spentMinor, lastVisit });
+    return {
+      key,
+      label: SEGMENT_META[key].label,
+      rule: SEGMENT_META[key].rule,
+    };
   }
 
   /** Exact phone lookup — what the POS uses at the till. */
@@ -167,10 +189,11 @@ export class CustomersService {
         }),
       ]);
 
+      const visits = agg._count?._all ?? 0;
       return {
         ...customer,
         stats: {
-          visits: agg._count?._all ?? 0,
+          visits,
           totalSpentMinor: agg._sum?.totalMinor ?? 0,
           // Rounded to whole paise: an average of a third of a rupee is not a
           // real amount, and a float here would leak into a displayed figure.
@@ -180,6 +203,11 @@ export class CustomersService {
           firstVisit: firstOrder?.createdAt ?? null,
           lastVisit: lastOrder?.createdAt ?? null,
         },
+        segment: this.segmentFor(
+          visits,
+          agg._sum?.totalMinor ?? 0,
+          lastOrder?.createdAt ?? null,
+        ),
         recentOrders: recent,
       };
     });

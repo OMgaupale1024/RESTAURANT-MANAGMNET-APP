@@ -278,6 +278,9 @@ export const updateOrderStatus = (
     body: JSON.stringify(reason ? { status, reason } : { status }),
   });
 
+/** Deterministic marketing segment, computed server-side (never on the client). */
+export type CustomerSegment = { key: string; label: string; rule: string };
+
 export type CustomerSummary = {
   id: string;
   name: string;
@@ -290,6 +293,8 @@ export type CustomerSummary = {
     averageBillMinor: number;
     lastVisit: string | null;
   };
+  /** Null until the customer has a countable order. */
+  segment: CustomerSegment | null;
 };
 
 export type CustomerDetail = CustomerSummary & {
@@ -655,14 +660,32 @@ export const createCoupon = (
     type: 'PERCENT' | 'FIXED';
     percentBp?: number;
     amountMinor?: number;
+    maxDiscountMinor?: number;
     minSubtotalMinor?: number;
     maxRedemptions?: number;
+    validFrom?: string;
+    validUntil?: string;
   },
 ) =>
   authedFetch<Coupon>('/marketing/coupons', token, onNewToken, {
     method: 'POST',
     body: JSON.stringify(body),
   });
+
+export type SegmentCustomer = {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+};
+
+/** The customers in one deterministic segment (VIP/REGULAR/NEW/LAPSED). */
+export const segmentCustomers = (token: string, onNewToken: Retry, key: string) =>
+  authedFetch<SegmentCustomer[]>(
+    `/marketing/segments/${encodeURIComponent(key)}/customers`,
+    token,
+    onNewToken,
+  );
 
 export const setCouponActive = (
   token: string,
