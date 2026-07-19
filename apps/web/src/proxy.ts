@@ -32,7 +32,12 @@ export function proxy(request: NextRequest) {
     // Next's code-splitting keeps working without whitelisting paths.
     // 'unsafe-eval' is dev-only: React uses eval to rebuild error stacks.
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ''}`,
-    `style-src 'self' 'nonce-${nonce}'`,
+    // 'unsafe-inline' here covers style *attributes* (React SSR emits
+    // style="" on charts, nav pill, skeletons), which nonces cannot authorise
+    // — a nonce attaches to elements only, so the old nonce policy blocked
+    // every SSR'd inline style until hydration. Script injection stays
+    // nonce-gated above; inline CSS is not an execution vector.
+    `style-src 'self' 'unsafe-inline'`,
     `img-src 'self' blob: data:`,
     `font-src 'self'`,
     // The API origin must be reachable by fetch AND by WebSocket. CSP treats
