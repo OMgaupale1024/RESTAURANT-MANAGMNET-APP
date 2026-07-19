@@ -44,7 +44,28 @@ export class InventoryService {
         orderBy: { name: 'asc' },
       });
 
-      const stock = await this.stockByIngredient(db);
+      // Operational context per row, still a fixed number of queries however
+      // many ingredients exist: last ledger touch, and the 7-day CONSUMPTION
+      // total that a daily-usage figure is honestly derived from.
+      const weekAgo = new Date(Date.now() - 7 * 86_400_000);
+      const [stock, lastMoves, recentUse] = await Promise.all([
+        this.stockByIngredient(db),
+        db.stockMovement.groupBy({
+          by: ['ingredientId'],
+          _max: { createdAt: true },
+        }),
+        db.stockMovement.groupBy({
+          by: ['ingredientId'],
+          where: { type: 'CONSUMPTION', createdAt: { gte: weekAgo } },
+          _sum: { quantity: true },
+        }),
+      ]);
+      const lastById = new Map(
+        lastMoves.map((g) => [g.ingredientId, g._max?.createdAt ?? null]),
+      );
+      const useById = new Map(
+        recentUse.map((g) => [g.ingredientId, Math.abs(g._sum?.quantity ?? 0)]),
+      );
 
       const rows = ingredients.map((i) => {
         const current = stock.get(i.id) ?? 0;
@@ -54,6 +75,10 @@ export class InventoryService {
           // Null reorderLevel means "do not track", which is not the same as
           // a level of zero.
           isLow: i.reorderLevel !== null && current <= i.reorderLevel,
+          lastMovementAt: lastById.get(i.id) ?? null,
+          // Average of the last 7 days of automatic depletion, rounded to the
+          // base unit. Zero simply means nothing was consumed this week.
+          avgDailyUsage: Math.round((useById.get(i.id) ?? 0) / 7),
         };
       });
 

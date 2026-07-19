@@ -30,8 +30,8 @@ export class CustomersService {
     const take = Math.min(query.limit ?? 50, 100);
     const q = query.q?.trim();
 
-    return this.prisma.tx((db) =>
-      db.customer.findMany({
+    return this.prisma.tx(async (db) => {
+      const customers = await db.customer.findMany({
         take,
         where: q
           ? {
@@ -50,8 +50,39 @@ export class CustomersService {
           createdAt: true,
         },
         orderBy: { name: 'asc' },
-      }),
-    );
+      });
+      if (!customers.length) return [];
+
+      // Per-customer stats for the CRM table, one groupBy for the whole page
+      // (same shape as inventory's stockByIngredient). Same countable rule as
+      // getById: reversed orders did not happen.
+      const grouped = await db.order.groupBy({
+        by: ['customerId'],
+        where: {
+          customerId: { in: customers.map((c) => c.id) },
+          status: { notIn: [OrderStatus.VOIDED, OrderStatus.CANCELLED] },
+        },
+        _count: { _all: true },
+        _sum: { totalMinor: true },
+        _max: { createdAt: true },
+      });
+      const byId = new Map(grouped.map((g) => [g.customerId, g]));
+
+      return customers.map((c) => {
+        const g = byId.get(c.id);
+        const visits = g?._count?._all ?? 0;
+        const spent = g?._sum?.totalMinor ?? 0;
+        return {
+          ...c,
+          stats: {
+            visits,
+            totalSpentMinor: spent,
+            averageBillMinor: visits ? Math.round(spent / visits) : 0,
+            lastVisit: g?._max?.createdAt ?? null,
+          },
+        };
+      });
+    });
   }
 
   /** Exact phone lookup — what the POS uses at the till. */

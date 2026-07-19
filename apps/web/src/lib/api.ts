@@ -284,6 +284,12 @@ export type CustomerSummary = {
   phone: string;
   email: string | null;
   createdAt: string;
+  stats: {
+    visits: number;
+    totalSpentMinor: number;
+    averageBillMinor: number;
+    lastVisit: string | null;
+  };
 };
 
 export type CustomerDetail = CustomerSummary & {
@@ -336,6 +342,24 @@ export const createCustomer = (
     body: JSON.stringify(body),
   });
 
+/** Null clears a field; undefined leaves it untouched (server contract). */
+export const updateCustomer = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    phone?: string;
+    email?: string | null;
+    birthday?: string | null;
+    notes?: string | null;
+  },
+) =>
+  authedFetch<unknown>(`/customers/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
 export type StockUnit = 'GRAM' | 'MILLILITRE' | 'PIECE';
 
 export type IngredientRow = {
@@ -345,6 +369,9 @@ export type IngredientRow = {
   reorderLevel: number | null;
   currentStock: number;
   isLow: boolean;
+  lastMovementAt: string | null;
+  /** 7-day CONSUMPTION average in base units per day. */
+  avgDailyUsage: number;
 };
 
 export type IngredientDetail = Omit<IngredientRow, 'isLow'> & {
@@ -375,6 +402,18 @@ export const createIngredient = (
   body: { name: string; unit: StockUnit; reorderLevel?: number },
 ) =>
   authedFetch<IngredientRow>('/ingredients', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+/** A signed stock count correction — appended to the ledger, never a rewrite. */
+export const recordAdjustment = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { quantity: number; note?: string },
+) =>
+  authedFetch<unknown>(`/ingredients/${id}/adjustments`, token, onNewToken, {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -464,6 +503,32 @@ export const clockSelf = (token: string, onNewToken: Retry, type: 'CLOCK_IN' | '
     method: 'POST',
     body: JSON.stringify({ type }),
   });
+
+export type TimesheetEntry = {
+  membershipId: string;
+  name: string;
+  role: string;
+  sessions: Array<{ in: string; out: string | null; minutes: number | null }>;
+  totalMinutes: number;
+  openSession: boolean;
+};
+
+export const getTimesheet = (
+  token: string,
+  onNewToken: Retry,
+  opts: { from?: string; to?: string; membershipId?: string } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.from) params.set('from', opts.from);
+  if (opts.to) params.set('to', opts.to);
+  if (opts.membershipId) params.set('membershipId', opts.membershipId);
+  const qs = params.toString();
+  return authedFetch<TimesheetEntry[]>(
+    qs ? `/staff/timesheet?${qs}` : '/staff/timesheet',
+    token,
+    onNewToken,
+  );
+};
 
 export const clockMember = (
   token: string,
