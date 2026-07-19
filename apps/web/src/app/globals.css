@@ -225,6 +225,33 @@
   }
 }
 
+/* POS feedback. `flash` animates background-color — a deliberate exception
+   to the transform/opacity rule: it is a feedback pulse, not layout motion. */
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+@keyframes flash {
+  from {
+    background-color: color-mix(in srgb, var(--brand) 22%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@keyframes cart-line-out {
+  from {
+    max-height: 6rem;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    transform: scale(0.97);
+  }
+}
+
 /* Toast auto-dismiss progress — visual twin of the JS timer, paused with it on hover. */
 @keyframes toast-progress {
   from {
