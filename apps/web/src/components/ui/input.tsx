@@ -1,5 +1,5 @@
 import type {
-  InputHTMLAttributes,
+  ComponentProps,
   ReactNode,
   SelectHTMLAttributes,
   TextareaHTMLAttributes,
@@ -21,7 +21,7 @@ export function Input({
   error,
   className,
   ...rest
-}: InputHTMLAttributes<HTMLInputElement> & { error?: boolean }) {
+}: ComponentProps<'input'> & { error?: boolean }) {
   return (
     <input className={cn(FIELD, 'h-9', borderFor(error), className)} {...rest} />
   );

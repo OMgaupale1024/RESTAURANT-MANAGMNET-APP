@@ -193,6 +193,11 @@ type Retry = (t: string) => void;
 export const listProducts = (token: string, onNewToken: Retry) =>
   authedFetch<Product[]>('/products', token, onNewToken);
 
+export type Category = { id: string; name: string };
+
+export const listCategories = (token: string, onNewToken: Retry) =>
+  authedFetch<Category[]>('/categories', token, onNewToken);
+
 export const createProduct = (
   token: string,
   onNewToken: Retry,
@@ -209,6 +214,9 @@ export const createOrder = (
   body: {
     items: Array<{ productId: string; quantity: number }>;
     paymentMethod?: string;
+    customerId?: string;
+    couponCode?: string;
+    notes?: string;
     idempotencyKey?: string;
   },
 ) =>

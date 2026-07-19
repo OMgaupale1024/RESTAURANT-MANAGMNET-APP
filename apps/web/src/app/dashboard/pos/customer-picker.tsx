@@ -1,7 +1,10 @@
 'use client';
 
 import { useState } from 'react';
+import { UserRound, X } from 'lucide-react';
 import { ApiRequestError, findCustomerByPhone } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 /**
  * Optional customer lookup by phone, at the till.
@@ -53,28 +56,26 @@ export function CustomerPicker({
 
   if (customer) {
     return (
-      <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-black/10 px-3 py-2 text-sm dark:border-white/15">
-        <span className="truncate">{customer.name}</span>
-        <button
-          type="button"
+      <div className="mt-3 flex animate-fade-up items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2">
+        <UserRound aria-hidden className="size-4 shrink-0 text-ink-3" />
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{customer.name}</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="Remove customer"
           onClick={() => setCustomer(null)}
-          className="text-xs text-black/60 underline dark:text-white/60"
+          className="w-7 px-0 text-ink-3"
         >
-          Remove
-        </button>
+          <X aria-hidden className="size-3.5" />
+        </Button>
       </div>
     );
   }
 
   return (
     <div className="mt-3">
-      <label htmlFor="cust-phone" className="block text-xs font-medium">
-        Customer phone{' '}
-        <span className="text-black/50 dark:text-white/50">(optional)</span>
-      </label>
-      <div className="mt-1 flex gap-2">
-        <input
-          id="cust-phone"
+      <div className="flex gap-2">
+        <Input
           inputMode="tel"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
@@ -85,20 +86,16 @@ export function CustomerPicker({
               void lookup();
             }
           }}
-          placeholder="9876543210"
-          className="min-w-0 flex-1 rounded-md border border-black/20 bg-transparent px-3 py-2 text-sm dark:border-white/25"
+          placeholder="Customer phone (optional)"
+          aria-label="Customer phone"
+          className="h-8 min-w-0 flex-1 text-[12px]"
         />
-        <button
-          type="button"
-          onClick={() => void lookup()}
-          disabled={busy}
-          className="rounded-md border border-black/20 px-3 py-2 text-xs font-medium disabled:opacity-50 dark:border-white/25"
-        >
+        <Button variant="secondary" size="sm" onClick={() => void lookup()} disabled={busy} className="h-8">
           Find
-        </button>
+        </Button>
       </div>
       {missed && (
-        <p className="mt-1 text-xs text-black/50 dark:text-white/50">
+        <p className="mt-1 text-[11px] text-ink-3">
           Not found — the order will be anonymous.
         </p>
       )}
