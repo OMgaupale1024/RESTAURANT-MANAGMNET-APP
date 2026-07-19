@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getMe, type MeResponse } from '@/lib/api';
+import { useRouter } from 'next/navigation';
+import { getMe, logout as apiLogout, type MeResponse } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardHeader } from '@/components/ui/card';
@@ -13,8 +14,15 @@ import { Skeleton } from '@/components/ui/skeleton';
  * the API ships them — no fake toggles before that.
  */
 export function SettingsClient() {
-  const { accessToken } = useAuth();
+  const router = useRouter();
+  const { accessToken, clear } = useAuth();
   const [me, setMe] = useState<MeResponse | null>(null);
+
+  async function onSignOut() {
+    await apiLogout().catch(() => undefined);
+    clear();
+    router.replace('/login');
+  }
 
   useEffect(() => {
     if (!accessToken) return;
@@ -61,6 +69,21 @@ export function SettingsClient() {
             Restaurant details are read-only for now. Editing arrives with the
             settings API.
           </p>
+        </Card>
+
+        <Card>
+          <CardHeader title="Session" />
+          <dl className="space-y-3 text-sm mb-4">
+            <Row label="Current Workspace" value={current?.restaurant.name ?? '—'} />
+            <Row label="Role" value={current?.role.name ?? '—'} />
+          </dl>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="rounded-md border border-line-2 bg-surface px-4 py-2 text-sm font-semibold text-danger transition-colors duration-120 hover:border-danger hover:bg-danger/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          >
+            Sign out everywhere
+          </button>
         </Card>
       </div>
     </div>

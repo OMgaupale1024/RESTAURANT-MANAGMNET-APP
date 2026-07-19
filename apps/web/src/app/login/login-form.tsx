@@ -57,53 +57,58 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={onSubmit} noValidate>
+    <form onSubmit={onSubmit} noValidate className="flex flex-col">
       {error && (
-        // aria-live so screen readers announce a failure that appears without
-        // a page change.
         <p
           role="alert"
-          className="mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
+          className="animate-fade-up mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
+          style={{ animationDelay: '0ms' }}
         >
           {error}
         </p>
       )}
 
-      <label htmlFor="email" className="block text-sm font-medium">
-        Email
-      </label>
-      <input
-        id="email"
-        name="email"
-        type="email"
-        autoComplete="username"
-        required
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        className="mt-1 mb-4 w-full rounded-md border border-black/20 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current dark:border-white/25"
-      />
+      <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
+        <label htmlFor="email" className="block text-sm font-medium">
+          Email
+        </label>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          autoComplete="username"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+        />
+      </div>
 
-      <label htmlFor="password" className="block text-sm font-medium">
-        Password
-      </label>
-      <input
-        id="password"
-        name="password"
-        type="password"
-        autoComplete="current-password"
-        required
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        className="mt-1 mb-6 w-full rounded-md border border-black/20 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current dark:border-white/25"
-      />
+      <div className="animate-fade-up" style={{ animationDelay: '80ms' }}>
+        <label htmlFor="password" className="block text-sm font-medium">
+          Password
+        </label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="mt-1 mb-6 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+        />
+      </div>
 
-      <button
-        type="submit"
-        disabled={pending}
-        className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current hover:brightness-95 disabled:opacity-60"
-      >
-        {pending ? 'Signing in…' : 'Sign in'}
-      </button>
+      <div className="animate-fade-up" style={{ animationDelay: '120ms' }}>
+        <button
+          type="submit"
+          disabled={pending}
+          className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+        >
+          {pending ? 'Signing in…' : 'Sign in'}
+        </button>
+      </div>
     </form>
   );
 }

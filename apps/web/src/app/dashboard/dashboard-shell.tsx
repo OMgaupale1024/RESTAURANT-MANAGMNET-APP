@@ -123,10 +123,10 @@ export function DashboardShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  const tokenId = accessToken ? restaurantIdFromToken(accessToken) : null;
   const current =
-    me?.memberships.find(
-      (m) => m.restaurant.id === (accessToken ? restaurantIdFromToken(accessToken) : null),
-    ) ?? me?.memberships[0];
+    me?.memberships.find((m) => m.restaurant.id === tokenId) ??
+    (me?.memberships.length === 1 ? me?.memberships[0] : undefined);
   const roleKey = current?.role.key ?? '';
 
   // Operational roles land on their tool, not an analytics home they can't read.
@@ -156,7 +156,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   const toggleCollapsed = () => collapseStore.set(!collapsed);
 
-  if (status === 'loading' || !me || !current) {
+  if (status === 'loading' || !me) {
     return (
       <div className="flex min-h-dvh">
         <div className="hidden w-60 shrink-0 border-r border-line p-4 md:block">
@@ -178,6 +178,40 @@ export function DashboardShell({ children }: { children: ReactNode }) {
       </div>
     );
   }
+
+  // Full-screen restaurant picker (DESIGN.md §6)
+  if (!current && me.memberships.length > 1) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center p-6 bg-page">
+        <div className="w-full max-w-md animate-fade-up">
+          <div className="mb-8 text-center">
+            <span className="text-xl font-semibold tracking-tight">OraOS</span>
+            <h1 className="mt-4 text-2xl font-semibold tracking-tight">
+              Select a workspace
+            </h1>
+          </div>
+          <div className="space-y-3">
+            {me.memberships.map((m, i) => (
+              <button
+                key={m.id}
+                onClick={() => onSwitchRestaurant(m.restaurant.id)}
+                className="flex w-full items-center justify-between rounded-xl border border-line bg-surface p-4 text-left transition-colors duration-120 hover:border-line-2 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                style={{ animationDelay: `${i * 40}ms` }}
+              >
+                <div className="min-w-0 flex-1 pr-4">
+                  <p className="truncate font-medium">{m.restaurant.name}</p>
+                  <p className="truncate text-sm text-ink-2">Join as {m.role.name}</p>
+                </div>
+                <Badge className="shrink-0">{m.role.name}</Badge>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!current) return null;
 
   const fullBleed = FULL_BLEED.has(pathname);
   const railOnly = collapsed || fullBleed;

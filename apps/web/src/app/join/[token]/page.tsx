@@ -13,8 +13,10 @@ export default async function JoinPage({
 }) {
   const { token } = await params;
   return (
-    <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-6 py-16">
-      <span className="mb-8 text-lg font-semibold tracking-tight">OraOS</span>
+    <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-6 py-16 animate-fade-up">
+      <div className="mb-8 text-center">
+        <span className="text-xl font-semibold tracking-tight">OraOS</span>
+      </div>
       <JoinClient token={token} />
     </main>
   );

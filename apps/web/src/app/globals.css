@@ -389,6 +389,11 @@ select {
   *,
   ::before,
   ::after {
+    /* We cannot selectively target opacity in shorthand transitions globally, 
+       but we ensure the duration is instant to respect user preferences, 
+       while preventing layout breakage. Opacity transitions attached to 
+       specific classes like fade-up can be controlled there, but keeping it 
+       simple and safe per the existing baseline. */
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
