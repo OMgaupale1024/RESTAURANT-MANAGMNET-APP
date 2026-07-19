@@ -178,14 +178,19 @@ export type Order = {
   discountMinor: number;
   taxMinor: number;
   totalMinor: number;
+  notes: string | null;
+  placedAt: string | null;
+  createdAt: string;
   items: Array<{
     id: string;
     nameSnapshot: string;
     unitPriceMinor: number;
     quantity: number;
     lineTotalMinor: number;
+    notes: string | null;
   }>;
-  payments: Array<{ id: string; method: string; amountMinor: number }>;
+  payments: Array<{ id: string; method: string; status: string; amountMinor: number }>;
+  customer: { id: string; name: string; phone: string } | null;
 };
 
 type Retry = (t: string) => void;
@@ -231,7 +236,10 @@ export type OrderSummary = {
   status: string;
   totalMinor: number;
   createdAt: string;
+  placedAt: string | null;
   _count: { items: number };
+  customer: { name: string } | null;
+  payments: Array<{ method: string; status: string }>;
 };
 
 export type TimelineEvent = {

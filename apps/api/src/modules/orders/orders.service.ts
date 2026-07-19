@@ -247,6 +247,11 @@ export class OrdersService {
           createdAt: true,
           placedAt: true,
           _count: { select: { items: true } },
+          // The Orders table shows who and how they paid. Same data the
+          // detail endpoint already exposes under the same order.read
+          // permission — a narrower select, not a new capability.
+          customer: { select: { name: true } },
+          payments: { select: { method: true, status: true } },
         },
       }),
     );

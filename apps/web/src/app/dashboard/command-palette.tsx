@@ -264,7 +264,8 @@ export function CommandPalette({
               label: `Order #${o.orderNumber}`,
               hint: `${o.status} · ${formatMinor(o.totalMinor)}`,
               icon: Receipt,
-              href: '/dashboard/orders',
+              // Deep link straight into the order's detail Sheet (D6).
+              href: `/dashboard/orders?id=${o.id}`,
             })),
         },
         {

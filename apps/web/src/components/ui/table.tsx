@@ -9,11 +9,14 @@ import { cn } from '@/lib/cn';
 
 export function Table({
   className,
+  containerClassName,
   children,
   ...rest
-}: HTMLAttributes<HTMLTableElement>) {
+}: HTMLAttributes<HTMLTableElement> & { containerClassName?: string }) {
   return (
-    <div className="overflow-x-auto">
+    // The wrapper is the scroll container sticky headers latch onto — pass a
+    // max-height via containerClassName to get a sticky header on scroll.
+    <div className={cn('overflow-x-auto', containerClassName)}>
       <table className={cn('w-full text-[13px]', className)} {...rest}>
         {children}
       </table>
