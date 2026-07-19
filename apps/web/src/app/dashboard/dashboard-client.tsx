@@ -31,6 +31,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor, formatMinorCompact } from '@/lib/money';
+import { fillSeries, hourLabel, pctDelta } from '@/lib/series';
 import { connectSocket } from '@/lib/socket';
 import { AreaLine } from '@/components/charts/area-line';
 import { Bars } from '@/components/charts/bars';
@@ -69,33 +70,6 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 type FeedEntry = { uid: number; icon: LucideIcon; text: string; at: Date };
-
-function pctDelta(nowV: number, prevV: number): number | null {
-  if (prevV === 0) return null;
-  return (nowV - prevV) / prevV;
-}
-
-/**
- * The API's revenueSeries is sparse — only days that had orders. Fill the
- * range window with zero days so day N-1 really is "yesterday", the x-axis
- * spacing is honest, and a day-one restaurant still gets a drawable series.
- */
-function fillSeries(o: AnalyticsOverview): AnalyticsOverview {
-  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' });
-  const byDate = new Map(o.revenueSeries.map((d) => [d.date, d]));
-  const series: AnalyticsOverview['revenueSeries'] = [];
-  for (let t = new Date(o.from).getTime(); t <= new Date(o.to).getTime(); t += 86_400_000) {
-    const date = fmt.format(new Date(t));
-    series.push(byDate.get(date) ?? { date, revenueMinor: 0, orders: 0 });
-  }
-  return { ...o, revenueSeries: series };
-}
-
-function hourLabel(h: number): string {
-  if (h === 0) return '12a';
-  if (h === 12) return '12p';
-  return h < 12 ? `${h}a` : `${h - 12}p`;
-}
 
 function greeting(): string {
   const h = Number(

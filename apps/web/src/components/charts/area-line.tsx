@@ -21,9 +21,20 @@ function fmtDate(iso: string): string {
  * all derived from the same real points, nothing recomputed server-side.
  * Re-mount with a new `key` (e.g. the range) to re-run the entrance.
  */
-export function AreaLine({ data, height = 260 }: { data: RevenuePoint[]; height?: number }) {
+export function AreaLine({
+  data,
+  height = 260,
+  metric = 'revenue',
+}: {
+  data: RevenuePoint[];
+  height?: number;
+  /** Which field the line traces. The tooltip always shows both plus avg bill. */
+  metric?: 'revenue' | 'orders';
+}) {
   const [ref, width] = useSize<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
+  const val = (d: RevenuePoint) => (metric === 'orders' ? d.orders : d.revenueMinor);
+  const fmt = metric === 'orders' ? (v: number) => String(Math.round(v)) : formatMinorCompact;
 
   if (data.length < 2) {
     return (
@@ -35,11 +46,11 @@ export function AreaLine({ data, height = 260 }: { data: RevenuePoint[]; height?
 
   const plotW = Math.max(0, width - PAD.left - PAD.right);
   const plotH = height - PAD.top - PAD.bottom;
-  const max = Math.max(...data.map((d) => d.revenueMinor), 1) * 1.08;
+  const max = Math.max(...data.map(val), 1) * 1.08;
   const x = (i: number) => PAD.left + (i / (data.length - 1)) * plotW;
   const y = (v: number) => PAD.top + plotH - (v / max) * plotH;
 
-  const line = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${x(i)},${y(d.revenueMinor)}`).join('');
+  const line = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${x(i)},${y(val(d))}`).join('');
   const area = `${line}L${x(data.length - 1)},${PAD.top + plotH}L${x(0)},${PAD.top + plotH}Z`;
 
   // ~6 x labels; every point gets a hover column regardless.
@@ -48,7 +59,7 @@ export function AreaLine({ data, height = 260 }: { data: RevenuePoint[]; height?
 
   const last = data[data.length - 1];
   const h = hover === null ? null : data[hover];
-  const total = data.reduce((s, d) => s + d.revenueMinor, 0);
+  const total = data.reduce((s, d) => s + val(d), 0);
 
   function onMove(e: React.MouseEvent) {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -68,7 +79,11 @@ export function AreaLine({ data, height = 260 }: { data: RevenuePoint[]; height?
             width={width}
             height={height}
             role="img"
-            aria-label={`Revenue by day, ${data.length} days, total ${formatMinor(total)}`}
+            aria-label={
+              metric === 'orders'
+                ? `Orders by day, ${data.length} days, total ${total}`
+                : `Revenue by day, ${data.length} days, total ${formatMinor(total)}`
+            }
             className="block"
             onMouseMove={onMove}
             onMouseLeave={() => setHover(null)}
@@ -89,7 +104,7 @@ export function AreaLine({ data, height = 260 }: { data: RevenuePoint[]; height?
                   textAnchor="end"
                   className="fill-ink-3 text-[10px] tabular-nums"
                 >
-                  {formatMinorCompact(max * g)}
+                  {fmt(max * g)}
                 </text>
               </g>
             ))}
@@ -137,11 +152,11 @@ export function AreaLine({ data, height = 260 }: { data: RevenuePoint[]; height?
             {/* Direct label on the latest point */}
             <text
               x={x(data.length - 1)}
-              y={y(last.revenueMinor) - 8}
+              y={y(val(last)) - 8}
               textAnchor="end"
               className="fill-ink-2 text-[11px] font-medium tabular-nums"
             >
-              {formatMinorCompact(last.revenueMinor)}
+              {fmt(val(last))}
             </text>
 
             {/* Crosshair + marker */}
@@ -156,7 +171,7 @@ export function AreaLine({ data, height = 260 }: { data: RevenuePoint[]; height?
                 />
                 <circle
                   cx={x(hover)}
-                  cy={y(h.revenueMinor)}
+                  cy={y(val(h))}
                   r={4}
                   fill="var(--series-1)"
                   stroke="var(--surface)"

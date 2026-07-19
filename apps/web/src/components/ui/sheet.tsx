@@ -40,6 +40,11 @@ export function Sheet({
         if (e.target === ref.current) onClose();
       }}
       className={cn(
+        // A closed dialog must stay display:none even when a caller's
+        // className sets a display (e.g. `flex`) — otherwise an invisible
+        // pointer-events layer covers the page. The :not([open]) variant
+        // out-specifies any plain utility; allow-discrete still animates it.
+        '[&:not([open])]:hidden',
         'fixed m-0 h-dvh max-h-none w-full max-w-full overflow-y-auto bg-surface p-6 text-ink sm:max-w-[420px]',
         'shadow-[0_16px_48px_rgb(0_0_0/0.16)] backdrop:bg-black/40 backdrop:backdrop-blur-[6px]',
         'dialog-anim',
