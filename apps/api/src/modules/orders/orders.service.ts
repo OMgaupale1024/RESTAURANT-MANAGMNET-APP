@@ -247,11 +247,16 @@ export class OrdersService {
           createdAt: true,
           placedAt: true,
           _count: { select: { items: true } },
-          // The Orders table shows who and how they paid. Same data the
-          // detail endpoint already exposes under the same order.read
+          // The Orders table shows who and how they paid; the kitchen board
+          // additionally needs what to cook and any instructions. Same data
+          // the detail endpoint already exposes under the same order.read
           // permission — a narrower select, not a new capability.
+          notes: true,
           customer: { select: { name: true } },
           payments: { select: { method: true, status: true } },
+          items: {
+            select: { nameSnapshot: true, quantity: true, notes: true },
+          },
         },
       }),
     );

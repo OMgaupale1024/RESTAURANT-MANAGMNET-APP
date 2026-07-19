@@ -237,9 +237,11 @@ export type OrderSummary = {
   totalMinor: number;
   createdAt: string;
   placedAt: string | null;
+  notes: string | null;
   _count: { items: number };
   customer: { name: string } | null;
   payments: Array<{ method: string; status: string }>;
+  items: Array<{ nameSnapshot: string; quantity: number; notes: string | null }>;
 };
 
 export type TimelineEvent = {

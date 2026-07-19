@@ -75,6 +75,37 @@
   }
 }
 
+/*
+ * Forced dark scope — the kitchen display is a wall screen and always renders
+ * dark regardless of the OS scheme (DESIGN.md §6 Kitchen). Values MUST mirror
+ * the prefers-color-scheme block above; tokens cascade, so everything inside
+ * a .theme-dark subtree picks these up.
+ */
+.theme-dark {
+  --page: #0a0a0a;
+  --surface: #161615;
+  --surface-2: #1f1f1e;
+  --ink: #ededed;
+  --ink-2: rgb(237 237 237 / 0.62);
+  --ink-3: rgb(237 237 237 / 0.45);
+  --line: rgb(255 255 255 / 0.1);
+  --line-2: rgb(255 255 255 / 0.16);
+
+  --success-text: #0ca30c;
+  --warning-text: #fab219;
+  --danger-text: #e66767;
+  --info-text: #3987e5;
+
+  --series-1: #3987e5;
+  --series-2: #008300;
+  --series-3: #d55181;
+  --series-4: #c98500;
+  --series-5: #199e70;
+  --series-6: #d95926;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+}
+
 @theme inline {
   --color-page: var(--page);
   --color-surface: var(--surface);
@@ -249,6 +280,14 @@
     opacity: 0;
     max-height: 0;
     transform: scale(0.97);
+  }
+}
+
+/* KDS critical-timer pulse: slow, opacity-only, never a flash. The global
+   reduced-motion rule collapses it to a single instant iteration. */
+@keyframes kds-pulse {
+  50% {
+    opacity: 0.55;
   }
 }
 
