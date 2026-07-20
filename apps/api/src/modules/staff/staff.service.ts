@@ -11,6 +11,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import { SecurityEventService } from '../auth/security-event.service';
 import { TokenService, type IssuedTokens } from '../auth/token.service';
+import { MailService } from '../mail/mail.service';
 import type {
   AcceptInviteDto,
   ClockDto,
@@ -32,6 +33,7 @@ export class StaffService {
     private readonly tokens: TokenService,
     private readonly events: SecurityEventService,
     private readonly config: ConfigService,
+    private readonly mail: MailService,
   ) {}
 
   /** Everyone who works here, with their current on-shift state. */
@@ -94,13 +96,13 @@ export class StaffService {
 
     const role = await this.prisma.role.findUnique({
       where: { key: dto.role },
-      select: { id: true },
+      select: { id: true, name: true },
     });
     if (!role) throw new BadRequestException('Unknown role');
 
     const token = randomBytes(32).toString('base64url');
 
-    return this.prisma.tx(async (db) => {
+    const created = await this.prisma.tx(async (db) => {
       // Someone already on the team does not need an invitation.
       const existing = await db.membership.findFirst({
         where: { user: { email: dto.email } },
@@ -111,6 +113,12 @@ export class StaffService {
       }
 
       try {
+        // Read inside the tx so RLS scopes it to the caller's own restaurant.
+        const restaurant = await db.restaurant.findUnique({
+          where: { id: ctx.restaurantId },
+          select: { name: true },
+        });
+
         const invite = await db.staffInvite.create({
           data: {
             restaurantId: ctx.restaurantId,
@@ -135,8 +143,8 @@ export class StaffService {
         });
 
         return {
-          ...invite,
-          role: dto.role,
+          invite,
+          restaurantName: restaurant?.name ?? 'your restaurant',
           // Shown once. The owner shares it however they already talk to staff.
           inviteUrl: `${this.config.getOrThrow<string>('WEB_URL')}/join/${token}`,
         };
@@ -149,6 +157,25 @@ export class StaffService {
         throw e;
       }
     });
+
+    // Fire-and-forget: a delivery failure must never fail invite creation, and
+    // the inviteUrl is still returned so the owner can share the link directly.
+    void this.mail
+      .sendStaffInviteEmail(created.invite.email, {
+        restaurantName: created.restaurantName,
+        roleName: role.name,
+        acceptUrl: created.inviteUrl,
+        expiresAt: created.invite.expiresAt,
+      })
+      .catch(() => {
+        // The transport logs its own failures; nothing to add here.
+      });
+
+    return {
+      ...created.invite,
+      role: dto.role,
+      inviteUrl: created.inviteUrl,
+    };
   }
 
   async revokeInvite(id: string) {

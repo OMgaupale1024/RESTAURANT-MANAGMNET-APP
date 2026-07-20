@@ -69,8 +69,8 @@ browser-verify → commit → push before the next).
 |---|---|---|
 | 1 | Invite acceptance security — refresh token via httpOnly cookie, not JSON | ✅ done |
 | 2 | Password reset (forgot / token / expiry / email / browser flow) | ✅ done |
-| 3 | Email infrastructure (Resend) — swap `MailService.send()` dev transport for real delivery | ⬜ next |
-| 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ⬜ |
+| 3 | Email infrastructure (Resend) — real delivery, templates, retry/timeouts | ✅ done |
+| 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ⬜ next |
 | 5 | Docker (API, Web, prod compose, env handling) | ⬜ |
 | 6 | GitHub Actions CI (install, lint, typecheck, test, build) | ⬜ |
 | 7 | Production deployment (env, reverse proxy, HTTPS, guide, backups, migration & rollback, zero-downtime) | ⬜ |
@@ -132,6 +132,50 @@ logs; Milestone 3 swaps in Resend). No auto-login: the user returns to `/login`.
 Web typecheck + lint ✓ (`next build` skipped — disk-constrained; verified via the
 live dev build below). Browser: forgot → neutral message + `204`, reset link →
 new password set, old password `401` / new `200`, pre-reset session revoked.
+
+## Milestone 3 — Email infrastructure (Resend)
+
+**Issue.** Milestone 2 shipped a `MailService` seam whose only transport logged
+instead of sending. Production needs real delivery for password-reset and staff-
+invite emails.
+
+**Implementation.** `MailService.send()` now posts to the Resend REST API via
+`fetch` (no SDK dependency) with a per-attempt 10s timeout and bounded retries —
+transient failures (network, timeout, 429, 5xx) retry up to 3 attempts; a 4xx is
+permanent and fails fast. Provider code lives ONLY in `MailService`; callers use
+`sendPasswordResetEmail` / `sendStaffInviteEmail`, and a new email is just a new
+domain method. Content moved to `mail-templates.ts` (HTML + plain text, both
+always). Config (`RESEND_API_KEY`, `MAIL_FROM`) is validated at boot — a key with
+no/invalid from-address refuses to start. With no key configured it falls back to
+the log transport, so dev/tests need nothing. Staff-invite emails are now sent on
+invite creation (fire-and-forget; the `inviteUrl` is still returned as a fallback).
+Logging is narrow — to + subject + status only; **tokens, bodies, and the API key
+never reach the logs** (production transport), enforced by a unit test.
+
+**Files changed.**
+- `apps/api/src/modules/mail/{mail.service,mail-templates}.ts`, `mail.service.spec.ts`
+- `apps/api/src/config/env.ts`, `env.spec.ts` — Resend config + validation
+- `apps/api/src/modules/staff/{staff.service,staff.module}.ts` — invite email dispatch
+- `apps/api/.env.example` — documented the new vars
+
+**Verification.** typecheck ✓ lint ✓ build ✓ · unit 24/24 (Resend payload/auth,
+retry, permanent-vs-transient, timeout, no-secret-logging, config validation) ·
+auth + staff e2e 69/69. Live: invalid config (`RESEND_API_KEY` without
+`MAIL_FROM`) refuses to boot. Browser: password-reset flow end-to-end + reset
+email dispatched; staff invite creation dispatches an invite email naming the
+restaurant.
+
+**Discovered issues.**
+- **CRITICAL — stored XSS via restaurant name in invite email HTML.** The owner-
+  controlled restaurant name was interpolated into the invite email's HTML. Fixed
+  inline (directly in scope): `mail-templates.ts` HTML-escapes interpolated data
+  values. Covered by the invite unit test.
+- **RECOMMENDED (reported, not implemented) — password-reset email bombing.**
+  `POST /auth/forgot-password` is throttled 5/min per IP but has no per-recipient
+  limit, so an attacker rotating IPs could send a victim repeated reset emails
+  (links are single-use and prior ones are invalidated, so it's nuisance, not
+  account risk). This is the M2 endpoint, not M3 — left for a hardening pass to
+  avoid scope creep.
 
 ## General backlog
 
