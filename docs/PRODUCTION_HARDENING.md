@@ -5,7 +5,8 @@ is lost, resume from the latest pushed commit and this file.
 
 - **Branch:** `production-hardening`
 - **Base:** `main`
-- **Current production status:** hardening in progress; no known unshipped defects on completed sprints.
+- **Current phase:** v1.0 Release Preparation (see bottom). Production hardening is **frozen** — do not revisit unless a direct regression is found.
+- **Current production status:** hardening complete; no known unshipped defects.
 
 ## Completed sprints (approved)
 
@@ -18,7 +19,7 @@ is lost, resume from the latest pushed commit and this file.
 | C3 | Refresh race | (auth cluster above) |
 | C4/C5 | Authentication completion | (auth cluster above) |
 | H5 | Order idempotency — order creation idempotent on the order, not the payment | `84584a4` |
-| 2C | Inventory adjustment idempotency — exactly-once manual stock movements (this sprint) | see latest commit |
+| 2C / H6 | Inventory adjustment idempotency — exactly-once manual stock movements | `ec745b0` |
 
 ## Closed investigations (no code changes)
 
@@ -54,6 +55,53 @@ receipt, duplicate adjustment, browser retry, network retry, 5-way concurrent,
 distinct keys, no-key). Live-server HTTP probe and full browser UI record →
 replay confirmed exactly-once end-to-end.
 
-## Remaining backlog
+---
 
-None scheduled. See `docs/BACKLOG.md` for the general backlog. Next sprint: TBD.
+# v1.0 Release Preparation
+
+Production hardening is complete and frozen. This phase prepares OraOS for real
+deployment, one small independent milestone at a time (implement → test →
+browser-verify → commit → push before the next).
+
+## Milestones
+
+| # | Milestone | Status |
+|---|---|---|
+| 1 | Invite acceptance security — refresh token via httpOnly cookie, not JSON | ✅ done |
+| 2 | Password reset (forgot / token / expiry / email / browser flow) | ⬜ next |
+| 3 | Email infrastructure (Resend) | ⬜ |
+| 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ⬜ |
+| 5 | Docker (API, Web, prod compose, env handling) | ⬜ |
+| 6 | GitHub Actions CI (install, lint, typecheck, test, build) | ⬜ |
+| 7 | Production deployment (env, reverse proxy, HTTPS, guide, backups, migration & rollback, zero-downtime) | ⬜ |
+
+## Milestone 1 — Invite acceptance security
+
+**Issue.** `POST /join/:token` (invite acceptance) returned the full
+`IssuedTokens` — including the **refresh token — in the JSON body**, and never
+set the refresh cookie. Login/register put the refresh token in an httpOnly
+cookie and return only the access token; the invite path skipped that, so a
+stolen-by-XSS refresh token was a persistent session, and an accepted invite's
+session would not even survive a page reload (no cookie to refresh from).
+
+**Fix.** Extracted the refresh-cookie contract (`oraos_rt`, httpOnly, `sameSite:
+strict`, path `/api/v1/auth`) out of `AuthController` into one shared helper,
+and routed both `AuthController` and `JoinController` through it. The invite
+path now sets the httpOnly cookie and returns only `{ accessToken, expiresIn,
+tokenType }`. Single source of truth for the cookie, so the paths cannot drift.
+No web change — the client already used `credentials: 'include'` and ignored any
+`refreshToken` field.
+
+**Files changed.**
+- `apps/api/src/modules/auth/refresh-cookie.ts` — new shared helper
+- `apps/api/src/modules/auth/auth.controller.ts` — use the helper (behaviour-identical)
+- `apps/api/src/modules/staff/staff.controller.ts` — `JoinController` sets the cookie
+- `apps/api/test/staff.e2e-spec.ts` — asserts cookie set, no `refreshToken` in body, cookie refreshes
+
+**Verification.** typecheck ✓ lint ✓ build ✓ · auth + staff e2e 63/63 ✓. Browser:
+invite accepted → no `refreshToken` in body, `oraos_rt` httpOnly cookie at
+`/api/v1/auth`, session survived a full reload.
+
+## General backlog
+
+See `docs/BACKLOG.md`.

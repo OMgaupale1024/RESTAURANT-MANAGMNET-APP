@@ -14,11 +14,14 @@ import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto, RegisterDto, SelectRestaurantDto } from './dto/auth.dto';
-import type { IssuedTokens } from './token.service';
+import {
+  REFRESH_COOKIE,
+  readRefreshCookie,
+  refreshCookieOptions,
+  respondWithTokens,
+} from './refresh-cookie';
 import { CurrentUser, Public } from '../../common/decorators/auth.decorators';
 import type { TenantContext } from '../../common/context/tenant-context';
-
-const REFRESH_COOKIE = 'oraos_rt';
 
 @Controller('auth')
 export class AuthController {
@@ -38,7 +41,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const tokens = await this.auth.register(dto, meta(req));
-    return this.respond(tokens, res);
+    return respondWithTokens(tokens, res, this.config);
   }
 
   @Public()
@@ -53,7 +56,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const tokens = await this.auth.login(dto, meta(req));
-    return this.respond(tokens, res);
+    return respondWithTokens(tokens, res, this.config);
   }
 
   // Public because the access token is expected to be expired here — the
@@ -66,16 +69,16 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const presented = refreshCookie(req);
+    const presented = readRefreshCookie(req);
     if (!presented) throw new UnauthorizedException('Missing refresh token');
 
     try {
       const tokens = await this.auth.refresh(presented, meta(req));
-      return this.respond(tokens, res);
+      return respondWithTokens(tokens, res, this.config);
     } catch (e) {
       // Clear the cookie on any failure so a revoked token stops being
       // replayed by the browser on every subsequent request.
-      res.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+      res.clearCookie(REFRESH_COOKIE, refreshCookieOptions(this.config));
       throw e;
     }
   }
@@ -84,8 +87,8 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    await this.auth.logout(refreshCookie(req), req.tokenPayload?.sub);
-    res.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+    await this.auth.logout(readRefreshCookie(req), req.tokenPayload?.sub);
+    res.clearCookie(REFRESH_COOKIE, refreshCookieOptions(this.config));
   }
 
   /**
@@ -103,7 +106,7 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     await this.auth.logoutAll(ctx.userId, meta(req));
-    res.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+    res.clearCookie(REFRESH_COOKIE, refreshCookieOptions(this.config));
   }
 
   /**
@@ -125,57 +128,18 @@ export class AuthController {
       meta(req),
       // Passed so the existing session's family continues instead of a new one
       // being minted and the old token orphaned.
-      refreshCookie(req),
+      readRefreshCookie(req),
       // Checked against the user's session epoch: a token from before a
       // "sign out everywhere" may not start a new session.
       req.tokenPayload!.iat,
     );
-    return this.respond(tokens, res);
+    return respondWithTokens(tokens, res, this.config);
   }
 
   @Get('me')
   async me(@CurrentUser() ctx: TenantContext) {
     return this.auth.me(ctx.userId);
   }
-
-  /**
-   * Refresh token goes in an httpOnly cookie; the access token goes in the
-   * body for the client to hold in memory.
-   *
-   * Neither is written to localStorage: anything readable by JavaScript is
-   * readable by an XSS payload, and a stolen refresh token is a persistent
-   * session.
-   */
-  private respond(tokens: IssuedTokens, res: Response) {
-    res.cookie(REFRESH_COOKIE, tokens.refreshToken, this.cookieOptions());
-    return {
-      accessToken: tokens.accessToken,
-      expiresIn: tokens.expiresIn,
-      tokenType: 'Bearer',
-    };
-  }
-
-  private cookieOptions() {
-    const days = this.config.getOrThrow<number>('REFRESH_TOKEN_TTL_DAYS');
-    return {
-      httpOnly: true, // invisible to JavaScript, so XSS cannot exfiltrate it
-      secure: this.config.get<string>('NODE_ENV') === 'production',
-      sameSite: 'strict' as const, // the CSRF defence for this cookie
-      // Scoped so the cookie is not attached to every API call — only the
-      // endpoints that actually need it.
-      path: '/api/v1/auth',
-      maxAge: days * 24 * 60 * 60 * 1000,
-    };
-  }
-}
-
-/**
- * cookie-parser types req.cookies as `any`. Narrow it once here rather than
- * letting untyped values spread through the controller.
- */
-function refreshCookie(req: Request): string | undefined {
-  const cookies = req.cookies as Record<string, string> | undefined;
-  return cookies?.[REFRESH_COOKIE];
 }
 
 function meta(req: Request) {

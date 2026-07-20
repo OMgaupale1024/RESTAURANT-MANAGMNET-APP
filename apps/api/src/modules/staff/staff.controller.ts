@@ -9,9 +9,12 @@ import {
   Post,
   Query,
   Req,
+  Res,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
+import { respondWithTokens } from '../auth/refresh-cookie';
 import {
   Public,
   RequirePermissions,
@@ -92,7 +95,10 @@ export class StaffController {
  */
 @Controller('join')
 export class JoinController {
-  constructor(private readonly staff: StaffService) {}
+  constructor(
+    private readonly staff: StaffService,
+    private readonly config: ConfigService,
+  ) {}
 
   @Public()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -105,14 +111,18 @@ export class JoinController {
   // Tight: this endpoint creates accounts.
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post(':token')
-  accept(
+  async accept(
     @Param('token') token: string,
     @Body() dto: AcceptInviteDto,
     @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    return this.staff.acceptInvite(token, dto, {
+    const tokens = await this.staff.acceptInvite(token, dto, {
       ip: req.ip,
       userAgent: req.headers['user-agent'],
     });
+    // Same contract as login: refresh token in the httpOnly cookie, never in
+    // the JSON body where JavaScript (and XSS) could read it.
+    return respondWithTokens(tokens, res, this.config);
   }
 }
