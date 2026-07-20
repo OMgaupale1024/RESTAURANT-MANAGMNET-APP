@@ -89,6 +89,24 @@ export class AuthController {
   }
 
   /**
+   * Revokes every session for this user, on every device.
+   *
+   * NOT @Public(), unlike logout: there the cookie is the credential and only
+   * that one token dies. Ending every session for an identity has to prove it
+   * IS that identity, so this one goes through the guard.
+   */
+  @Post('logout-all')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async logoutAll(
+    @CurrentUser() ctx: TenantContext,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    await this.auth.logoutAll(ctx.userId, meta(req));
+    res.clearCookie(REFRESH_COOKIE, this.cookieOptions());
+  }
+
+  /**
    * Swaps the current token for one scoped to a restaurant the user belongs to
    * (backlog #4). Requires authentication; membership is verified server-side.
    */

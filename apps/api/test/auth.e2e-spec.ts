@@ -281,4 +281,86 @@ describe('Auth (e2e)', () => {
         .expect(401);
     });
   });
+
+  /**
+   * The Settings card says "Sign out everywhere". It used to call plain
+   * /logout, which revokes only the token in THIS browser's cookie — so a lost
+   * phone or a shared tablet stayed signed in for the full 7 days while the
+   * user was told otherwise.
+   */
+  describe('logout-all', () => {
+    /** Two independent sessions for one user: device A and device B. */
+    async function twoDevices() {
+      const a = await register().expect(201);
+      const b = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      const rtA = refreshCookie(a)!;
+      const rtB = refreshCookie(b)!;
+      expect(rtA).not.toBe(rtB);
+      return { accessA: a.body.accessToken as string, rtA, rtB };
+    }
+
+    it('revokes sessions on every device, not just this one', async () => {
+      const { accessA, rtA, rtB } = await twoDevices();
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${accessA}`)
+        .expect(204);
+
+      // Including the caller's own — "everywhere" means everywhere.
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtA}`)
+        .expect(401);
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtB}`)
+        .expect(401);
+    });
+
+    it('plain logout still leaves the other device signed in', async () => {
+      const { rtA, rtB } = await twoDevices();
+
+      await api()
+        .post('/api/v1/auth/logout')
+        .set('Cookie', `${COOKIE}=${rtA}`)
+        .expect(204);
+
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtA}`)
+        .expect(401);
+      // Untouched. This is exactly why logout-all had to be its own route
+      // rather than a change to logout: signing out of the till must not sign
+      // the kitchen tablet out too.
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtB}`)
+        .expect(200);
+    });
+
+    it('requires authentication, unlike logout', async () => {
+      await api().post('/api/v1/auth/logout-all').expect(401);
+    });
+
+    it('clears the refresh cookie on this device too', async () => {
+      const reg = await register().expect(201);
+      const res = await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .expect(204);
+
+      const raw = res.headers['set-cookie'];
+      const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      expect(
+        list.some(
+          (c) =>
+            c.startsWith(`${COOKIE}=;`) || /Expires=Thu, 01 Jan 1970/.test(c),
+        ),
+      ).toBe(true);
+    });
+  });
 });

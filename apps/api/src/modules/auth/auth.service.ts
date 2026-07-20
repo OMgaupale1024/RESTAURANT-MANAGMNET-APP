@@ -135,6 +135,27 @@ export class AuthService {
   }
 
   /**
+   * Signs the user out of every device, not just this browser.
+   *
+   * logout() revokes only the token the cookie currently holds, which is right
+   * for an ordinary sign-out on one device. It is not enough for the case this
+   * exists to serve: a lost phone or a shared tablet someone else still has
+   * open. Revoking the whole set is the control BLUEPRINT §8 names against an
+   * ex-employee keeping access — and it includes the caller's own token, so
+   * "everywhere" means everywhere.
+   */
+  async logoutAll(userId: string, meta: RequestMeta): Promise<void> {
+    await this.tokens.revokeAllForUser(userId);
+    this.events.record({
+      type: 'LOGOUT',
+      userId,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+      metadata: { scope: 'all' },
+    });
+  }
+
+  /**
    * Issues a new token scoped to a specific restaurant (backlog #4).
    *
    * The authorization check is the entire point: a user may only select a
