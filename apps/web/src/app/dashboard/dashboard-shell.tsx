@@ -52,7 +52,10 @@ function restaurantIdFromToken(token: string): string | null {
   try {
     const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
     const payload = JSON.parse(atob(b64)) as Record<string, unknown>;
-    return typeof payload.restaurantId === 'string' ? payload.restaurantId : null;
+    // The claim is `rid` (see AccessTokenPayload in the API's token.service).
+    // Reading `restaurantId` here always returned null, which left a
+    // multi-restaurant user permanently stuck on the picker below.
+    return typeof payload.rid === 'string' ? payload.rid : null;
   } catch {
     return null;
   }
