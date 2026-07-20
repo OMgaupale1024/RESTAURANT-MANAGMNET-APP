@@ -30,6 +30,8 @@ function api() {
     post: (url: string) => request(server).post(url).set('X-Forwarded-For', ip),
     get: (url: string) => request(server).get(url).set('X-Forwarded-For', ip),
     put: (url: string) => request(server).put(url).set('X-Forwarded-For', ip),
+    patch: (url: string) =>
+      request(server).patch(url).set('X-Forwarded-For', ip),
   };
 }
 
@@ -474,6 +476,120 @@ describe('Inventory (e2e)', () => {
           ],
         })
         .expect(400);
+    });
+  });
+
+  /**
+   * A reversed sale did not consume its ingredients. Revenue has always
+   * excluded VOIDED and CANCELLED; stock did not, so every void quietly leaked
+   * ingredients out of the ledger forever.
+   */
+  describe('stock returned when a sale is reversed', () => {
+    // 10000g of paneer, a 50g/plate recipe, then one order of `quantity`.
+    async function soldTenant(name: string, quantity: number) {
+      const t = await newTenant(name);
+      const paneer = await addIngredient(t.token, {
+        name: 'Paneer',
+        unit: 'GRAM',
+      }).expect(201);
+      await move(t.token, paneer.body.id, {
+        type: 'PURCHASE',
+        quantity: 10000,
+      }).expect(201);
+      await api()
+        .put(`/api/v1/products/${t.productId}/recipe`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ ingredientId: paneer.body.id, quantity: 50 }] })
+        .expect(200);
+      const order = await api()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ productId: t.productId, quantity }] })
+        .expect(201);
+      return {
+        ...t,
+        ingredientId: paneer.body.id as string,
+        orderId: order.body.id as string,
+      };
+    }
+
+    const setStatus = (token: string, id: string, status: string) =>
+      api()
+        .patch(`/api/v1/orders/${id}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(status === 'VOIDED' ? { status, reason: 'test' } : { status });
+
+    it('returns the stock when an order is VOIDED', async () => {
+      const t = await soldTenant('Void Restock Cafe', 10);
+      const sold = await getIngredient(t.token, t.ingredientId).expect(200);
+      expect(sold.body.currentStock).toBe(9500); // 10000 - (50 x 10)
+
+      await setStatus(t.token, t.orderId, 'VOIDED').expect(200);
+
+      const after = await getIngredient(t.token, t.ingredientId).expect(200);
+      expect(after.body.currentStock).toBe(10000);
+    });
+
+    it('returns the stock when an order is CANCELLED', async () => {
+      const t = await soldTenant('Cancel Restock Cafe', 4);
+      await setStatus(t.token, t.orderId, 'CANCELLED').expect(200);
+
+      const after = await getIngredient(t.token, t.ingredientId).expect(200);
+      expect(after.body.currentStock).toBe(10000);
+    });
+
+    it('appends the reversal, leaving the original depletion on the ledger', async () => {
+      const t = await soldTenant('Ledger Restock Cafe', 2);
+      await setStatus(t.token, t.orderId, 'VOIDED').expect(200);
+
+      const res = await getIngredient(t.token, t.ingredientId).expect(200);
+      const consumption = res.body.movements.filter(
+        (m: { type: string }) => m.type === 'CONSUMPTION',
+      );
+      const returned = res.body.movements.filter(
+        (m: { type: string }) => m.type === 'ADJUSTMENT',
+      );
+      // The depletion is not erased — the ledger is append-only, and an
+      // auditor needs to see both halves.
+      expect(consumption).toHaveLength(1);
+      expect(consumption[0].quantity).toBe(-100);
+      expect(returned).toHaveLength(1);
+      expect(returned[0].quantity).toBe(100);
+      // Traceable back to the sale that was reversed.
+      expect(returned[0].orderId).toBe(t.orderId);
+    });
+
+    it('does NOT return stock when an order is merely completed', async () => {
+      const t = await soldTenant('Complete Cafe', 6);
+      await setStatus(t.token, t.orderId, 'PREPARING').expect(200);
+      await setStatus(t.token, t.orderId, 'READY').expect(200);
+      await setStatus(t.token, t.orderId, 'COMPLETED').expect(200);
+
+      const after = await getIngredient(t.token, t.ingredientId).expect(200);
+      expect(after.body.currentStock).toBe(9700); // 10000 - (50 x 6), unchanged
+    });
+
+    it('reverses nothing for an order that depleted nothing', async () => {
+      const t = await newTenant('No Recipe Void Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Unused',
+        unit: 'GRAM',
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 500,
+      }).expect(201);
+      const order = await api()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ productId: t.productId, quantity: 1 }] })
+        .expect(201);
+
+      await setStatus(t.token, order.body.id, 'VOIDED').expect(200);
+
+      const after = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(after.body.currentStock).toBe(500);
+      expect(after.body.movements).toHaveLength(1); // just the PURCHASE
     });
   });
 

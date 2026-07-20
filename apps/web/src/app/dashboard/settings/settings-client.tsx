@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getMe, logout as apiLogout, type MeResponse } from '@/lib/api';
+import {
+  getMe,
+  logout as apiLogout,
+  logoutAll,
+  type MeResponse,
+} from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardHeader } from '@/components/ui/card';
@@ -19,7 +24,14 @@ export function SettingsClient() {
   const [me, setMe] = useState<MeResponse | null>(null);
 
   async function onSignOut() {
-    await apiLogout().catch(() => undefined);
+    // The button says "everywhere", so it must actually revoke every session.
+    // Falls back to the single-session logout if that call fails, so the user
+    // is never left signed in on this device after asking to leave.
+    if (accessToken) {
+      await logoutAll(accessToken).catch(() => apiLogout().catch(() => undefined));
+    } else {
+      await apiLogout().catch(() => undefined);
+    }
     clear();
     router.replace('/login');
   }

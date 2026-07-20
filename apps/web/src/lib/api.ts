@@ -162,6 +162,14 @@ export const refreshSession = () =>
 export const logout = () =>
   apiFetch<void>('/auth/logout', { method: 'POST' });
 
+/**
+ * Ends every session for this user, on every device — what the Settings card
+ * says it does. Needs the access token: `logout` is public because the cookie
+ * is the credential, but revoking all sessions has to prove who is asking.
+ */
+export const logoutAll = (accessToken: string) =>
+  apiFetch<void>('/auth/logout-all', { method: 'POST', accessToken });
+
 export type Product = {
   id: string;
   name: string;

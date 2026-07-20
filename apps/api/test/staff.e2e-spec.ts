@@ -73,6 +73,13 @@ const invite = (token: string, body: Record<string, unknown>) =>
 /** Token out of the invite URL — the raw value exists only in this response. */
 const tokenOf = (inviteUrl: string) => inviteUrl.split('/join/')[1];
 
+/** The `oraos_rt=...` pair out of a Set-Cookie response. */
+function cookieOf(res: request.Response): string {
+  const raw = res.headers['set-cookie'] as unknown;
+  const list = Array.isArray(raw) ? (raw as string[]) : [raw as string];
+  return list.find((c) => c?.startsWith('oraos_rt='))!.split(';')[0];
+}
+
 /** Invites a member, accepts, and returns their scoped token. */
 async function addStaff(ownerToken: string, role: string) {
   const email = `s-mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
@@ -436,6 +443,95 @@ describe('Staff (e2e)', () => {
       expect(
         after.body.find((m: { id: string }) => m.id === member.id).isActive,
       ).toBe(false);
+    });
+
+    /**
+     * The ex-employee case in BLUEPRINT §8. Deactivating used to end the
+     * membership but not the session: their refresh chain stayed live, so they
+     * kept a working login until the token aged out seven days later.
+     */
+    it('deactivating revokes the member live refresh sessions', async () => {
+      const t = await newTenant('Session Revoke Cafe');
+      const email = `s-rev-${Date.now()}@example.com`;
+      const inv = await invite(t.token, { email, role: 'CASHIER' }).expect(201);
+      const accepted = await api()
+        .post(`/api/v1/join/${tokenOf(inv.body.inviteUrl)}`)
+        .send({ name: 'Leaver', password })
+        .expect(201);
+
+      expect(accepted.body.accessToken).toBeDefined();
+
+      // Sign in to get a refresh cookie. (Accepting an invite does not set one
+      // — see the sprint notes; out of scope here.)
+      const signedIn = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      let cookie = cookieOf(signedIn);
+
+      // Baseline: their session refreshes normally. Rotation hands back a new
+      // cookie, which is the one that must stop working.
+      const rotated = await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', cookie)
+        .expect(200);
+      cookie = cookieOf(rotated);
+
+      const staff = await api()
+        .get('/api/v1/staff')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      const member = staff.body.find(
+        (m: { user: { email: string } }) => m.user.email === email,
+      );
+
+      await api()
+        .patch(`/api/v1/staff/${member.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ isActive: false })
+        .expect(200);
+
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', cookie)
+        .expect(401);
+    });
+
+    it('a role change does NOT revoke sessions', async () => {
+      const t = await newTenant('Role Change Cafe');
+      const email = `s-role-${Date.now()}@example.com`;
+      const inv = await invite(t.token, { email, role: 'CASHIER' }).expect(201);
+      await api()
+        .post(`/api/v1/join/${tokenOf(inv.body.inviteUrl)}`)
+        .send({ name: 'Promoted', password })
+        .expect(201);
+      const signedIn = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      const cookie = cookieOf(signedIn);
+
+      const staff = await api()
+        .get('/api/v1/staff')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      const member = staff.body.find(
+        (m: { user: { email: string } }) => m.user.email === email,
+      );
+
+      await api()
+        .patch(`/api/v1/staff/${member.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ role: 'MANAGER' })
+        .expect(200);
+
+      // Promotion is not a security event — they stay signed in and pick up
+      // the new permissions on their next refresh.
+      const after = await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', cookie)
+        .expect(200);
+      expect(claims(after.body.accessToken).role).toBe('MANAGER');
     });
   });
 

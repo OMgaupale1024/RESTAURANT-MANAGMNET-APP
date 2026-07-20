@@ -29,6 +29,7 @@ function api() {
   return {
     post: (url: string) => request(server).post(url).set('X-Forwarded-For', ip),
     get: (url: string) => request(server).get(url).set('X-Forwarded-For', ip),
+    put: (url: string) => request(server).put(url).set('X-Forwarded-For', ip),
   };
 }
 
@@ -334,6 +335,147 @@ describe('POS (e2e)', () => {
         where: { restaurantId: t.restaurantId },
       });
       expect(orders).toBe(1);
+    });
+
+    /**
+     * The key used to live only on the payment row, so an order taken WITHOUT
+     * a payment method stored no key at all and a retry made a second sale.
+     * Reproduced: two identical posts produced orders #7 and #8.
+     */
+    it('is idempotent for an order with NO payment method', async () => {
+      const t = await newTenant('Idem NoPay Cafe');
+      const p = await makeProduct(t.token, {
+        name: 'NP',
+        priceMinor: 700,
+      }).expect(201);
+      const body = {
+        items: [{ productId: p.body.id, quantity: 1 }],
+        idempotencyKey: `nopay-${Date.now()}`,
+      };
+      const send = () =>
+        api()
+          .post('/api/v1/orders')
+          .set('Authorization', `Bearer ${t.token}`)
+          .send(body);
+
+      const first = await send().expect(201);
+      const second = await send().expect(201); // browser retry / timeout retry
+      const third = await send().expect(201);
+
+      expect(second.body.id).toBe(first.body.id);
+      expect(third.body.id).toBe(first.body.id);
+      expect(
+        await owner.order.count({ where: { restaurantId: t.restaurantId } }),
+      ).toBe(1);
+    });
+
+    /** A double-tapped Charge button: both requests genuinely in flight. */
+    it('creates one order for concurrent identical requests', async () => {
+      const t = await newTenant('Idem Race Cafe');
+      const p = await makeProduct(t.token, {
+        name: 'R',
+        priceMinor: 900,
+      }).expect(201);
+      const body = {
+        items: [{ productId: p.body.id, quantity: 2 }],
+        paymentMethod: 'CASH',
+        idempotencyKey: `race-${Date.now()}`,
+      };
+      const send = () =>
+        api()
+          .post('/api/v1/orders')
+          .set('Authorization', `Bearer ${t.token}`)
+          .send(body);
+
+      const [a, b, c] = await Promise.all([send(), send(), send()]);
+
+      // Every caller gets the same order, and none gets a 500.
+      for (const r of [a, b, c]) expect(r.status).toBe(201);
+      expect(b.body.id).toBe(a.body.id);
+      expect(c.body.id).toBe(a.body.id);
+      expect(
+        await owner.order.count({ where: { restaurantId: t.restaurantId } }),
+      ).toBe(1);
+      // Payment recorded exactly once — no double charge.
+      expect(
+        await owner.payment.count({ where: { restaurantId: t.restaurantId } }),
+      ).toBe(1);
+    });
+
+    it('deducts stock exactly once across a replay', async () => {
+      const t = await newTenant('Idem Stock Cafe');
+      const p = await makeProduct(t.token, {
+        name: 'S',
+        priceMinor: 1000,
+      }).expect(201);
+      const ing = await api()
+        .post('/api/v1/ingredients')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Cheese', unit: 'GRAM' })
+        .expect(201);
+      await api()
+        .post(`/api/v1/ingredients/${ing.body.id}/movements`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ type: 'PURCHASE', quantity: 1000 })
+        .expect(201);
+      await api()
+        .put(`/api/v1/products/${p.body.id}/recipe`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ ingredientId: ing.body.id, quantity: 100 }] })
+        .expect(200);
+
+      const body = {
+        items: [{ productId: p.body.id, quantity: 3 }],
+        paymentMethod: 'CASH',
+        idempotencyKey: `stock-${Date.now()}`,
+      };
+      const send = () =>
+        api()
+          .post('/api/v1/orders')
+          .set('Authorization', `Bearer ${t.token}`)
+          .send(body);
+
+      await send().expect(201);
+      await send().expect(201);
+      await send().expect(201);
+
+      const stock = await api()
+        .get(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      // 1000 - (100 x 3), deducted once however many times it was sent.
+      expect(stock.body.currentStock).toBe(700);
+      expect(
+        stock.body.movements.filter(
+          (m: { type: string }) => m.type === 'CONSUMPTION',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('still creates separate orders for different keys, and for none', async () => {
+      const t = await newTenant('Idem Distinct Cafe');
+      const p = await makeProduct(t.token, {
+        name: 'D',
+        priceMinor: 400,
+      }).expect(201);
+      const send = (key?: string) =>
+        api()
+          .post('/api/v1/orders')
+          .set('Authorization', `Bearer ${t.token}`)
+          .send({
+            items: [{ productId: p.body.id, quantity: 1 }],
+            ...(key ? { idempotencyKey: key } : {}),
+          });
+
+      await send(`d1-${Date.now()}`).expect(201);
+      await send(`d2-${Date.now()}`).expect(201);
+      // No key means no dedupe — two genuine walk-ins must both be recorded.
+      await send().expect(201);
+      await send().expect(201);
+
+      expect(
+        await owner.order.count({ where: { restaurantId: t.restaurantId } }),
+      ).toBe(4);
     });
 
     it('writes an append-only CREATED event', async () => {

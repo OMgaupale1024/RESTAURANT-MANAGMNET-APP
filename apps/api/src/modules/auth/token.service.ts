@@ -13,6 +13,9 @@ export type AccessTokenPayload = {
   role: string | null;
   perms: string[];
   typ: 'access';
+  /** Issued-at, seconds. Set by jsonwebtoken on every sign; declared here so
+   *  the session-epoch check can read it. Not a new claim. */
+  iat?: number;
 };
 
 export type IssuedTokens = {
@@ -103,10 +106,20 @@ export class TokenService {
       throw new UnauthorizedException('Refresh token expired');
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: existing.id },
+    await this.assertSessionNotRevoked(existing.userId, existing.familyId);
+
+    // Conditional, not a blind update: a concurrent logout-all may have revoked
+    // this token between the read above and here. Matching on revokedAt IS NULL
+    // makes claiming it atomic, so the loser never goes on to mint a
+    // replacement. Two simultaneous refreshes of the same token also resolve to
+    // exactly one winner.
+    const claimed = await this.prisma.refreshToken.updateMany({
+      where: { id: existing.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (claimed.count === 0) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
 
     return { userId: existing.userId, familyId: existing.familyId };
   }
@@ -134,6 +147,85 @@ export class TokenService {
     return existing.familyId;
   }
 
+  /**
+   * Enforces the session epoch: a token FAMILY that began before the user last
+   * signed out everywhere is dead, whatever the age of the individual token.
+   *
+   * The family, not the token, is the unit — and that is the whole fix. A
+   * refresh already in flight when logout-all runs inserts its replacement
+   * AFTER the revocation swept, so the replacement is younger than the epoch
+   * and a per-token check would wave it through. It is still a rotation of the
+   * same login, so its family predates the epoch and it is refused here. A
+   * fresh login starts a new family after the epoch and is unaffected.
+   */
+  private async assertSessionNotRevoked(
+    userId: string,
+    familyId: string,
+  ): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { sessionsValidFrom: true },
+    });
+    // Null means the user has never signed out everywhere.
+    if (!user?.sessionsValidFrom) return;
+
+    const family = await this.prisma.refreshToken.aggregate({
+      where: { familyId },
+      _min: { createdAt: true },
+    });
+    const startedAt = family._min.createdAt;
+    if (startedAt && startedAt < user.sessionsValidFrom) {
+      // Tidy up so the dead family stops being presented on every reload.
+      await this.revokeFamily(familyId);
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+  }
+
+  /**
+   * Refuses an access token minted before the user last revoked every session.
+   *
+   * The access token itself stays usable for ordinary reads until it expires —
+   * that is the documented trade in BLUEPRINT §8 and is unchanged. What it may
+   * no longer do is MINT A NEW SESSION, which is how "sign out everywhere" was
+   * being undone: select-restaurant is guarded by the access token, so a
+   * pre-revocation one could still start a fresh token family.
+   *
+   * `iat` has one-second granularity, so a token minted in the SAME second as
+   * the epoch cannot be told apart from one minted just before it. This fails
+   * closed and rejects it: a dropped socket reconnects within milliseconds, so
+   * erring the other way would hand the connection straight back. The cost is
+   * that a login landing in the same second as the logout it followed must be
+   * retried — a human typing a password takes seconds, so that is theoretical.
+   */
+  async assertAccessTokenNotStale(
+    userId: string,
+    iatSeconds?: number,
+  ): Promise<void> {
+    if (!iatSeconds) return;
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { sessionsValidFrom: true },
+    });
+    if (!user?.sessionsValidFrom) return;
+    if (iatSeconds * 1000 < user.sessionsValidFrom.getTime()) {
+      throw new UnauthorizedException('Session ended');
+    }
+  }
+
+  /**
+   * Called after every user-wide revocation, so holders of live connections can
+   * drop them. The realtime gateway subscribes to this.
+   *
+   * Deliberately a plain listener list rather than the gateway being injected
+   * here: RealtimeModule already imports AuthModule, so a direct dependency the
+   * other way would be a cycle.
+   */
+  onSessionsRevoked(listener: (userId: string) => void): void {
+    this.revocationListeners.add(listener);
+  }
+
+  private readonly revocationListeners = new Set<(userId: string) => void>();
+
   async revokeFamily(familyId: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
@@ -141,12 +233,38 @@ export class TokenService {
     });
   }
 
-  /** Used on logout, and whenever a membership is revoked. */
+  /**
+   * Ends every session for a user: revokes the tokens that exist now, AND
+   * stamps the session epoch so the ones that do not yet exist are refused too.
+   *
+   * Both statements commit together. The sweep alone cannot bind a refresh that
+   * is already in flight — that request inserts its replacement token after the
+   * sweep has run, so the sweep never sees it. The epoch binds the future
+   * instead; assertSessionNotRevoked() above is where it is enforced.
+   */
   async revokeAllForUser(userId: string): Promise<void> {
-    await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+    const at = new Date();
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { sessionsValidFrom: at },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: at },
+      }),
+    ]);
+
+    // A socket authorised before this moment must not keep receiving the
+    // tenant's feed. Listener failures are contained: a gateway problem must
+    // not turn a successful revocation into a failed request.
+    for (const listener of this.revocationListeners) {
+      try {
+        listener(userId);
+      } catch {
+        // ignored on purpose — the revocation itself has already committed
+      }
+    }
   }
 
   async revokeByToken(presented: string): Promise<void> {

@@ -281,4 +281,249 @@ describe('Auth (e2e)', () => {
         .expect(401);
     });
   });
+
+  /**
+   * The Settings card says "Sign out everywhere". It used to call plain
+   * /logout, which revokes only the token in THIS browser's cookie — so a lost
+   * phone or a shared tablet stayed signed in for the full 7 days while the
+   * user was told otherwise.
+   */
+  describe('logout-all', () => {
+    /** Two independent sessions for one user: device A and device B. */
+    async function twoDevices() {
+      const a = await register().expect(201);
+      const b = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      const rtA = refreshCookie(a)!;
+      const rtB = refreshCookie(b)!;
+      expect(rtA).not.toBe(rtB);
+      return { accessA: a.body.accessToken as string, rtA, rtB };
+    }
+
+    it('revokes sessions on every device, not just this one', async () => {
+      const { accessA, rtA, rtB } = await twoDevices();
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${accessA}`)
+        .expect(204);
+
+      // Including the caller's own — "everywhere" means everywhere.
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtA}`)
+        .expect(401);
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtB}`)
+        .expect(401);
+    });
+
+    it('plain logout still leaves the other device signed in', async () => {
+      const { rtA, rtB } = await twoDevices();
+
+      await api()
+        .post('/api/v1/auth/logout')
+        .set('Cookie', `${COOKIE}=${rtA}`)
+        .expect(204);
+
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtA}`)
+        .expect(401);
+      // Untouched. This is exactly why logout-all had to be its own route
+      // rather than a change to logout: signing out of the till must not sign
+      // the kitchen tablet out too.
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rtB}`)
+        .expect(200);
+    });
+
+    it('requires authentication, unlike logout', async () => {
+      await api().post('/api/v1/auth/logout-all').expect(401);
+    });
+
+    /**
+     * The race that made logout-all bypassable (reproduced 6/6 before the
+     * session epoch): a refresh already in flight inserts its replacement
+     * AFTER the revocation sweep, so the sweep never sees it.
+     */
+    it('a refresh racing logout-all cannot leave a usable session', async () => {
+      const reg = await register().expect(201);
+      const rt = refreshCookie(reg)!;
+      const access = reg.body.accessToken as string;
+
+      // Fire both at the same instant, repeatedly — one round is not evidence.
+      const [refreshed] = await Promise.all([
+        api()
+          .post('/api/v1/auth/refresh')
+          .set('Cookie', `${COOKIE}=${rt}`)
+          .then((r) => r),
+        api()
+          .post('/api/v1/auth/logout-all')
+          .set('Authorization', `Bearer ${access}`)
+          .then((r) => r),
+      ]);
+
+      // Whether the refresh won or lost the race, nothing usable may survive.
+      const survivor = refreshCookie(refreshed);
+      if (survivor) {
+        await api()
+          .post('/api/v1/auth/refresh')
+          .set('Cookie', `${COOKIE}=${survivor}`)
+          .expect(401);
+      }
+      // And no unrevoked token may be left behind for this user.
+      const live = await prisma.refreshToken.count({
+        where: { user: { email }, revokedAt: null },
+      });
+      expect(live).toBe(0);
+    });
+
+    it('refuses a token whose family predates the epoch, even if minted after', async () => {
+      const reg = await register().expect(201);
+      const rt = refreshCookie(reg)!;
+      const access = reg.body.accessToken as string;
+
+      // Rotate once so the family has a second, younger token.
+      const rotated = await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rt}`)
+        .expect(200);
+      const younger = refreshCookie(rotated)!;
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${access}`)
+        .expect(204);
+
+      // The token itself is young, but its family began before the epoch.
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${younger}`)
+        .expect(401);
+    });
+
+    it('is idempotent when called repeatedly', async () => {
+      const reg = await register().expect(201);
+      const access = reg.body.accessToken as string;
+      for (let i = 0; i < 3; i++) {
+        await api()
+          .post('/api/v1/auth/logout-all')
+          .set('Authorization', `Bearer ${access}`)
+          .expect(204);
+      }
+      const live = await prisma.refreshToken.count({
+        where: { user: { email }, revokedAt: null },
+      });
+      expect(live).toBe(0);
+    });
+
+    it('lets a fresh login work normally after the epoch is set', async () => {
+      const reg = await register().expect(201);
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .expect(204);
+
+      // A new login starts a new family, after the epoch.
+      const again = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${refreshCookie(again)!}`)
+        .expect(200);
+    });
+
+    /**
+     * select-restaurant mints a refresh session but is guarded by the ACCESS
+     * token, which outlives logout-all by up to 15 minutes. Before the epoch
+     * check it could therefore start a brand-new family and undo the
+     * revocation — verified reachable.
+     */
+    it('a surviving access token cannot re-establish a session via select-restaurant', async () => {
+      const reg = await register().expect(201);
+      const access = reg.body.accessToken as string;
+      const cookie = refreshCookie(reg)!;
+
+      const created = await api()
+        .post('/api/v1/restaurants')
+        .set('Authorization', `Bearer ${access}`)
+        .send({ name: 'Epoch Cafe' })
+        .expect(201);
+      const restaurantId = created.body.restaurant.id as string;
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${access}`)
+        .expect(204);
+
+      // The access token is still cryptographically valid here.
+      await api()
+        .post('/api/v1/auth/select-restaurant')
+        .set('Authorization', `Bearer ${access}`)
+        .set('Cookie', `${COOKIE}=${cookie}`)
+        .send({ restaurantId })
+        .expect(401);
+
+      // ...and dropping the cookie must not help either.
+      await api()
+        .post('/api/v1/auth/select-restaurant')
+        .set('Authorization', `Bearer ${access}`)
+        .send({ restaurantId })
+        .expect(401);
+    });
+
+    it('still allows select-restaurant on a session newer than the epoch', async () => {
+      const reg = await register().expect(201);
+      const created = await api()
+        .post('/api/v1/restaurants')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .send({ name: 'Fresh Cafe' })
+        .expect(201);
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .expect(204);
+
+      // `iat` is whole seconds, so the check fails closed inside the second the
+      // epoch lands in. Wait past it — a human typing a password takes longer.
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // A fresh login is minted after the epoch and must work normally.
+      const again = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      await api()
+        .post('/api/v1/auth/select-restaurant')
+        .set('Authorization', `Bearer ${again.body.accessToken}`)
+        .set('Cookie', `${COOKIE}=${refreshCookie(again)!}`)
+        .send({ restaurantId: created.body.restaurant.id })
+        .expect(200);
+    });
+
+    it('clears the refresh cookie on this device too', async () => {
+      const reg = await register().expect(201);
+      const res = await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .expect(204);
+
+      const raw = res.headers['set-cookie'];
+      const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      expect(
+        list.some(
+          (c) =>
+            c.startsWith(`${COOKIE}=;`) || /Expires=Thu, 01 Jan 1970/.test(c),
+        ),
+      ).toBe(true);
+    });
+  });
 });

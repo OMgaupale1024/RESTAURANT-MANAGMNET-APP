@@ -37,3 +37,19 @@ export function allowedNext(from: OrderStatus): readonly OrderStatus[] {
  *               vector, so it needs order.void, which a cashier does not have.
  */
 export const VOID_STATUSES: readonly OrderStatus[] = ['VOIDED'];
+
+/**
+ * Statuses that reverse a sale. A reversed sale did not consume its
+ * ingredients, so entering one of these returns the order's stock to the
+ * ledger (InventoryService.restockForReversedOrder).
+ *
+ * Deliberately NOT the same list as VOID_STATUSES. That one gates the
+ * order.void permission; adding CANCELLED to it would silently start
+ * requiring order.void to cancel an order. This list mirrors the statuses
+ * Analytics already excludes from revenue, so money and stock agree on what
+ * "did not happen" means.
+ */
+export const REVERSING_STATUSES: readonly OrderStatus[] = [
+  'VOIDED',
+  'CANCELLED',
+];
