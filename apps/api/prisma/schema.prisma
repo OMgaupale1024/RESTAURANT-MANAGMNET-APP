@@ -75,6 +75,11 @@ model User {
   passwordHash String   @map("password_hash")
   name         String
   isActive     Boolean  @default(true) @map("is_active")
+  /// Session epoch, set by "sign out everywhere". A refresh-token family that
+  /// began before this instant can never be used again — which is what stops a
+  /// refresh already in flight from minting a session that outlives the
+  /// revocation. NULL means it has never been used.
+  sessionsValidFrom DateTime? @map("sessions_valid_from")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 

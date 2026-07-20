@@ -346,6 +346,100 @@ describe('Auth (e2e)', () => {
       await api().post('/api/v1/auth/logout-all').expect(401);
     });
 
+    /**
+     * The race that made logout-all bypassable (reproduced 6/6 before the
+     * session epoch): a refresh already in flight inserts its replacement
+     * AFTER the revocation sweep, so the sweep never sees it.
+     */
+    it('a refresh racing logout-all cannot leave a usable session', async () => {
+      const reg = await register().expect(201);
+      const rt = refreshCookie(reg)!;
+      const access = reg.body.accessToken as string;
+
+      // Fire both at the same instant, repeatedly — one round is not evidence.
+      const [refreshed] = await Promise.all([
+        api()
+          .post('/api/v1/auth/refresh')
+          .set('Cookie', `${COOKIE}=${rt}`)
+          .then((r) => r),
+        api()
+          .post('/api/v1/auth/logout-all')
+          .set('Authorization', `Bearer ${access}`)
+          .then((r) => r),
+      ]);
+
+      // Whether the refresh won or lost the race, nothing usable may survive.
+      const survivor = refreshCookie(refreshed);
+      if (survivor) {
+        await api()
+          .post('/api/v1/auth/refresh')
+          .set('Cookie', `${COOKIE}=${survivor}`)
+          .expect(401);
+      }
+      // And no unrevoked token may be left behind for this user.
+      const live = await prisma.refreshToken.count({
+        where: { user: { email }, revokedAt: null },
+      });
+      expect(live).toBe(0);
+    });
+
+    it('refuses a token whose family predates the epoch, even if minted after', async () => {
+      const reg = await register().expect(201);
+      const rt = refreshCookie(reg)!;
+      const access = reg.body.accessToken as string;
+
+      // Rotate once so the family has a second, younger token.
+      const rotated = await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${rt}`)
+        .expect(200);
+      const younger = refreshCookie(rotated)!;
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${access}`)
+        .expect(204);
+
+      // The token itself is young, but its family began before the epoch.
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${younger}`)
+        .expect(401);
+    });
+
+    it('is idempotent when called repeatedly', async () => {
+      const reg = await register().expect(201);
+      const access = reg.body.accessToken as string;
+      for (let i = 0; i < 3; i++) {
+        await api()
+          .post('/api/v1/auth/logout-all')
+          .set('Authorization', `Bearer ${access}`)
+          .expect(204);
+      }
+      const live = await prisma.refreshToken.count({
+        where: { user: { email }, revokedAt: null },
+      });
+      expect(live).toBe(0);
+    });
+
+    it('lets a fresh login work normally after the epoch is set', async () => {
+      const reg = await register().expect(201);
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .expect(204);
+
+      // A new login starts a new family, after the epoch.
+      const again = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${refreshCookie(again)!}`)
+        .expect(200);
+    });
+
     it('clears the refresh cookie on this device too', async () => {
       const reg = await register().expect(201);
       const res = await api()

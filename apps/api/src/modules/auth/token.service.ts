@@ -103,10 +103,20 @@ export class TokenService {
       throw new UnauthorizedException('Refresh token expired');
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: existing.id },
+    await this.assertSessionNotRevoked(existing.userId, existing.familyId);
+
+    // Conditional, not a blind update: a concurrent logout-all may have revoked
+    // this token between the read above and here. Matching on revokedAt IS NULL
+    // makes claiming it atomic, so the loser never goes on to mint a
+    // replacement. Two simultaneous refreshes of the same token also resolve to
+    // exactly one winner.
+    const claimed = await this.prisma.refreshToken.updateMany({
+      where: { id: existing.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (claimed.count === 0) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
 
     return { userId: existing.userId, familyId: existing.familyId };
   }
@@ -134,6 +144,40 @@ export class TokenService {
     return existing.familyId;
   }
 
+  /**
+   * Enforces the session epoch: a token FAMILY that began before the user last
+   * signed out everywhere is dead, whatever the age of the individual token.
+   *
+   * The family, not the token, is the unit — and that is the whole fix. A
+   * refresh already in flight when logout-all runs inserts its replacement
+   * AFTER the revocation swept, so the replacement is younger than the epoch
+   * and a per-token check would wave it through. It is still a rotation of the
+   * same login, so its family predates the epoch and it is refused here. A
+   * fresh login starts a new family after the epoch and is unaffected.
+   */
+  private async assertSessionNotRevoked(
+    userId: string,
+    familyId: string,
+  ): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { sessionsValidFrom: true },
+    });
+    // Null means the user has never signed out everywhere.
+    if (!user?.sessionsValidFrom) return;
+
+    const family = await this.prisma.refreshToken.aggregate({
+      where: { familyId },
+      _min: { createdAt: true },
+    });
+    const startedAt = family._min.createdAt;
+    if (startedAt && startedAt < user.sessionsValidFrom) {
+      // Tidy up so the dead family stops being presented on every reload.
+      await this.revokeFamily(familyId);
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+  }
+
   async revokeFamily(familyId: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
@@ -141,12 +185,27 @@ export class TokenService {
     });
   }
 
-  /** Used on logout, and whenever a membership is revoked. */
+  /**
+   * Ends every session for a user: revokes the tokens that exist now, AND
+   * stamps the session epoch so the ones that do not yet exist are refused too.
+   *
+   * Both statements commit together. The sweep alone cannot bind a refresh that
+   * is already in flight — that request inserts its replacement token after the
+   * sweep has run, so the sweep never sees it. The epoch binds the future
+   * instead; assertSessionNotRevoked() above is where it is enforced.
+   */
   async revokeAllForUser(userId: string): Promise<void> {
-    await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+    const at = new Date();
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { sessionsValidFrom: at },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: at },
+      }),
+    ]);
   }
 
   async revokeByToken(presented: string): Promise<void> {
