@@ -334,6 +334,59 @@ export class InventoryService {
     });
   }
 
+  /**
+   * Returns an order's consumed stock when the sale is reversed (voided or
+   * cancelled). Called by OrdersService INSIDE the status-change transaction,
+   * so the reversal and the status commit together or not at all.
+   *
+   * Computed from the order's OWN consumption rows, not from the recipe: a
+   * recipe edited between the sale and the void must not change how much comes
+   * back. The rows are appended, never removed — the ledger is append-only, so
+   * both the depletion and its reversal stay on the record, which is what an
+   * auditor needs to see.
+   */
+  async restockForReversedOrder(
+    db: TxClient,
+    restaurantId: string,
+    userId: string,
+    orderId: string,
+    toStatus: string,
+  ): Promise<void> {
+    const consumed = await db.stockMovement.findMany({
+      where: { orderId, type: 'CONSUMPTION' },
+      select: { ingredientId: true, quantity: true },
+    });
+    // An order with no recipe depleted nothing, so there is nothing to return.
+    if (!consumed.length) return;
+
+    // One movement per ingredient, mirroring how depletion was written.
+    const totals = new Map<string, number>();
+    for (const m of consumed) {
+      totals.set(
+        m.ingredientId,
+        (totals.get(m.ingredientId) ?? 0) - m.quantity,
+      );
+    }
+
+    const rows = [...totals]
+      // stock_movements CHECK (quantity <> 0).
+      .filter(([, qty]) => qty !== 0)
+      .map(([ingredientId, qty]) => ({
+        restaurantId,
+        ingredientId,
+        // ADJUSTMENT is the one signed type the CHECK allows in both
+        // directions. orderId and the note say why it happened.
+        type: 'ADJUSTMENT' as const,
+        quantity: qty,
+        orderId,
+        actorUserId: userId,
+        note: `Stock returned: order ${toStatus.toLowerCase()}`,
+      }));
+    if (!rows.length) return;
+
+    await db.stockMovement.createMany({ data: rows });
+  }
+
   private async requireIngredient(db: TxClient, id: string) {
     const found = await db.ingredient.findFirst({
       where: { id },

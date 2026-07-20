@@ -8,7 +8,11 @@ import {
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { OrderStatus } from '../../generated/prisma/enums';
-import { VOID_STATUSES, canTransition } from './order-status';
+import {
+  REVERSING_STATUSES,
+  VOID_STATUSES,
+  canTransition,
+} from './order-status';
 import { InventoryService } from '../inventory/inventory.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { MarketingService } from '../marketing/marketing.service';
@@ -382,6 +386,19 @@ export class OrdersService {
             },
           },
         });
+      }
+
+      // A reversed sale did not consume its ingredients. Returning the stock
+      // in this SAME transaction is what stops the ledger and the order from
+      // disagreeing: either both the status and the restock land, or neither.
+      if (REVERSING_STATUSES.includes(to)) {
+        await this.inventory.restockForReversedOrder(
+          db,
+          ctx.restaurantId,
+          ctx.userId,
+          orderId,
+          to,
+        );
       }
 
       return this.load(db, orderId);
