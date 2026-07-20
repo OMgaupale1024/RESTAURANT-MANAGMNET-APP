@@ -46,3 +46,26 @@ export class LoginDto {
   @MaxLength(72)
   password!: string;
 }
+
+export class ForgotPasswordDto {
+  @IsEmail({}, { message: 'must be a valid email address' })
+  @MaxLength(254)
+  @Transform(({ value }) => String(value).trim().toLowerCase())
+  email!: string;
+}
+
+export class ResetPasswordDto {
+  // The raw token from the email link. Bounded so a garbage value is rejected
+  // before it ever touches the database.
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  token!: string;
+
+  // Same policy as registration — length beats complexity, and bcrypt caps at
+  // 72 bytes.
+  @IsString()
+  @MinLength(12, { message: 'must be at least 12 characters' })
+  @MaxLength(72, { message: 'must be at most 72 characters' })
+  password!: string;
+}

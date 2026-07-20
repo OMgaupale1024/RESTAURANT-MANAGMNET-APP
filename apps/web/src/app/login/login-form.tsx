@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ApiRequestError, getMe, login } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -109,6 +110,15 @@ export function LoginForm() {
           {pending ? 'Signing in…' : 'Sign in'}
         </button>
       </div>
+
+      <p
+        className="animate-fade-up mt-4 text-center text-sm text-ink-3"
+        style={{ animationDelay: '160ms' }}
+      >
+        <Link href="/forgot-password" className="underline hover:text-ink-1">
+          Forgot your password?
+        </Link>
+      </p>
     </form>
   );
 }

@@ -1,18 +1,34 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { compare, hash } from 'bcrypt';
+import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TokenService, type IssuedTokens } from './token.service';
 import { SecurityEventService } from './security-event.service';
-import type { LoginDto, RegisterDto } from './dto/auth.dto';
+import { MailService } from '../mail/mail.service';
+import type {
+  ForgotPasswordDto,
+  LoginDto,
+  RegisterDto,
+  ResetPasswordDto,
+} from './dto/auth.dto';
 
 // Cost 12: ~250ms on modern hardware. Deliberately slow — this is the only
 // defence against an offline crack if the database is ever stolen.
 const BCRYPT_COST = 12;
+
+// Short by design: a reset link is a bearer credential to the account. Long
+// enough to read an email and click, short enough that a leaked link goes stale.
+const PASSWORD_RESET_TTL_MINUTES = 30;
+
+/** Opaque tokens are stored only as a hash — a DB leak must not yield reset links. */
+const hashToken = (t: string) => createHash('sha256').update(t).digest('hex');
 
 // A real bcrypt hash of a random string, compared against when no user exists,
 // so login takes the same time whether or not the email is registered. Without
@@ -28,6 +44,8 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
     private readonly events: SecurityEventService,
+    private readonly mail: MailService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -152,6 +170,122 @@ export class AuthService {
       ip: meta.ip,
       userAgent: meta.userAgent,
       metadata: { scope: 'all' },
+    });
+  }
+
+  /**
+   * Starts a password reset. The response is the SAME whether or not the email
+   * has an account — the controller returns success unconditionally, and the
+   * only observable difference is an email that does or does not arrive. That
+   * is what stops this endpoint from being an account-enumeration oracle.
+   *
+   * The email dispatch is fire-and-forget: the caller does not wait on it, which
+   * both keeps timing flat between the two branches and keeps the endpoint fast.
+   */
+  async requestPasswordReset(
+    dto: ForgotPasswordDto,
+    meta: RequestMeta,
+  ): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+      select: { id: true, email: true, isActive: true },
+    });
+
+    // Inactive accounts get nothing either — a deactivated user must not be able
+    // to reset their way back in.
+    if (!user || !user.isActive) return;
+
+    // Only the latest link should work. Invalidate any still-outstanding ones so
+    // an old email cannot be used after a newer request.
+    await this.prisma.passwordResetToken.updateMany({
+      where: { userId: user.id, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    // 256 bits of CSPRNG entropy; only its hash is stored.
+    const token = randomBytes(32).toString('base64url');
+    await this.prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MINUTES * 60_000),
+      },
+    });
+
+    this.events.record({
+      type: 'PASSWORD_RESET_REQUESTED',
+      userId: user.id,
+      email: user.email,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    });
+
+    const url = `${this.config.getOrThrow<string>('WEB_URL')}/reset-password?token=${token}`;
+    // Not awaited: the request must not block on delivery, and both branches of
+    // this method must take the same time from the caller's point of view.
+    void this.mail.sendPasswordResetEmail(user.email, url).catch(() => {
+      // Delivery failures are the transport's to log; a failed send must not
+      // turn a valid request into an error the caller could probe.
+    });
+  }
+
+  /**
+   * Completes a password reset.
+   *
+   * The token is validated, consumed atomically (single-use), the password is
+   * re-hashed with the same policy as registration, and EVERY existing session
+   * is revoked — a reset is exactly the "I may be compromised" case that
+   * "sign out everywhere" exists for. We do not sign the user in; they return to
+   * the login page and use the new password, so possession of the reset link
+   * alone never yields a live session.
+   */
+  async resetPassword(dto: ResetPasswordDto, meta: RequestMeta): Promise<void> {
+    const record = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash: hashToken(dto.token) },
+      select: { id: true, userId: true, usedAt: true, expiresAt: true },
+    });
+
+    // One message for every failure — unknown, used, and expired are
+    // indistinguishable to the caller.
+    if (!record || record.usedAt || record.expiresAt < new Date()) {
+      throw new BadRequestException(
+        'This reset link is invalid or has expired',
+      );
+    }
+
+    const passwordHash = await hash(dto.password, BCRYPT_COST);
+
+    // Claim the token and set the password in one transaction. The conditional
+    // update (usedAt IS NULL) makes consumption atomic: two requests racing the
+    // same link resolve to exactly one winner, and the loser is rejected.
+    const claimed = await this.prisma.$transaction(async (db) => {
+      const consumed = await db.passwordResetToken.updateMany({
+        where: { id: record.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+      if (consumed.count === 0) return false;
+      await db.user.update({
+        where: { id: record.userId },
+        data: { passwordHash },
+      });
+      return true;
+    });
+
+    if (!claimed) {
+      throw new BadRequestException(
+        'This reset link is invalid or has expired',
+      );
+    }
+
+    // Kill every session, on every device. Revokes refresh tokens AND stamps the
+    // session epoch, so a token already in flight cannot mint a survivor.
+    await this.tokens.revokeAllForUser(record.userId);
+
+    this.events.record({
+      type: 'PASSWORD_RESET_COMPLETED',
+      userId: record.userId,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
     });
   }
 

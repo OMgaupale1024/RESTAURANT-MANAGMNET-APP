@@ -13,7 +13,13 @@ import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
-import { LoginDto, RegisterDto, SelectRestaurantDto } from './dto/auth.dto';
+import {
+  ForgotPasswordDto,
+  LoginDto,
+  RegisterDto,
+  ResetPasswordDto,
+  SelectRestaurantDto,
+} from './dto/auth.dto';
 import {
   REFRESH_COOKIE,
   readRefreshCookie,
@@ -57,6 +63,25 @@ export class AuthController {
   ) {
     const tokens = await this.auth.login(dto, meta(req));
     return respondWithTokens(tokens, res, this.config);
+  }
+
+  // Always 204, whether or not the email has an account: the response must not
+  // reveal which addresses are registered.
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: Request) {
+    await this.auth.requestPasswordReset(dto, meta(req));
+  }
+
+  // Public: the reset token is the credential; the caller has no session yet.
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('reset-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
+    await this.auth.resetPassword(dto, meta(req));
   }
 
   // Public because the access token is expected to be expired here — the

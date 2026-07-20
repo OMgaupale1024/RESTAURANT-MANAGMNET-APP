@@ -11,12 +11,14 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { MailService } from '../src/modules/mail/mail.service';
 
 const COOKIE = 'oraos_rt';
 const password = 'correct-horse-battery';
 
 let app: NestExpressApplication;
 let prisma: PrismaService;
+let mail: MailService;
 let email: string;
 
 /**
@@ -77,6 +79,7 @@ describe('Auth (e2e)', () => {
     );
     await app.init();
     prisma = app.get(PrismaService);
+    mail = app.get(MailService);
   });
 
   beforeEach(() => {
@@ -526,4 +529,122 @@ describe('Auth (e2e)', () => {
       ).toBe(true);
     });
   });
+
+  /**
+   * Password reset, written as attacks: an unknown email must not leak, a link
+   * must work exactly once, an expired or forged link must fail, and a
+   * successful reset must end every existing session.
+   */
+  describe('password reset', () => {
+    const newPassword = 'a-brand-new-passphrase';
+
+    /**
+     * Fires forgot-password and returns the raw token from the email link. The
+     * DB stores only the hash, so the token is recoverable only here, by
+     * intercepting the mail the way the real inbox would receive it. Returns
+     * undefined when no mail was sent (i.e. no account).
+     */
+    async function requestReset(target: string): Promise<string | undefined> {
+      const spy = jest
+        .spyOn(mail, 'sendPasswordResetEmail')
+        .mockResolvedValue(undefined);
+      try {
+        await api()
+          .post('/api/v1/auth/forgot-password')
+          .send({ email: target })
+          .expect(204);
+        // The send is fire-and-forget, so it can land after the 204 returns.
+        for (let i = 0; i < 100 && spy.mock.calls.length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        const call = spy.mock.calls[0];
+        return call
+          ? (new URL(call[1]).searchParams.get('token') ?? undefined)
+          : undefined;
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    const login = (pw: string) =>
+      api().post('/api/v1/auth/login').send({ email, password: pw });
+    const reset = (token: string, pw: string) =>
+      api().post('/api/v1/auth/reset-password').send({ token, password: pw });
+
+    it('resets the password with a valid link, and the old one stops working', async () => {
+      await register().expect(201);
+      const token = await requestReset(email);
+      expect(token).toBeDefined();
+
+      await reset(token!, newPassword).expect(204);
+
+      await login(password).expect(401); // old password is dead
+      await login(newPassword).expect(200); // new password works
+    });
+
+    it('refuses an expired link', async () => {
+      const reg = await register().expect(201);
+      const token = await requestReset(email);
+
+      // Push the token past its expiry, as if the user waited too long.
+      await prisma.passwordResetToken.updateMany({
+        where: { userId: jwtSub(reg.body.accessToken) },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+
+      await reset(token!, newPassword).expect(400);
+      await login(password).expect(200); // password unchanged
+    });
+
+    it('refuses a forged / unknown token', async () => {
+      await register().expect(201);
+      await reset('not-a-real-token', newPassword).expect(400);
+      await login(password).expect(200); // password unchanged
+    });
+
+    it('a link works exactly once', async () => {
+      await register().expect(201);
+      const token = await requestReset(email);
+
+      await reset(token!, newPassword).expect(204);
+      // The same link, replayed, must be rejected.
+      await reset(token!, 'yet-another-passphrase').expect(400);
+
+      await login(newPassword).expect(200); // the first reset stands
+      await login('yet-another-passphrase').expect(401); // the replay changed nothing
+    });
+
+    it('revokes every existing session after a reset (logout everywhere)', async () => {
+      const reg = await register().expect(201);
+      const oldCookie = refreshCookie(reg);
+      expect(oldCookie).toBeDefined();
+
+      const token = await requestReset(email);
+      await reset(token!, newPassword).expect(204);
+
+      // The session that existed before the reset must be dead.
+      await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', `${COOKIE}=${oldCookie}`)
+        .expect(401);
+    });
+
+    it('does not reveal whether an email has an account (no enumeration)', async () => {
+      await register().expect(201);
+
+      // Known account: a mail is dispatched.
+      const known = await requestReset(email);
+      expect(known).toBeDefined();
+
+      // Unknown account: identical 204, and NO mail (nothing to leak).
+      const unknown = await requestReset(`t-nobody-${Date.now()}@example.com`);
+      expect(unknown).toBeUndefined();
+    });
+  });
 });
+
+/** Reads the `sub` (userId) claim out of an access token, for test assertions. */
+function jwtSub(accessToken: string): string {
+  return JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64').toString())
+    .sub as string;
+}

@@ -83,10 +83,30 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  memberships   Membership[]
-  refreshTokens RefreshToken[]
+  memberships         Membership[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
 
   @@map("users")
+}
+
+/// A single-use, expiring password-reset grant. Same shape as StaffInvite: the
+/// raw 256-bit token exists only in the email link; only its SHA-256 hash is
+/// stored, so a database leak yields no usable reset links. Consumed by stamping
+/// usedAt, which the reset flow does atomically for single-use.
+model PasswordResetToken {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
 
 enum SecurityEventType {
@@ -97,6 +117,8 @@ enum SecurityEventType {
   REFRESH_ROTATED
   REFRESH_REUSE_DETECTED
   RESTAURANT_SELECTED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
 
   @@map("security_event_type")
 }

@@ -125,6 +125,24 @@ export const login = (email: string, password: string) =>
     body: JSON.stringify({ email, password }),
   });
 
+/**
+ * Starts a password reset. Resolves the same way whether or not the email has
+ * an account — the API never reveals which addresses are registered, so the UI
+ * must show one message regardless.
+ */
+export const forgotPassword = (email: string) =>
+  apiFetch<void>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+
+/** Completes a password reset. Throws ApiRequestError (400) on an invalid or expired link. */
+export const resetPassword = (token: string, password: string) =>
+  apiFetch<void>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
+  });
+
 export const getMe = (accessToken: string) =>
   apiFetch<MeResponse>('/auth/me', { accessToken });
 

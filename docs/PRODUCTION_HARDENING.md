@@ -68,8 +68,8 @@ browser-verify → commit → push before the next).
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Invite acceptance security — refresh token via httpOnly cookie, not JSON | ✅ done |
-| 2 | Password reset (forgot / token / expiry / email / browser flow) | ⬜ next |
-| 3 | Email infrastructure (Resend) | ⬜ |
+| 2 | Password reset (forgot / token / expiry / email / browser flow) | ✅ done |
+| 3 | Email infrastructure (Resend) — swap `MailService.send()` dev transport for real delivery | ⬜ next |
 | 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ⬜ |
 | 5 | Docker (API, Web, prod compose, env handling) | ⬜ |
 | 6 | GitHub Actions CI (install, lint, typecheck, test, build) | ⬜ |
@@ -101,6 +101,37 @@ No web change — the client already used `credentials: 'include'` and ignored a
 **Verification.** typecheck ✓ lint ✓ build ✓ · auth + staff e2e 63/63 ✓. Browser:
 invite accepted → no `refreshToken` in body, `oraos_rt` httpOnly cookie at
 `/api/v1/auth`, session survived a full reload.
+
+## Milestone 2 — Password reset
+
+**Issue.** No way to reset a forgotten password — the only path back into an
+account was an admin. A production requirement.
+
+**Fix.** A single-use, 30-minute, SHA-256-hashed reset token (same shape as
+`StaffInvite`), stored in a new `password_reset_tokens` table.
+`POST /auth/forgot-password` always returns `204` (no account enumeration) and
+fires a fire-and-forget email; `POST /auth/reset-password` validates + atomically
+consumes the token, re-hashes the password (bcrypt cost 12), and calls
+`TokenService.revokeAllForUser` — a reset ends every existing session. Email is
+sent through a new provider-agnostic `MailService.send()` seam (dev transport
+logs; Milestone 3 swaps in Resend). No auto-login: the user returns to `/login`.
+
+**Files changed.**
+- `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20260720184222_password_reset/` — table + two `SecurityEventType` values
+- `apps/api/src/modules/mail/{mail.module,mail.service}.ts` — new email seam
+- `apps/api/src/modules/auth/{auth.service,auth.controller,auth.module}.ts`, `dto/auth.dto.ts` — reset flow + DTOs
+- `apps/api/test/auth.e2e-spec.ts` — 6 reset tests
+- `apps/web/src/app/forgot-password/*`, `apps/web/src/app/reset-password/*` — new pages
+- `apps/web/src/app/login/login-form.tsx`, `apps/web/src/lib/api.ts` — link + client calls
+
+**Migration.** `20260720184222_password_reset` — `password_reset_tokens` table +
+`PASSWORD_RESET_REQUESTED` / `PASSWORD_RESET_COMPLETED` enum values. Applied.
+
+**Verification.** migration ✓ typecheck ✓ lint ✓ build (API) ✓ · auth e2e 35/35 ✓
+(valid reset, expired, invalid, reused, logout-all-after-reset, no enumeration).
+Web typecheck + lint ✓ (`next build` skipped — disk-constrained; verified via the
+live dev build below). Browser: forgot → neutral message + `204`, reset link →
+new password set, old password `401` / new `200`, pre-reset session revoked.
 
 ## General backlog
 
