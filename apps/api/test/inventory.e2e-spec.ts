@@ -5,6 +5,7 @@
  * column), depletion is automatic and transactional, and a client cannot
  * manufacture a CONSUMPTION.
  */
+import { randomUUID } from 'node:crypto';
 import { ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -304,6 +305,187 @@ describe('Inventory (e2e)', () => {
         .set('Authorization', `Bearer ${t.token}`)
         .send({ quantity: 0 })
         .expect(400);
+    });
+  });
+
+  /**
+   * A manual movement carrying an idempotency key must apply exactly once,
+   * however many times the request arrives — a double-click, a network retry, a
+   * refresh, or several identical requests racing. Same contract as an order's
+   * key: the DB unique index is the guarantee.
+   */
+  describe('manual movements are idempotent', () => {
+    const adjust = (token: string, id: string, body: Record<string, unknown>) =>
+      api()
+        .post(`/api/v1/ingredients/${id}/adjustments`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+
+    it('applies a receipt once when the same key is retried', async () => {
+      const t = await newTenant('Idem Receipt Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Rice',
+        unit: 'GRAM',
+      }).expect(201);
+      const key = randomUUID();
+
+      const first = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 5000,
+        idempotencyKey: key,
+      }).expect(201);
+      // The retry (browser sent it again) returns the original, not a new row.
+      const second = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 5000,
+        idempotencyKey: key,
+      }).expect(201);
+      expect(second.body.id).toBe(first.body.id);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(5000); // applied once, not 10000
+      expect(res.body.movements).toHaveLength(1);
+    });
+
+    it('applies an adjustment once when the same key is retried', async () => {
+      const t = await newTenant('Idem Count Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Dal',
+        unit: 'GRAM',
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+      }).expect(201);
+      const key = randomUUID();
+
+      const first = await adjust(t.token, ing.body.id, {
+        quantity: -100,
+        note: 'stock count',
+        idempotencyKey: key,
+      }).expect(201);
+      const second = await adjust(t.token, ing.body.id, {
+        quantity: -100,
+        note: 'stock count',
+        idempotencyKey: key,
+      }).expect(201);
+      expect(second.body.id).toBe(first.body.id);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(900); // 1000 - 100, applied once
+      expect(res.body.movements).toHaveLength(2); // purchase + one adjustment
+    });
+
+    it('collapses concurrent identical requests to a single movement', async () => {
+      const t = await newTenant('Idem Concurrent Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Oil',
+        unit: 'MILLILITRE',
+      }).expect(201);
+      const key = randomUUID();
+
+      // Five identical requests race — the double-click / duplicate-tab case.
+      const fire = () =>
+        move(t.token, ing.body.id, {
+          type: 'PURCHASE',
+          quantity: 2000,
+          idempotencyKey: key,
+        });
+      const results = await Promise.all([
+        fire(),
+        fire(),
+        fire(),
+        fire(),
+        fire(),
+      ]);
+
+      const ids = new Set(
+        results.map((r) => {
+          expect(r.status).toBe(201); // every caller gets a success, none a 500
+          return r.body.id as string;
+        }),
+      );
+      expect(ids.size).toBe(1); // one movement, five callers
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(2000); // applied exactly once
+      expect(res.body.movements).toHaveLength(1);
+    });
+
+    it('a retry after a client timeout returns the original movement, not a second', async () => {
+      const t = await newTenant('Idem Timeout Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Salt',
+        unit: 'GRAM',
+      }).expect(201);
+      const key = randomUUID();
+
+      // The write committed but the client never saw the response. It retries
+      // the identical request and must receive the same movement back.
+      const original = await move(t.token, ing.body.id, {
+        type: 'WASTE',
+        quantity: 300,
+        idempotencyKey: key,
+      }).expect(201);
+      const retry = await move(t.token, ing.body.id, {
+        type: 'WASTE',
+        quantity: 300,
+        idempotencyKey: key,
+      }).expect(201);
+
+      expect(retry.body).toEqual(original.body); // identical, not a new row
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(-300); // one WASTE, not two
+      expect(res.body.movements).toHaveLength(1);
+    });
+
+    it('records distinct movements for distinct keys (a real second receipt is not swallowed)', async () => {
+      const t = await newTenant('Idem Distinct Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Flour',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // After a refresh the client mints a fresh key, so a genuinely new
+      // receipt of the same amount must still be recorded — idempotency must
+      // not collapse two real actions into one.
+      const a = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        idempotencyKey: randomUUID(),
+      }).expect(201);
+      const b = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        idempotencyKey: randomUUID(),
+      }).expect(201);
+      expect(b.body.id).not.toBe(a.body.id);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(2000); // both applied
+      expect(res.body.movements).toHaveLength(2);
+    });
+
+    it('a movement sent without a key still records (idempotency is opt-in)', async () => {
+      const t = await newTenant('Idem Optional Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Sugar',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // No key: two identical sends are two movements. NULL keys never collide.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 500,
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 500,
+      }).expect(201);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(1000);
+      expect(res.body.movements).toHaveLength(2);
     });
   });
 

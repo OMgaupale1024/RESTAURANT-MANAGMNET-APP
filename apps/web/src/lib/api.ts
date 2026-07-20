@@ -424,7 +424,7 @@ export const recordAdjustment = (
   token: string,
   onNewToken: Retry,
   id: string,
-  body: { quantity: number; note?: string },
+  body: { quantity: number; note?: string; idempotencyKey?: string },
 ) =>
   authedFetch<unknown>(`/ingredients/${id}/adjustments`, token, onNewToken, {
     method: 'POST',
@@ -435,7 +435,12 @@ export const recordMovement = (
   token: string,
   onNewToken: Retry,
   id: string,
-  body: { type: 'PURCHASE' | 'WASTE'; quantity: number; note?: string },
+  body: {
+    type: 'PURCHASE' | 'WASTE';
+    quantity: number;
+    note?: string;
+    idempotencyKey?: string;
+  },
 ) =>
   authedFetch<unknown>(`/ingredients/${id}/movements`, token, onNewToken, {
     method: 'POST',

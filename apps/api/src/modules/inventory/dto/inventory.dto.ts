@@ -65,6 +65,16 @@ export class CreateMovementDto {
   @IsString()
   @MaxLength(200)
   note?: string;
+
+  /**
+   * Supplied by the client so a double-click, retry, or refresh cannot apply
+   * the same movement twice. Same contract as an order's key — see
+   * InventoryService.recordMovement.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  idempotencyKey?: string;
 }
 
 /** ADJUSTMENT is signed — a stock count can go either way. */
@@ -78,6 +88,12 @@ export class CreateAdjustmentDto {
   @IsString()
   @MaxLength(200)
   note?: string;
+
+  /** Idempotency key — a retried stock count must not append twice. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  idempotencyKey?: string;
 }
 
 export class RecipeItemDto {

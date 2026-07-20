@@ -339,6 +339,15 @@ function IngredientSheet({
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // A stable key per logical submit, so a double-click, network retry, or
+  // refresh cannot apply the same movement twice — the server dedupes on it.
+  // Regenerated when the inputs change (a new intent) and after a successful
+  // record, mirroring the POS charge key.
+  const idemKey = useRef<string>(crypto.randomUUID());
+  const freshKey = () => {
+    idemKey.current = crypto.randomUUID();
+  };
+
   const status = stockStatus(detail);
 
   async function submit(e: React.FormEvent) {
@@ -365,17 +374,20 @@ function IngredientSheet({
         await recordAdjustment(accessToken, onNewToken, detail.id, {
           quantity: n,
           ...(note.trim() ? { note: note.trim() } : {}),
+          idempotencyKey: idemKey.current,
         });
       } else {
         await recordMovement(accessToken, onNewToken, detail.id, {
           type: action,
           quantity: n,
           ...(note.trim() ? { note: note.trim() } : {}),
+          idempotencyKey: idemKey.current,
         });
       }
       toast({ title: 'Recorded', variant: 'success' });
       setQty('');
       setNote('');
+      freshKey(); // the next record is a new intent
       onChanged();
     } catch (e2) {
       toast({
@@ -418,19 +430,32 @@ function IngredientSheet({
           <Segmented
             options={ACTIONS.map((a) => ({ key: a.key, label: a.label }))}
             value={action}
-            onChange={setAction}
+            onChange={(v) => {
+              setAction(v);
+              freshKey();
+            }}
           />
           <div className="flex gap-2">
             <Field label={`Quantity (${unitLabel(detail.unit)})`}>
               <Input
                 inputMode="numeric"
                 value={qty}
-                onChange={(e) => setQty(e.target.value)}
+                onChange={(e) => {
+                  setQty(e.target.value);
+                  freshKey();
+                }}
                 placeholder={action === 'ADJUSTMENT' ? 'e.g. -250' : 'e.g. 500'}
               />
             </Field>
             <Field label="Note (optional)">
-              <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={200} />
+              <Input
+                value={note}
+                onChange={(e) => {
+                  setNote(e.target.value);
+                  freshKey();
+                }}
+                maxLength={200}
+              />
             </Field>
           </div>
           <Button variant="primary" type="submit" disabled={busy} className="w-full">

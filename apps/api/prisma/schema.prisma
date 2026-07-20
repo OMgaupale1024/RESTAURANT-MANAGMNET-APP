@@ -523,10 +523,17 @@ model StockMovement {
   orderId      String?           @map("order_id") @db.Uuid
   note         String?
   actorUserId  String?           @map("actor_user_id") @db.Uuid
+  /// Supplied by the client on a MANUAL movement (receive/waste/count) so a
+  /// double-click or retry cannot apply the same movement twice. Same contract
+  /// as Order.idempotencyKey. Unique per tenant; NULLs do not collide, so the
+  /// server-written CONSUMPTION and reversal rows (which carry no key) are
+  /// unaffected.
+  idempotencyKey String?         @map("idempotency_key")
   createdAt    DateTime          @default(now()) @map("created_at")
 
   ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
 
+  @@unique([restaurantId, idempotencyKey])
   @@index([restaurantId, ingredientId, createdAt])
   @@index([orderId])
   @@map("stock_movements")

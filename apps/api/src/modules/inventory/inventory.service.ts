@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
+import type { StockMovementType } from '../../generated/prisma/enums';
 import type {
   CreateAdjustmentDto,
   CreateIngredientDto,
@@ -18,6 +19,21 @@ const SIGN: Record<string, number> = {
   PURCHASE: 1,
   WASTE: -1,
   CONSUMPTION: -1,
+};
+
+/** What both manual-movement endpoints return, and the idempotent replay reads back. */
+const MOVEMENT_SELECT = {
+  id: true,
+  type: true,
+  quantity: true,
+  createdAt: true,
+} as const;
+
+type MovementRow = {
+  id: string;
+  type: StockMovementType;
+  quantity: number;
+  createdAt: Date;
 };
 
 @Injectable()
@@ -170,20 +186,23 @@ export class InventoryService {
       throw new BadRequestException('Unsupported movement type');
     }
 
-    return this.prisma.tx(async (db) => {
-      await this.requireIngredient(db, ingredientId);
-      return db.stockMovement.create({
-        data: {
-          restaurantId: ctx.restaurantId,
-          ingredientId,
-          type: dto.type,
-          quantity: sign * dto.quantity,
-          note: dto.note ?? null,
-          actorUserId: ctx.userId,
-        },
-        select: { id: true, type: true, quantity: true, createdAt: true },
-      });
-    });
+    return this.writeOnce(dto.idempotencyKey, () =>
+      this.prisma.tx(async (db) => {
+        await this.requireIngredient(db, ingredientId);
+        return db.stockMovement.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            ingredientId,
+            type: dto.type,
+            quantity: sign * dto.quantity,
+            note: dto.note ?? null,
+            actorUserId: ctx.userId,
+            idempotencyKey: dto.idempotencyKey ?? null,
+          },
+          select: MOVEMENT_SELECT,
+        });
+      }),
+    );
   }
 
   /**
@@ -200,20 +219,62 @@ export class InventoryService {
       throw new BadRequestException('An adjustment of zero records nothing');
     }
 
-    return this.prisma.tx(async (db) => {
-      await this.requireIngredient(db, ingredientId);
-      return db.stockMovement.create({
-        data: {
-          restaurantId: ctx.restaurantId,
-          ingredientId,
-          type: 'ADJUSTMENT',
-          quantity: dto.quantity,
-          note: dto.note ?? null,
-          actorUserId: ctx.userId,
-        },
-        select: { id: true, type: true, quantity: true, createdAt: true },
-      });
-    });
+    return this.writeOnce(dto.idempotencyKey, () =>
+      this.prisma.tx(async (db) => {
+        await this.requireIngredient(db, ingredientId);
+        return db.stockMovement.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            ingredientId,
+            type: 'ADJUSTMENT',
+            quantity: dto.quantity,
+            note: dto.note ?? null,
+            actorUserId: ctx.userId,
+            idempotencyKey: dto.idempotencyKey ?? null,
+          },
+          select: MOVEMENT_SELECT,
+        });
+      }),
+    );
+  }
+
+  /**
+   * Runs a manual stock-movement write exactly once for a given idempotency
+   * key. Same shape as OrdersService.create: the DB unique index is the
+   * guarantee; this turns a replay or a lost concurrent race into the original
+   * row instead of a duplicate. The recovery read runs in a FRESH transaction —
+   * the one that hit the unique violation is already rolled back.
+   */
+  private async writeOnce(
+    key: string | undefined,
+    write: () => Promise<MovementRow>,
+  ): Promise<MovementRow> {
+    if (key) {
+      const existing = await this.findMovementByKey(key);
+      if (existing) return existing;
+    }
+    try {
+      return await write();
+    } catch (e) {
+      // A concurrent identical request won the unique index; return its row.
+      if (key && isUniqueViolation(e)) {
+        const existing = await this.findMovementByKey(key);
+        if (existing) return existing;
+      }
+      throw e;
+    }
+  }
+
+  /** The movement already written for this key, or null. RLS scopes it to the tenant. */
+  private findMovementByKey(
+    idempotencyKey: string,
+  ): Promise<MovementRow | null> {
+    return this.prisma.tx((db) =>
+      db.stockMovement.findFirst({
+        where: { idempotencyKey },
+        select: MOVEMENT_SELECT,
+      }),
+    );
   }
 
   async getRecipe(productId: string) {
