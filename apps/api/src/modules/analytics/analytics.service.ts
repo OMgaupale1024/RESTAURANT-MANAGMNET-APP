@@ -182,13 +182,50 @@ export class AnalyticsService {
 
   private bounds(range: Range): { from: Date; to: Date } {
     const to = new Date();
-    const from = new Date(to);
     if (range === 'today') {
-      from.setHours(0, 0, 0, 0);
-    } else {
-      const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
-      from.setDate(from.getDate() - days);
+      // NOT setHours(0,0,0,0): that resolves in the Node process's timezone, so
+      // on a UTC host (every target in DEPLOYMENT.md) "today" began at 05:30
+      // IST and silently dropped the small hours of trade. The day buckets in
+      // revenueSeries/peakHours have always been IST; this bound now agrees.
+      return { from: istStartOfDay(to), to };
     }
+    const from = new Date(to);
+    const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+    from.setDate(from.getDate() - days);
     return { from, to };
   }
+}
+
+/**
+ * TZ's UTC offset at a given instant, as an ISO suffix ("+05:30").
+ *
+ * Derived from TZ, never written down: a second hardcoded representation of
+ * the same fact is one that can silently disagree with TZ later. Asking Intl
+ * for the offset at `at` also means a zone with DST reports the offset that
+ * was actually in force, rather than a fixed guess.
+ */
+function tzOffset(at: Date): string {
+  const name = new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ,
+    timeZoneName: 'longOffset',
+  })
+    .formatToParts(at)
+    .find((p) => p.type === 'timeZoneName')!.value;
+  // "GMT+05:30" -> "+05:30". A zero-offset zone formats as bare "GMT".
+  return name.replace('GMT', '') || '+00:00';
+}
+
+/**
+ * The instant midnight began, in TZ, for the day containing `at`.
+ * Exported for the regression test that pins this to TZ rather than the host.
+ */
+export function istStartOfDay(at: Date): Date {
+  // en-CA formats as YYYY-MM-DD, which is exactly the anchor format below.
+  const day = new Intl.DateTimeFormat('en-CA', {
+    timeZone: TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(at);
+  return new Date(`${day}T00:00:00.000${tzOffset(at)}`);
 }
