@@ -655,6 +655,12 @@ model Order {
   totalMinor    Int         @map("total_minor")
   currency      String      @default("INR") @db.Char(3)
   notes         String?
+  /// Supplied by the client so a retry cannot create a second sale. Lives on
+  /// the ORDER, not just the payment: an order without a payment method used
+  /// to store no key at all, so a double-tapped Charge produced two orders.
+  /// Unique per tenant; NULLs do not collide, so orders sent without a key are
+  /// unaffected.
+  idempotencyKey String?    @map("idempotency_key")
   placedAt      DateTime?   @map("placed_at")
   createdAt     DateTime    @default(now()) @map("created_at")
   updatedAt     DateTime    @updatedAt @map("updated_at")
@@ -667,6 +673,7 @@ model Order {
   payments   Payment[]
 
   @@unique([restaurantId, orderNumber])
+  @@unique([restaurantId, idempotencyKey])
   @@index([restaurantId, createdAt])
   @@index([restaurantId, status])
   @@index([customerId])

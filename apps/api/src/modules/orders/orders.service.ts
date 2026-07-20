@@ -57,6 +57,16 @@ export class OrdersService {
         return order;
       } catch (e) {
         if (isUniqueViolation(e, 'order_number')) continue;
+
+        // A concurrent request carrying the same key got there first. The
+        // unique index is what actually prevents the duplicate; this turns
+        // losing that race into the correct idempotent answer — the winner's
+        // order — instead of a 500 the client would retry into a storm.
+        // No realtime emit here: the winner already announced it.
+        if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
+          const existing = await this.findByIdempotencyKey(dto.idempotencyKey);
+          if (existing) return existing;
+        }
         throw e;
       }
     }
@@ -170,6 +180,10 @@ export class OrdersService {
           taxMinor: tax,
           totalMinor: total,
           notes: dto.notes ?? null,
+          // On the ORDER, not only the payment. Stored here the unique index
+          // covers every order, including the ones with no payment method —
+          // which previously stored no key at all and duplicated on retry.
+          idempotencyKey: dto.idempotencyKey ?? null,
           items: { create: lines.map((l) => ({ restaurantId, ...l })) },
         },
         select: { id: true, orderNumber: true, totalMinor: true },
@@ -430,13 +444,21 @@ export class OrdersService {
     }
   }
 
+  /**
+   * The original order for a replayed key, or null.
+   *
+   * Reads the ORDER, not the payment. Going via payments meant an order taken
+   * without a payment method stored no key, so the replay found nothing and a
+   * second order was created. RLS scopes this to the tenant, and the key is
+   * unique per tenant, so this can only ever match this restaurant's own order.
+   */
   private async findByIdempotencyKey(key: string) {
     return this.prisma.tx(async (db) => {
-      const payment = await db.payment.findFirst({
+      const order = await db.order.findFirst({
         where: { idempotencyKey: key },
-        select: { orderId: true },
+        select: { id: true },
       });
-      return payment ? this.load(db, payment.orderId) : null;
+      return order ? this.load(db, order.id) : null;
     });
   }
 
