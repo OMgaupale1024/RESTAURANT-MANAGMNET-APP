@@ -126,6 +126,9 @@ export class AuthController {
       // Passed so the existing session's family continues instead of a new one
       // being minted and the old token orphaned.
       refreshCookie(req),
+      // Checked against the user's session epoch: a token from before a
+      // "sign out everywhere" may not start a new session.
+      req.tokenPayload!.iat,
     );
     return this.respond(tokens, res);
   }

@@ -212,6 +212,46 @@ describe('Realtime (e2e)', () => {
       sockets.push(socket);
       expect(socket.connected).toBe(true);
     });
+
+    /**
+     * A socket is authorised once, at connect. Without an explicit drop it kept
+     * streaming the tenant's orders after the session was revoked, for as long
+     * as the tab stayed open.
+     */
+    it('drops a live socket when the session is revoked', async () => {
+      const t = await newTenant('RT Revoke Cafe');
+      const socket = await connect(t.token);
+      sockets.push(socket);
+      expect(socket.connected).toBe(true);
+
+      const closed = new Promise<void>((resolve) =>
+        socket.once('disconnect', () => resolve()),
+      );
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(204);
+
+      await Promise.race([
+        closed,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('socket was not dropped')), 5000),
+        ),
+      ]);
+      expect(socket.connected).toBe(false);
+    });
+
+    it('refuses a reconnect with a token that predates the revocation', async () => {
+      const t = await newTenant('RT Reconnect Cafe');
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(204);
+
+      // The access token is still cryptographically valid — dropping the socket
+      // would be pointless if it could simply dial back in.
+      await expect(connect(t.token)).rejects.toBeDefined();
+    });
   });
 
   describe('per-tenant rooms', () => {

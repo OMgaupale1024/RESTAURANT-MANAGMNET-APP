@@ -354,6 +354,26 @@ export class StaffService {
   async updateMember(membershipId: string, dto: UpdateMemberDto) {
     const ctx = this.prisma.requireContext();
 
+    const updated = await this.updateMemberRecord(membershipId, dto, ctx);
+
+    // Deactivating has to end their sessions, not just their membership.
+    // Without this they kept a live refresh chain: the next refresh returned a
+    // token with no restaurant, but the session itself never died — which is
+    // the ex-employee case BLUEPRINT §8 names. Runs after the transaction
+    // commits, so a revocation failure cannot roll back the deactivation, and
+    // it also drops their open sockets (TokenService notifies the gateway).
+    if (dto.isActive === false) {
+      await this.tokens.revokeAllForUser(updated.user.id);
+    }
+
+    return updated;
+  }
+
+  private async updateMemberRecord(
+    membershipId: string,
+    dto: UpdateMemberDto,
+    ctx: { userId: string; restaurantId: string },
+  ) {
     return this.prisma.tx(async (db) => {
       const member = await db.membership.findFirst({
         where: { id: membershipId },

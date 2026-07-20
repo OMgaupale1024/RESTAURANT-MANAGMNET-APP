@@ -440,6 +440,75 @@ describe('Auth (e2e)', () => {
         .expect(200);
     });
 
+    /**
+     * select-restaurant mints a refresh session but is guarded by the ACCESS
+     * token, which outlives logout-all by up to 15 minutes. Before the epoch
+     * check it could therefore start a brand-new family and undo the
+     * revocation — verified reachable.
+     */
+    it('a surviving access token cannot re-establish a session via select-restaurant', async () => {
+      const reg = await register().expect(201);
+      const access = reg.body.accessToken as string;
+      const cookie = refreshCookie(reg)!;
+
+      const created = await api()
+        .post('/api/v1/restaurants')
+        .set('Authorization', `Bearer ${access}`)
+        .send({ name: 'Epoch Cafe' })
+        .expect(201);
+      const restaurantId = created.body.restaurant.id as string;
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${access}`)
+        .expect(204);
+
+      // The access token is still cryptographically valid here.
+      await api()
+        .post('/api/v1/auth/select-restaurant')
+        .set('Authorization', `Bearer ${access}`)
+        .set('Cookie', `${COOKIE}=${cookie}`)
+        .send({ restaurantId })
+        .expect(401);
+
+      // ...and dropping the cookie must not help either.
+      await api()
+        .post('/api/v1/auth/select-restaurant')
+        .set('Authorization', `Bearer ${access}`)
+        .send({ restaurantId })
+        .expect(401);
+    });
+
+    it('still allows select-restaurant on a session newer than the epoch', async () => {
+      const reg = await register().expect(201);
+      const created = await api()
+        .post('/api/v1/restaurants')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .send({ name: 'Fresh Cafe' })
+        .expect(201);
+
+      await api()
+        .post('/api/v1/auth/logout-all')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .expect(204);
+
+      // `iat` is whole seconds, so the check fails closed inside the second the
+      // epoch lands in. Wait past it — a human typing a password takes longer.
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // A fresh login is minted after the epoch and must work normally.
+      const again = await api()
+        .post('/api/v1/auth/login')
+        .send({ email, password })
+        .expect(200);
+      await api()
+        .post('/api/v1/auth/select-restaurant')
+        .set('Authorization', `Bearer ${again.body.accessToken}`)
+        .set('Cookie', `${COOKIE}=${refreshCookie(again)!}`)
+        .send({ restaurantId: created.body.restaurant.id })
+        .expect(200);
+    });
+
     it('clears the refresh cookie on this device too', async () => {
       const reg = await register().expect(201);
       const res = await api()

@@ -172,7 +172,14 @@ export class AuthService {
     restaurantId: string,
     meta: RequestMeta,
     presentedRefresh?: string,
+    accessTokenIat?: number,
   ): Promise<IssuedTokens> {
+    // This route mints a refresh session and is guarded by the ACCESS token, so
+    // an access token that survived "sign out everywhere" could use it to start
+    // a brand-new token family and undo the revocation. Verified reachable
+    // before this check existed.
+    await this.tokens.assertAccessTokenNotStale(userId, accessTokenIat);
+
     const membership = await this.prisma.txAs(
       { userId, restaurantId: null },
       (db) =>

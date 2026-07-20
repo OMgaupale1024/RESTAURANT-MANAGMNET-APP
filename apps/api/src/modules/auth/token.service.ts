@@ -13,6 +13,9 @@ export type AccessTokenPayload = {
   role: string | null;
   perms: string[];
   typ: 'access';
+  /** Issued-at, seconds. Set by jsonwebtoken on every sign; declared here so
+   *  the session-epoch check can read it. Not a new claim. */
+  iat?: number;
 };
 
 export type IssuedTokens = {
@@ -178,6 +181,51 @@ export class TokenService {
     }
   }
 
+  /**
+   * Refuses an access token minted before the user last revoked every session.
+   *
+   * The access token itself stays usable for ordinary reads until it expires —
+   * that is the documented trade in BLUEPRINT §8 and is unchanged. What it may
+   * no longer do is MINT A NEW SESSION, which is how "sign out everywhere" was
+   * being undone: select-restaurant is guarded by the access token, so a
+   * pre-revocation one could still start a fresh token family.
+   *
+   * `iat` has one-second granularity, so a token minted in the SAME second as
+   * the epoch cannot be told apart from one minted just before it. This fails
+   * closed and rejects it: a dropped socket reconnects within milliseconds, so
+   * erring the other way would hand the connection straight back. The cost is
+   * that a login landing in the same second as the logout it followed must be
+   * retried — a human typing a password takes seconds, so that is theoretical.
+   */
+  async assertAccessTokenNotStale(
+    userId: string,
+    iatSeconds?: number,
+  ): Promise<void> {
+    if (!iatSeconds) return;
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { sessionsValidFrom: true },
+    });
+    if (!user?.sessionsValidFrom) return;
+    if (iatSeconds * 1000 < user.sessionsValidFrom.getTime()) {
+      throw new UnauthorizedException('Session ended');
+    }
+  }
+
+  /**
+   * Called after every user-wide revocation, so holders of live connections can
+   * drop them. The realtime gateway subscribes to this.
+   *
+   * Deliberately a plain listener list rather than the gateway being injected
+   * here: RealtimeModule already imports AuthModule, so a direct dependency the
+   * other way would be a cycle.
+   */
+  onSessionsRevoked(listener: (userId: string) => void): void {
+    this.revocationListeners.add(listener);
+  }
+
+  private readonly revocationListeners = new Set<(userId: string) => void>();
+
   async revokeFamily(familyId: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
@@ -206,6 +254,17 @@ export class TokenService {
         data: { revokedAt: at },
       }),
     ]);
+
+    // A socket authorised before this moment must not keep receiving the
+    // tenant's feed. Listener failures are contained: a gateway problem must
+    // not turn a successful revocation into a failed request.
+    for (const listener of this.revocationListeners) {
+      try {
+        listener(userId);
+      } catch {
+        // ignored on purpose — the revocation itself has already committed
+      }
+    }
   }
 
   async revokeByToken(presented: string): Promise<void> {
