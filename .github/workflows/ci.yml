@@ -93,7 +93,20 @@ jobs:
             -c "ALTER ROLE oraos_api WITH LOGIN PASSWORD 'ci_app_pw';"
 
       - name: E2E tests
-        run: pnpm --filter @oraos/api test:e2e
+        run: |
+          set -o pipefail
+          pnpm --filter @oraos/api test:e2e 2>&1 | tee e2e-output.txt
+
+      # Jest failures are otherwise buried in the log; surface each failing test
+      # (and any timeout) as a GitHub annotation so a red e2e run is diagnosable
+      # at a glance from the checks UI / API.
+      - name: Surface failing e2e tests
+        if: failure()
+        run: |
+          grep -aE '●|Exceeded timeout of' e2e-output.txt \
+            | sed -E 's/\x1b\[[0-9;]*m//g' \
+            | head -60 \
+            | sed -E 's/^[[:space:]]*/::error::/' || true
 
       - name: Build API
         run: pnpm --filter @oraos/api build
