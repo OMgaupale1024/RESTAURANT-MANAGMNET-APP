@@ -12,6 +12,7 @@ import type {
   CreateMovementDto,
   ListIngredientsQuery,
   SetRecipeDto,
+  UpdateIngredientDto,
 } from './dto/inventory.dto';
 
 /** Sign is derived from the movement type, never taken from the client. */
@@ -50,12 +51,13 @@ export class InventoryService {
   async list(query: ListIngredientsQuery) {
     return this.prisma.tx(async (db) => {
       const ingredients = await db.ingredient.findMany({
-        where: { isActive: true },
+        where: query.include === 'all' ? undefined : { isActive: true },
         select: {
           id: true,
           name: true,
           unit: true,
           reorderLevel: true,
+          isActive: true,
         },
         orderBy: { name: 'asc' },
       });
@@ -111,6 +113,7 @@ export class InventoryService {
           name: true,
           unit: true,
           reorderLevel: true,
+          isActive: true,
           createdAt: true,
         },
       });
@@ -170,6 +173,64 @@ export class InventoryService {
       }
       throw e;
     }
+  }
+
+  /**
+   * Edits an ingredient in place.
+   *
+   * The one guarded field is `unit`: the ledger's quantities and every recipe
+   * quantity are integers in the CURRENT unit. Changing the label under them
+   * would turn 500 g of paneer into 500 ml without moving anything, so a unit
+   * change is allowed only while nothing has been recorded against the
+   * ingredient. After that, the honest correction is a new ingredient.
+   */
+  async update(id: string, dto: UpdateIngredientDto) {
+    return this.prisma.tx(async (db) => {
+      const existing = await db.ingredient.findFirst({
+        where: { id },
+        select: { id: true, unit: true },
+      });
+      if (!existing) throw new NotFoundException('Ingredient not found');
+
+      if (dto.unit !== undefined && dto.unit !== existing.unit) {
+        const [movements, recipes] = await Promise.all([
+          db.stockMovement.count({ where: { ingredientId: id } }),
+          db.recipeItem.count({ where: { ingredientId: id } }),
+        ]);
+        if (movements > 0 || recipes > 0) {
+          throw new ConflictException(
+            'Unit cannot change once stock or recipes are recorded in it — add a new ingredient instead',
+          );
+        }
+      }
+
+      try {
+        return await db.ingredient.update({
+          where: { id },
+          data: {
+            ...(dto.name !== undefined ? { name: dto.name } : {}),
+            ...(dto.unit !== undefined ? { unit: dto.unit } : {}),
+            // null clears the reorder level (stop tracking); undefined leaves it.
+            ...(dto.reorderLevel !== undefined
+              ? { reorderLevel: dto.reorderLevel }
+              : {}),
+            ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            unit: true,
+            reorderLevel: true,
+            isActive: true,
+          },
+        });
+      } catch (e) {
+        if (isUniqueViolation(e)) {
+          throw new ConflictException('An ingredient with that name exists');
+        }
+        throw e;
+      }
+    });
   }
 
   /**

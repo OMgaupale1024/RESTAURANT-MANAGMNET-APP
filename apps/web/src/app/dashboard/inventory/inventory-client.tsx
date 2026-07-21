@@ -9,6 +9,7 @@ import {
   listIngredients,
   recordAdjustment,
   recordMovement,
+  updateIngredient,
   type IngredientDetail,
   type IngredientRow,
   type StockUnit,
@@ -39,6 +40,7 @@ import { RecipeEditor } from './recipe-editor';
 const FILTERS = [
   { key: 'ALL', label: 'All' },
   { key: 'LOW', label: 'Low stock' },
+  { key: 'INACTIVE', label: 'Inactive' },
 ] as const;
 
 /** Ledger rendering: label + colour per movement type, never colour alone. */
@@ -78,7 +80,7 @@ export function InventoryClient() {
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
-    listIngredients(accessToken, onNewToken)
+    listIngredients(accessToken, onNewToken, { all: true })
       .then((list) => {
         if (!cancelled) setRows(list);
       })
@@ -116,9 +118,16 @@ export function InventoryClient() {
 
   const loading = rows === null;
   const all = rows ?? [];
-  const list = filter === 'LOW' ? all.filter((r) => r.isLow) : all;
-  const lowCount = all.filter((r) => r.isLow).length;
-  const negativeCount = all.filter((r) => r.currentStock < 0).length;
+  // Operational tabs show active stock; Inactive is the management view.
+  const active = all.filter((r) => r.isActive);
+  const list =
+    filter === 'INACTIVE'
+      ? all.filter((r) => !r.isActive)
+      : filter === 'LOW'
+        ? active.filter((r) => r.isLow)
+        : active;
+  const lowCount = active.filter((r) => r.isLow).length;
+  const negativeCount = active.filter((r) => r.currentStock < 0).length;
 
   return (
     <div>
@@ -138,7 +147,7 @@ export function InventoryClient() {
 
       {!loading && all.length > 0 && (
         <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-3">
-          <StatCard label="Ingredients" value={all.length} format={String} />
+          <StatCard label="Ingredients" value={active.length} format={String} />
           <StatCard label="Low stock" value={lowCount} format={String} />
           <StatCard label="Negative stock" value={negativeCount} format={String} />
         </div>
@@ -161,6 +170,12 @@ export function InventoryClient() {
               icon={Package}
               title="Nothing is low"
               body="Every tracked ingredient is above its reorder level."
+            />
+          ) : filter === 'INACTIVE' ? (
+            <EmptyState
+              icon={Package}
+              title="No deactivated ingredients"
+              body="Deactivate an ingredient from its detail panel to retire it without losing its history."
             />
           ) : (
             <EmptyState
@@ -189,7 +204,9 @@ export function InventoryClient() {
             </thead>
             <tbody>
               {list.map((r) => {
-                const status = stockStatus(r);
+                const status = r.isActive
+                  ? stockStatus(r)
+                  : { label: 'Inactive', variant: 'neutral' as const };
                 const daysLeft =
                   r.avgDailyUsage > 0 && r.currentStock > 0
                     ? Math.floor(r.currentStock / r.avgDailyUsage)
@@ -464,6 +481,8 @@ function IngredientSheet({
         </form>
       </section>
 
+      <EditDetails detail={detail} onChanged={onChanged} />
+
       <section>
         <h3 className="text-label mb-2">Ledger</h3>
         {detail.movements.length === 0 ? (
@@ -508,6 +527,148 @@ function IngredientSheet({
         )}
       </section>
     </div>
+  );
+}
+
+/**
+ * Name / unit / reorder-level editing plus deactivation. Unit is locked once
+ * the ledger has entries — the server enforces it (movements OR recipes); the
+ * disabled control just says so up front for the common case.
+ */
+function EditDetails({
+  detail,
+  onChanged,
+}: {
+  detail: IngredientDetail;
+  onChanged: () => void;
+}) {
+  const { accessToken, setAccessToken } = useAuth();
+  const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const toast = useToast();
+
+  const [name, setName] = useState(detail.name);
+  const [unit, setUnit] = useState<StockUnit>(detail.unit);
+  const [reorder, setReorder] = useState(
+    detail.reorderLevel === null ? '' : String(detail.reorderLevel),
+  );
+  const [busy, setBusy] = useState(false);
+
+  const unitLocked = detail.movements.length > 0;
+  const reorderTrim = reorder.trim();
+  const reorderValid =
+    reorderTrim === '' ||
+    (Number.isInteger(Number(reorderTrim)) && Number(reorderTrim) >= 0);
+  const valid = name.trim().length > 0 && reorderValid;
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!accessToken || !valid) return;
+    setBusy(true);
+    try {
+      await updateIngredient(accessToken, onNewToken, detail.id, {
+        name: name.trim(),
+        ...(unit !== detail.unit ? { unit } : {}),
+        // Blank stops tracking (null); a number sets the level.
+        reorderLevel: reorderTrim === '' ? null : Number(reorderTrim),
+      });
+      toast({ title: 'Ingredient updated', variant: 'success' });
+      onChanged();
+    } catch (e2) {
+      toast({
+        title: e2 instanceof ApiRequestError ? e2.message : 'Could not save',
+        variant: 'danger',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleActive() {
+    if (!accessToken) return;
+    setBusy(true);
+    try {
+      await updateIngredient(accessToken, onNewToken, detail.id, {
+        isActive: !detail.isActive,
+      });
+      toast({
+        title: detail.isActive ? 'Ingredient deactivated' : 'Ingredient reactivated',
+        variant: 'success',
+      });
+      onChanged();
+    } catch (e2) {
+      toast({
+        title: e2 instanceof ApiRequestError ? e2.message : 'Could not update',
+        variant: 'danger',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <h3 className="text-label mb-2">Details</h3>
+      <form onSubmit={save} className="space-y-3">
+        <Field label="Name">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={120}
+          />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Unit">
+            <Select
+              value={unit}
+              disabled={unitLocked}
+              onChange={(e) => setUnit(e.target.value as StockUnit)}
+            >
+              <option value="GRAM">grams</option>
+              <option value="MILLILITRE">millilitres</option>
+              <option value="PIECE">pieces</option>
+            </Select>
+          </Field>
+          <Field label="Low-stock level">
+            <Input
+              inputMode="numeric"
+              value={reorder}
+              onChange={(e) => setReorder(e.target.value)}
+              placeholder="blank = untracked"
+            />
+          </Field>
+        </div>
+        {unitLocked && (
+          <p className="text-[12px] text-ink-3">
+            The unit is fixed once movements exist — the ledger is recorded in it.
+          </p>
+        )}
+        <Button
+          variant="secondary"
+          type="submit"
+          disabled={!valid || busy}
+          className="w-full"
+        >
+          {busy ? 'Saving…' : 'Save details'}
+        </Button>
+      </form>
+
+      <div className="mt-4 border-t border-line pt-4">
+        <p className="mb-2 text-[12px] text-ink-3">
+          {detail.isActive
+            ? 'Deactivating hides it from the stock list. Its ledger and history stay.'
+            : 'This ingredient is deactivated. Reactivate to see it in the stock list again.'}
+        </p>
+        <Button
+          type="button"
+          variant={detail.isActive ? 'danger' : 'secondary'}
+          disabled={busy}
+          onClick={() => void toggleActive()}
+          className="w-full"
+        >
+          {detail.isActive ? 'Deactivate ingredient' : 'Reactivate ingredient'}
+        </Button>
+      </div>
+    </section>
   );
 }
 

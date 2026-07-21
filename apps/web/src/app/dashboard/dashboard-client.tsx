@@ -112,7 +112,7 @@ export function DashboardClient() {
           getAnalytics(accessToken, onNewToken, 'today'),
           getAnalytics(accessToken, onNewToken, '7d'),
           getInsights(accessToken, onNewToken),
-          listIngredients(accessToken, onNewToken, true),
+          listIngredients(accessToken, onNewToken, { lowOnly: true }),
           listActiveOrders(accessToken, onNewToken),
           getMe(accessToken),
         ]);

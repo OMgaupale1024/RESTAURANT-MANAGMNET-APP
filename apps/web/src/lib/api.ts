@@ -450,6 +450,7 @@ export type IngredientRow = {
   name: string;
   unit: StockUnit;
   reorderLevel: number | null;
+  isActive: boolean;
   currentStock: number;
   isLow: boolean;
   lastMovementAt: string | null;
@@ -469,12 +470,37 @@ export type IngredientDetail = Omit<IngredientRow, 'isLow'> & {
   }>;
 };
 
-export const listIngredients = (token: string, onNewToken: Retry, lowOnly?: boolean) =>
-  authedFetch<IngredientRow[]>(
-    lowOnly ? '/ingredients?lowStock=true' : '/ingredients',
+export const listIngredients = (
+  token: string,
+  onNewToken: Retry,
+  opts: { lowOnly?: boolean; all?: boolean } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.lowOnly) params.set('lowStock', 'true');
+  if (opts.all) params.set('include', 'all');
+  const qs = params.toString();
+  return authedFetch<IngredientRow[]>(
+    `/ingredients${qs ? `?${qs}` : ''}`,
     token,
     onNewToken,
   );
+};
+
+export const updateIngredient = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    unit?: StockUnit;
+    reorderLevel?: number | null;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<IngredientRow>(`/ingredients/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
 
 export const getIngredient = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<IngredientDetail>(`/ingredients/${id}`, token, onNewToken);

@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -119,4 +120,44 @@ export class ListIngredientsQuery {
   @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
   lowStock?: boolean;
+
+  /** "all" includes deactivated ingredients, for the management view. */
+  @IsOptional()
+  @IsString()
+  include?: string;
+}
+
+/**
+ * Every field optional; only the ones present are written.
+ *
+ * unit is changeable ONLY while the ingredient has no recorded movements and
+ * no recipes — the ledger and every recipe quantity are denominated in the
+ * current unit, and re-labelling 500 grams as 500 millilitres would silently
+ * falsify both. The service enforces this; see update().
+ *
+ * reorderLevel accepts null to stop tracking (distinct from 0, which means
+ * "flag when empty").
+ */
+export class UpdateIngredientDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  @Transform(({ value }) => String(value).trim())
+  name?: string;
+
+  @IsOptional()
+  @IsEnum(StockUnit)
+  unit?: StockUnit;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(MAX_QTY)
+  reorderLevel?: number | null;
+
+  /** Deactivation hides it from the operational list; history stays. */
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }

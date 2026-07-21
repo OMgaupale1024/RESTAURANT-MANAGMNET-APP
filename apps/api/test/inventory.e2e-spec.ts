@@ -871,4 +871,113 @@ describe('Inventory (e2e)', () => {
         .expect(400); // "Unknown ingredient" — existence is not confirmed
     });
   });
+
+  describe('ingredient edit', () => {
+    it('updates name and reorder level; null clears tracking', async () => {
+      const t = await newTenant('Edit Ing');
+      const ing = await addIngredient(t.token, {
+        name: 'Panner',
+        unit: 'GRAM',
+        reorderLevel: 500,
+      }).expect(201);
+
+      const upd = await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Paneer', reorderLevel: 1000 })
+        .expect(200);
+      expect(upd.body).toMatchObject({ name: 'Paneer', reorderLevel: 1000 });
+
+      const cleared = await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ reorderLevel: null })
+        .expect(200);
+      expect(cleared.body.reorderLevel).toBeNull();
+    });
+
+    it('changes unit only while the ledger is empty', async () => {
+      const t = await newTenant('Unit Ing');
+      const ing = await addIngredient(t.token, {
+        name: 'Oil',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // No movements yet: the unit was simply wrong, fix it.
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ unit: 'MILLILITRE' })
+        .expect(200);
+
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+      }).expect(201);
+
+      // The ledger now holds 1000 ml; relabelling it would falsify history.
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ unit: 'PIECE' })
+        .expect(409);
+    });
+
+    it('deactivation hides it from the default list; include=all keeps it', async () => {
+      const t = await newTenant('Hide Ing');
+      const ing = await addIngredient(t.token, {
+        name: 'Seasonal Herb',
+        unit: 'GRAM',
+      }).expect(201);
+
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ isActive: false })
+        .expect(200);
+
+      const active = await api()
+        .get('/api/v1/ingredients')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(active.body).toHaveLength(0);
+
+      const all = await api()
+        .get('/api/v1/ingredients?include=all')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(all.body).toHaveLength(1);
+      expect(all.body[0].isActive).toBe(false);
+    });
+
+    it('rejects a rename onto an existing ingredient name', async () => {
+      const t = await newTenant('Conflict Ing');
+      await addIngredient(t.token, { name: 'Flour', unit: 'GRAM' }).expect(201);
+      const ing2 = await addIngredient(t.token, {
+        name: 'Maida',
+        unit: 'GRAM',
+      }).expect(201);
+
+      await api()
+        .patch(`/api/v1/ingredients/${ing2.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Flour' })
+        .expect(409);
+    });
+
+    it("cannot edit another tenant's ingredient", async () => {
+      const a = await newTenant('Edit Victim');
+      const b = await newTenant('Edit Attacker');
+      const ing = await addIngredient(a.token, {
+        name: 'Secret Spice',
+        unit: 'GRAM',
+      }).expect(201);
+
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${b.token}`)
+        .send({ name: 'Stolen' })
+        .expect(404);
+    });
+  });
 });

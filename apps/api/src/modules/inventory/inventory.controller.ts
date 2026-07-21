@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Put,
   Query,
@@ -15,6 +16,7 @@ import {
   CreateMovementDto,
   ListIngredientsQuery,
   SetRecipeDto,
+  UpdateIngredientDto,
 } from './dto/inventory.dto';
 import { InventoryService } from './inventory.service';
 
@@ -38,6 +40,15 @@ export class InventoryController {
   @Post('ingredients')
   create(@Body() dto: CreateIngredientDto) {
     return this.inventory.create(dto);
+  }
+
+  @RequirePermissions('inventory.manage')
+  @Patch('ingredients/:id')
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateIngredientDto,
+  ) {
+    return this.inventory.update(id, dto);
   }
 
   /** Receive stock or record waste. */
