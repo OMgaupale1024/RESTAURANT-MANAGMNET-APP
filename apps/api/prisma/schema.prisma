@@ -518,6 +518,24 @@ enum StockMovementType {
   @@map("stock_movement_type")
 }
 
+/// Who stock is bought from. Tenant-scoped. Deactivated, never deleted — a
+/// PURCHASE movement records supplierId with no FK (like actorUserId), so a
+/// retired supplier's purchase history survives.
+model Supplier {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  name         String
+  phone        String?
+  notes        String?
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId, isActive])
+  @@map("suppliers")
+}
+
 model Ingredient {
   id           String    @id @default(uuid(7)) @db.Uuid
   restaurantId String    @map("restaurant_id") @db.Uuid
@@ -561,6 +579,13 @@ model StockMovement {
   /// caused it. No FK: the movement must outlive any order tidy-up, same
   /// reasoning as order_items.productId.
   orderId      String?           @map("order_id") @db.Uuid
+  /// PURCHASE only: who it was bought from and what the whole receipt cost.
+  /// The TOTAL, not a per-unit price — sub-paise unit costs (cheap staples by
+  /// the gram) would lose precision. Weighted-average unit cost is
+  /// SUM(total_cost) / SUM(quantity) over purchases. supplierId carries no FK
+  /// (append-only ledger), same as actorUserId.
+  supplierId     String?         @map("supplier_id") @db.Uuid
+  totalCostMinor Int?            @map("total_cost_minor")
   note         String?
   actorUserId  String?           @map("actor_user_id") @db.Uuid
   /// Supplied by the client on a MANUAL movement (receive/waste/count) so a

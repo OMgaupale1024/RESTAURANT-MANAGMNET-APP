@@ -638,6 +638,8 @@ export type IngredientRow = {
   lastMovementAt: string | null;
   /** 7-day CONSUMPTION average in base units per day. */
   avgDailyUsage: number;
+  /** Weighted-average purchase cost per base unit (paise, fractional). Null = no cost basis. */
+  avgUnitCostMinor: number | null;
 };
 
 export type IngredientDetail = Omit<IngredientRow, 'isLow'> & {
@@ -648,9 +650,60 @@ export type IngredientDetail = Omit<IngredientRow, 'isLow'> & {
     quantity: number;
     note: string | null;
     orderId: string | null;
+    totalCostMinor: number | null;
     createdAt: string;
   }>;
 };
+
+export type Supplier = {
+  id: string;
+  name: string;
+  phone: string | null;
+  notes: string | null;
+  isActive: boolean;
+};
+
+export const listSuppliers = (token: string, onNewToken: Retry, all?: boolean) =>
+  authedFetch<Supplier[]>(
+    `/suppliers${all ? '?include=all' : ''}`,
+    token,
+    onNewToken,
+  );
+
+export const createSupplier = (
+  token: string,
+  onNewToken: Retry,
+  body: { name: string; phone?: string; notes?: string },
+) =>
+  authedFetch<Supplier>('/suppliers', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updateSupplier = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { name?: string; phone?: string; notes?: string; isActive?: boolean },
+) =>
+  authedFetch<Supplier>(`/suppliers/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export type ProductCosting = {
+  id: string;
+  name: string;
+  priceMinor: number;
+  costed: boolean;
+  hasRecipe: boolean;
+  recipeCostMinor: number | null;
+  marginMinor: number | null;
+  foodCostPct: number | null;
+};
+
+export const getProductCosting = (token: string, onNewToken: Retry) =>
+  authedFetch<ProductCosting[]>('/products/costing', token, onNewToken);
 
 export const listIngredients = (
   token: string,
@@ -716,6 +769,9 @@ export const recordMovement = (
   body: {
     type: 'PURCHASE' | 'WASTE';
     quantity: number;
+    /** PURCHASE only. */
+    supplierId?: string;
+    totalCostMinor?: number;
     note?: string;
     idempotencyKey?: string;
   },

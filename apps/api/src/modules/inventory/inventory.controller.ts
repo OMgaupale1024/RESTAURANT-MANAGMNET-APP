@@ -14,9 +14,11 @@ import {
   CreateAdjustmentDto,
   CreateIngredientDto,
   CreateMovementDto,
+  CreateSupplierDto,
   ListIngredientsQuery,
   SetRecipeDto,
   UpdateIngredientDto,
+  UpdateSupplierDto,
 } from './dto/inventory.dto';
 import { InventoryService } from './inventory.service';
 
@@ -69,6 +71,38 @@ export class InventoryController {
     @Body() dto: CreateAdjustmentDto,
   ) {
     return this.inventory.recordAdjustment(id, dto);
+  }
+
+  // -- suppliers --
+
+  @RequirePermissions('inventory.read')
+  @Get('suppliers')
+  listSuppliers(@Query() query: ListIngredientsQuery) {
+    return this.inventory.listSuppliers(query.include === 'all');
+  }
+
+  @RequirePermissions('inventory.manage')
+  @Post('suppliers')
+  createSupplier(@Body() dto: CreateSupplierDto) {
+    return this.inventory.createSupplier(dto);
+  }
+
+  @RequirePermissions('inventory.manage')
+  @Patch('suppliers/:id')
+  updateSupplier(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateSupplierDto,
+  ) {
+    return this.inventory.updateSupplier(id, dto);
+  }
+
+  // Food-cost analysis. Same gate as the books — margin is owner/manager info,
+  // not a cashier's. (inventory.read covers owner/manager/kitchen; that is
+  // acceptable — the kitchen seeing food cost is fine.)
+  @RequirePermissions('inventory.read')
+  @Get('products/costing')
+  productCosting() {
+    return this.inventory.productCosting();
   }
 
   @RequirePermissions('inventory.read')

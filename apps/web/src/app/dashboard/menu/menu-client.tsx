@@ -5,6 +5,7 @@ import {
   ArrowDown,
   ArrowUp,
   BookOpen,
+  Coins,
   FolderPlus,
   Plus,
   Search,
@@ -17,6 +18,7 @@ import {
   createCategory,
   createProduct,
   deleteCategory,
+  getProductCosting,
   listCategories,
   listProducts,
   reorderCategories,
@@ -24,6 +26,7 @@ import {
   updateProduct,
   type Category,
   type Product,
+  type ProductCosting,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
@@ -74,6 +77,7 @@ export function MenuClient() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [costsOpen, setCostsOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -157,6 +161,10 @@ export function MenuClient() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight">Menu</h1>
         <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => setCostsOpen(true)}>
+            <Coins aria-hidden className="size-4" />
+            Food cost
+          </Button>
           <Button variant="secondary" onClick={() => setCategoriesOpen(true)}>
             <Tags aria-hidden className="size-4" />
             Categories
@@ -350,7 +358,124 @@ export function MenuClient() {
         productCountByCategory={productCountByCategory}
         onChanged={reload}
       />
+
+      <FoodCostSheet open={costsOpen} onClose={() => setCostsOpen(false)} />
     </div>
+  );
+}
+
+/* -------------------------------------------------------------- food cost */
+
+function FoodCostSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Sheet open={open} onClose={onClose} title="Food cost">
+      <p className="mb-4 text-[12px] text-ink-3">
+        Recipe cost from your weighted-average ingredient costs, and the margin
+        against each item&apos;s price. Add ingredient costs on the Inventory
+        screen to fill this in.
+      </p>
+      {/* Mounted only while open, so the fetch runs on open and its result
+          lands in a callback — no synchronous reset needed. */}
+      {open && <FoodCostBody />}
+    </Sheet>
+  );
+}
+
+function FoodCostBody() {
+  const { accessToken, setAccessToken } = useAuth();
+  const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const toast = useToast();
+
+  const [rows, setRows] = useState<ProductCosting[] | null>(null);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    getProductCosting(accessToken, onNewToken)
+      .then((r) => {
+        if (!cancelled) setRows(r);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          toast({
+            title: e instanceof ApiRequestError ? e.message : 'Could not load food cost',
+            variant: 'danger',
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, onNewToken, toast]);
+
+  return (
+    <>
+      {rows === null ? (
+        <div className="space-y-2" aria-label="Loading food cost">
+          {Array.from({ length: 5 }, (_, i) => (
+            <Skeleton key={i} className="h-9" />
+          ))}
+        </div>
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={Coins}
+          title="No items yet"
+          body="Add menu items and give them recipes to see food cost and margin."
+        />
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              <Th>Item</Th>
+              <Th numeric>Price</Th>
+              <Th numeric>Cost</Th>
+              <Th numeric>Food %</Th>
+              <Th numeric>Margin</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <Tr key={r.id}>
+                <Td className="max-w-40 truncate">{r.name}</Td>
+                <Td numeric>{formatMinor(r.priceMinor)}</Td>
+                <Td numeric>
+                  {r.recipeCostMinor === null ? (
+                    <span className="text-ink-3" title={r.hasRecipe ? 'Missing ingredient cost' : 'No recipe'}>
+                      —
+                    </span>
+                  ) : (
+                    formatMinor(r.recipeCostMinor)
+                  )}
+                </Td>
+                <Td numeric>
+                  {r.foodCostPct === null ? (
+                    <span className="text-ink-3">—</span>
+                  ) : (
+                    <span
+                      className={cn(
+                        // Rule of thumb: food cost above ~35% eats the margin.
+                        r.foodCostPct > 35 ? 'text-danger-text' : 'text-ink-2',
+                      )}
+                    >
+                      {r.foodCostPct}%
+                    </span>
+                  )}
+                </Td>
+                <Td numeric>
+                  {r.marginMinor === null ? (
+                    <span className="text-ink-3">—</span>
+                  ) : (
+                    <span className={cn(r.marginMinor < 0 && 'text-danger-text')}>
+                      {formatMinor(r.marginMinor)}
+                    </span>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </>
   );
 }
 

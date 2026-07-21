@@ -248,7 +248,9 @@ describe('Reports (e2e)', () => {
       // Veg Momo is 10000 @ 500bp default → tax 500 per unit; buy 2 → 1000.
       await placeOrder(t.token, t.p1, 2).expect(201);
       const res = await report(t.token, 'gst').expect(200);
-      const row = res.body.rows.find((r: { taxRateBp: number }) => r.taxRateBp === 500);
+      const row = res.body.rows.find(
+        (r: { taxRateBp: number }) => r.taxRateBp === 500,
+      );
       expect(row.taxableMinor).toBe(20000);
       expect(row.taxMinor).toBe(1000);
       expect(res.body.totalTaxMinor).toBe(1000);
@@ -258,7 +260,9 @@ describe('Reports (e2e)', () => {
       const t = await newTenant('Item Cafe');
       await placeOrder(t.token, t.p1, 3).expect(201);
       const res = await report(t.token, 'items').expect(200);
-      const item = res.body.rows.find((r: { name: string }) => r.name === 'Veg Momo');
+      const item = res.body.rows.find(
+        (r: { name: string }) => r.name === 'Veg Momo',
+      );
       expect(item.quantity).toBe(3);
       expect(item.revenueMinor).toBe(30000);
     });
@@ -277,7 +281,9 @@ describe('Reports (e2e)', () => {
         .expect(200);
       await placeOrder(t.token, t.p1, 1).expect(201);
       const res = await report(t.token, 'categories').expect(200);
-      const row = res.body.rows.find((r: { category: string }) => r.category === 'Momos');
+      const row = res.body.rows.find(
+        (r: { category: string }) => r.category === 'Momos',
+      );
       expect(row.revenueMinor).toBe(10000);
     });
 
@@ -292,7 +298,9 @@ describe('Reports (e2e)', () => {
         })
         .expect(201);
       const res = await report(t.token, 'settlement').expect(200);
-      const upi = res.body.rows.find((r: { method: string }) => r.method === 'UPI');
+      const upi = res.body.rows.find(
+        (r: { method: string }) => r.method === 'UPI',
+      );
       expect(upi.capturedMinor).toBe(10500); // 10000 + 5%
       expect(upi.netMinor).toBe(10500);
     });
@@ -329,7 +337,10 @@ describe('Reports (e2e)', () => {
       await api()
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${t.token}`)
-        .send({ items: [{ productId: t.p1, quantity: 1 }], couponCode: 'SAVE10' })
+        .send({
+          items: [{ productId: t.p1, quantity: 1 }],
+          couponCode: 'SAVE10',
+        })
         .expect(201);
       const res = await report(t.token, 'discounts').expect(200);
       expect(res.body.count).toBe(1);

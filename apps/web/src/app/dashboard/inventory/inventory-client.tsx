@@ -1,21 +1,26 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CookingPot, PackagePlus, Package } from 'lucide-react';
+import { CookingPot, PackagePlus, Package, Truck } from 'lucide-react';
 import {
   ApiRequestError,
   createIngredient,
+  createSupplier,
   getIngredient,
   listIngredients,
+  listSuppliers,
   recordAdjustment,
   recordMovement,
   updateIngredient,
+  updateSupplier,
   type IngredientDetail,
   type IngredientRow,
   type StockUnit,
+  type Supplier,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
+import { formatMinor, parseRupeesToMinor } from '@/lib/money';
 import { formatQuantity, unitLabel } from '@/lib/units';
 import { timeShort } from '../orders/order-detail';
 import { Badge } from '@/components/ui/badge';
@@ -58,6 +63,17 @@ function stockStatus(r: { currentStock: number; reorderLevel: number | null; isL
   return { label: 'OK', variant: 'success' as const };
 }
 
+/**
+ * Weighted-average cost per common unit. avgUnitCostMinor is paise per base
+ * unit (gram/ml/piece); grams show per kg, millilitres per litre.
+ */
+function formatUnitCost(avgUnitCostMinor: number | null, unit: StockUnit): string | null {
+  if (avgUnitCostMinor === null) return null;
+  const per = unit === 'PIECE' ? 1 : 1000;
+  const label = unit === 'GRAM' ? 'kg' : unit === 'MILLILITRE' ? 'L' : 'pc';
+  return `${formatMinor(Math.round(avgUnitCostMinor * per))}/${label}`;
+}
+
 export function InventoryClient() {
   const { accessToken, setAccessToken } = useAuth();
   const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
@@ -67,10 +83,23 @@ export function InventoryClient() {
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('ALL');
   const [adding, setAdding] = useState(false);
   const [recipesOpen, setRecipesOpen] = useState(false);
+  const [suppliersOpen, setSuppliersOpen] = useState(false);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<IngredientDetail | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+
+  const reloadSuppliers = useCallback(() => {
+    if (!accessToken) return;
+    listSuppliers(accessToken, onNewToken)
+      .then(setSuppliers)
+      .catch(() => undefined);
+  }, [accessToken, onNewToken]);
+
+  useEffect(() => {
+    reloadSuppliers();
+  }, [reloadSuppliers]);
 
   const tokenRef = useRef(accessToken);
   useEffect(() => {
@@ -134,6 +163,10 @@ export function InventoryClient() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight">Inventory</h1>
         <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => setSuppliersOpen(true)}>
+            <Truck aria-hidden className="size-4" />
+            Suppliers
+          </Button>
           <Button variant="secondary" onClick={() => setRecipesOpen(true)}>
             <CookingPot aria-hidden className="size-4" />
             Recipes
@@ -196,6 +229,9 @@ export function InventoryClient() {
                 <Th>Ingredient</Th>
                 <Th numeric>Current stock</Th>
                 <Th>Status</Th>
+                <Th numeric className="hidden lg:table-cell">
+                  Cost
+                </Th>
                 <Th numeric className="hidden md:table-cell">
                   Daily use (7d)
                 </Th>
@@ -265,6 +301,11 @@ export function InventoryClient() {
                     <Td>
                       <Badge variant={status.variant}>{status.label}</Badge>
                     </Td>
+                    <Td numeric className="hidden text-ink-2 lg:table-cell">
+                      {formatUnitCost(r.avgUnitCostMinor, r.unit) ?? (
+                        <span className="text-ink-3">—</span>
+                      )}
+                    </Td>
                     <Td numeric className="hidden text-ink-2 md:table-cell">
                       {r.avgDailyUsage > 0 ? (
                         <>
@@ -307,6 +348,7 @@ export function InventoryClient() {
         ) : (
           <IngredientSheet
             detail={detail}
+            suppliers={suppliers}
             onChanged={() => {
               open(detail.id);
               reload();
@@ -329,6 +371,13 @@ export function InventoryClient() {
         onClose={() => setRecipesOpen(false)}
         ingredients={all}
       />
+
+      <SuppliersSheet
+        open={suppliersOpen}
+        onClose={() => setSuppliersOpen(false)}
+        suppliers={suppliers}
+        onChanged={reloadSuppliers}
+      />
     </div>
   );
 }
@@ -342,9 +391,11 @@ type ActionKey = (typeof ACTIONS)[number]['key'];
 
 function IngredientSheet({
   detail,
+  suppliers,
   onChanged,
 }: {
   detail: IngredientDetail;
+  suppliers: Supplier[];
   onChanged: () => void;
 }) {
   const { accessToken, setAccessToken } = useAuth();
@@ -354,6 +405,8 @@ function IngredientSheet({
   const [action, setAction] = useState<ActionKey>('PURCHASE');
   const [qty, setQty] = useState('');
   const [note, setNote] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [cost, setCost] = useState('');
   const [busy, setBusy] = useState(false);
 
   // A stable key per logical submit, so a double-click, network retry, or
@@ -394,9 +447,14 @@ function IngredientSheet({
           idempotencyKey: idemKey.current,
         });
       } else {
+        // Cost + supplier ride along on a PURCHASE; the server ignores them
+        // on a WASTE. Blank cost means "received, cost unknown".
+        const costMinor = action === 'PURCHASE' ? parseRupeesToMinor(cost) : null;
         await recordMovement(accessToken, onNewToken, detail.id, {
           type: action,
           quantity: n,
+          ...(action === 'PURCHASE' && supplierId ? { supplierId } : {}),
+          ...(costMinor !== null ? { totalCostMinor: costMinor } : {}),
           ...(note.trim() ? { note: note.trim() } : {}),
           idempotencyKey: idemKey.current,
         });
@@ -404,6 +462,7 @@ function IngredientSheet({
       toast({ title: 'Recorded', variant: 'success' });
       setQty('');
       setNote('');
+      setCost('');
       freshKey(); // the next record is a new intent
       onChanged();
     } catch (e2) {
@@ -427,10 +486,13 @@ function IngredientSheet({
         >
           {formatQuantity(detail.currentStock, detail.unit)}
         </p>
-        <p className="mt-1 flex items-center gap-2 text-[12px] text-ink-3">
+        <p className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-ink-3">
           <Badge variant={status.variant}>{status.label}</Badge>
           {detail.reorderLevel !== null &&
             `Low at ${formatQuantity(detail.reorderLevel, detail.unit)}`}
+          {formatUnitCost(detail.avgUnitCostMinor, detail.unit) && (
+            <span>· avg cost {formatUnitCost(detail.avgUnitCostMinor, detail.unit)}</span>
+          )}
         </p>
         {detail.currentStock < 0 && (
           // Negative stock is not hidden: the sale was allowed to happen
@@ -475,6 +537,38 @@ function IngredientSheet({
               />
             </Field>
           </div>
+          {/* Cost + supplier only make sense for a purchase. */}
+          {action === 'PURCHASE' && (
+            <div className="flex gap-2">
+              <Field label="Total cost (₹, optional)">
+                <Input
+                  inputMode="decimal"
+                  value={cost}
+                  onChange={(e) => {
+                    setCost(e.target.value);
+                    freshKey();
+                  }}
+                  placeholder="e.g. 200.00"
+                />
+              </Field>
+              <Field label="Supplier (optional)">
+                <Select
+                  value={supplierId}
+                  onChange={(e) => {
+                    setSupplierId(e.target.value);
+                    freshKey();
+                  }}
+                >
+                  <option value="">—</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          )}
           <Button variant="primary" type="submit" disabled={busy} className="w-full">
             {busy ? 'Recording…' : ACTIONS.find((a) => a.key === action)?.label}
           </Button>
@@ -498,6 +592,7 @@ function IngredientSheet({
                   </Badge>
                   <span className="min-w-0 flex-1 truncate text-ink-3">
                     {timeShort(m.createdAt)}
+                    {m.totalCostMinor !== null && ` · ${formatMinor(m.totalCostMinor)}`}
                     {m.note && ` · ${m.note}`}
                     {m.orderId && (
                       <>
@@ -750,5 +845,135 @@ function AddIngredientModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/** Supplier list with inline add, rename, phone and deactivate. */
+function SuppliersSheet({
+  open,
+  onClose,
+  suppliers,
+  onChanged,
+}: {
+  open: boolean;
+  onClose: () => void;
+  suppliers: Supplier[];
+  onChanged: () => void;
+}) {
+  const { accessToken, setAccessToken } = useAuth();
+  const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const toast = useToast();
+
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const err = (e: unknown, fallback: string) =>
+    toast({
+      title: e instanceof ApiRequestError ? e.message : fallback,
+      variant: 'danger',
+    });
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    if (!accessToken || !name.trim()) return;
+    setBusy(true);
+    try {
+      await createSupplier(accessToken, onNewToken, {
+        name: name.trim(),
+        ...(phone.trim() ? { phone: phone.trim() } : {}),
+      });
+      setName('');
+      setPhone('');
+      onChanged();
+    } catch (e2) {
+      err(e2, 'Could not add the supplier');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deactivate(s: Supplier) {
+    if (!accessToken) return;
+    setBusy(true);
+    try {
+      await updateSupplier(accessToken, onNewToken, s.id, { isActive: false });
+      toast({ title: `${s.name} deactivated`, variant: 'success' });
+      onChanged();
+    } catch (e2) {
+      err(e2, 'Could not update the supplier');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Suppliers">
+      <div className="space-y-5">
+        <p className="text-[12px] text-ink-3">
+          Who you buy stock from. Pick one when receiving a delivery to build a
+          purchase history and a per-ingredient cost.
+        </p>
+
+        {suppliers.length === 0 ? (
+          <EmptyState
+            icon={Truck}
+            title="No suppliers yet"
+            body="Add one below, then choose it on the Receive form."
+          />
+        ) : (
+          <ul className="space-y-2">
+            {suppliers.map((s) => (
+              <li
+                key={s.id}
+                className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-medium">{s.name}</p>
+                  {s.phone && (
+                    <p className="truncate font-mono text-[12px] text-ink-3">{s.phone}</p>
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void deactivate(s)}
+                  className="shrink-0 text-ink-3 hover:text-danger"
+                >
+                  Remove
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <form onSubmit={add} className="space-y-3 border-t border-line pt-4">
+          <Field label="Supplier name">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={120}
+              placeholder="e.g. FreshFarm Dairy"
+            />
+          </Field>
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <Field label="Phone (optional)">
+                <Input
+                  inputMode="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  maxLength={40}
+                />
+              </Field>
+            </div>
+            <Button type="submit" variant="secondary" disabled={!name.trim() || busy}>
+              Add
+            </Button>
+          </div>
+        </form>
+      </div>
+    </Sheet>
   );
 }

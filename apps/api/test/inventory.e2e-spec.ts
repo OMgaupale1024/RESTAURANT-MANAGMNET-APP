@@ -89,6 +89,16 @@ const getIngredient = (token: string, id: string) =>
     .get(`/api/v1/ingredients/${id}`)
     .set('Authorization', `Bearer ${token}`);
 
+/** Creates a product at a given price and returns its id. */
+async function makeProductPriced(token: string, name: string, priceMinor: number) {
+  const res = await api()
+    .post('/api/v1/products')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ name, priceMinor })
+    .expect(201);
+  return res.body.id as string;
+}
+
 describe('Inventory (e2e)', () => {
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -138,6 +148,10 @@ describe('Inventory (e2e)', () => {
       await owner.ingredient.deleteMany({
         where: { restaurantId: { in: rids } },
       });
+      await owner.supplier.deleteMany({
+        where: { restaurantId: { in: rids } },
+      });
+      await owner.product.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.order.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.customer.deleteMany({
         where: { restaurantId: { in: rids } },
@@ -978,6 +992,148 @@ describe('Inventory (e2e)', () => {
         .set('Authorization', `Bearer ${b.token}`)
         .send({ name: 'Stolen' })
         .expect(404);
+    });
+  });
+
+  describe('suppliers and purchase cost', () => {
+    const addSupplier = (token: string, name: string) =>
+      api()
+        .post('/api/v1/suppliers')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name });
+
+    it('creates and lists a supplier', async () => {
+      const t = await newTenant('Supplier Cafe');
+      await addSupplier(t.token, 'FreshFarm Dairy').expect(201);
+      const list = await api()
+        .get('/api/v1/suppliers')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(list.body).toHaveLength(1);
+      expect(list.body[0].name).toBe('FreshFarm Dairy');
+    });
+
+    it('records a purchase with supplier + cost and derives weighted-average unit cost', async () => {
+      const t = await newTenant('Cost Cafe');
+      const supplier = await addSupplier(t.token, 'Mandi').expect(201);
+      const ing = await addIngredient(t.token, {
+        name: 'Paneer',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // Buy 1000g for ₹200 (20000 paise) → 20 paise/g.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        supplierId: supplier.body.id,
+        totalCostMinor: 20000,
+      }).expect(201);
+      // Buy 1000g for ₹300 → running total 500 paise over 2000g = 25 paise/g.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 30000,
+      }).expect(201);
+
+      const detail = await getIngredient(t.token, ing.body.id).expect(200);
+      // (20000 + 30000) / 2000 = 25 paise per gram.
+      expect(detail.body.avgUnitCostMinor).toBe(25);
+    });
+
+    it('a WASTE carries no cost even if one is sent', async () => {
+      const t = await newTenant('Waste Cost Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Oil',
+        unit: 'MILLILITRE',
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 10000, // 10 paise/ml
+      }).expect(201);
+      // Waste with a stray cost — the server must ignore it for the average.
+      await api()
+        .post(`/api/v1/ingredients/${ing.body.id}/movements`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ type: 'WASTE', quantity: 100, totalCostMinor: 99999 })
+        .expect(201);
+      const detail = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(detail.body.avgUnitCostMinor).toBe(10);
+    });
+
+    it('rejects a supplier from another tenant on a purchase', async () => {
+      const a = await newTenant('Buy A');
+      const b = await newTenant('Buy B');
+      const supplierB = await addSupplier(b.token, 'B Supplier').expect(201);
+      const ing = await addIngredient(a.token, {
+        name: 'Flour',
+        unit: 'GRAM',
+      }).expect(201);
+      await move(a.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 100,
+        supplierId: supplierB.body.id,
+      }).expect(400);
+    });
+
+    it('computes product food cost, margin and food-cost %', async () => {
+      const t = await newTenant('Costing Cafe');
+      // Product priced at 100.00.
+      const product = await makeProductPriced(t.token, 'Paneer Momo', 10000);
+      const ing = await addIngredient(t.token, {
+        name: 'Paneer',
+        unit: 'GRAM',
+      }).expect(201);
+      // 40 paise/g.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 40000,
+      }).expect(201);
+      // Recipe: 50g paneer per momo → recipe cost 50 × 40 = 2000 paise (₹20).
+      await api()
+        .put(`/api/v1/products/${product}/recipe`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ ingredientId: ing.body.id, quantity: 50 }] })
+        .expect(200);
+
+      const costing = await api()
+        .get('/api/v1/products/costing')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      const row = costing.body.find((r: { name: string }) => r.name === 'Paneer Momo');
+      expect(row.costed).toBe(true);
+      expect(row.recipeCostMinor).toBe(2000);
+      expect(row.marginMinor).toBe(8000); // 10000 − 2000
+      expect(row.foodCostPct).toBe(20); // 2000/10000
+    });
+
+    it('reports a product uncosted when an ingredient has no cost basis', async () => {
+      const t = await newTenant('Uncosted Cafe');
+      const product = await makeProductPriced(t.token, 'Mystery Dish', 5000);
+      const ing = await addIngredient(t.token, {
+        name: 'Unpriced Herb',
+        unit: 'GRAM',
+      }).expect(201);
+      // Stock arrives but with no cost recorded.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 100,
+      }).expect(201);
+      await api()
+        .put(`/api/v1/products/${product}/recipe`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ ingredientId: ing.body.id, quantity: 10 }] })
+        .expect(200);
+
+      const costing = await api()
+        .get('/api/v1/products/costing')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      const row = costing.body.find((r: { name: string }) => r.name === 'Mystery Dish');
+      expect(row.costed).toBe(false);
+      expect(row.recipeCostMinor).toBeNull();
+      expect(row.marginMinor).toBeNull();
     });
   });
 });

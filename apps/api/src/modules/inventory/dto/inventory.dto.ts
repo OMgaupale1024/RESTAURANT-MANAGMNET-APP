@@ -62,6 +62,21 @@ export class CreateMovementDto {
   @Max(MAX_QTY)
   quantity!: number;
 
+  /**
+   * PURCHASE only: the supplier and the TOTAL cost of this receipt (paise).
+   * Total, not per-unit — see the schema. The server ignores both unless the
+   * movement is a PURCHASE.
+   */
+  @IsOptional()
+  @IsUUID()
+  supplierId?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1_000_000_000)
+  totalCostMinor?: number;
+
   @IsOptional()
   @IsString()
   @MaxLength(200)
@@ -76,6 +91,47 @@ export class CreateMovementDto {
   @IsString()
   @MaxLength(64)
   idempotencyKey?: string;
+}
+
+export class CreateSupplierDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  @Transform(({ value }) => String(value).trim())
+  name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  notes?: string;
+}
+
+export class UpdateSupplierDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(120)
+  @Transform(({ value }) => String(value).trim())
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  notes?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 /** ADJUSTMENT is signed — a stock count can go either way. */

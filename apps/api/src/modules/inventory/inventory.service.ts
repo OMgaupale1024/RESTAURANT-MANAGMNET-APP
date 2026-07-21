@@ -6,13 +6,16 @@ import {
 } from '@nestjs/common';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type { StockMovementType } from '../../generated/prisma/enums';
+import { ManualMovementType } from './dto/inventory.dto';
 import type {
   CreateAdjustmentDto,
   CreateIngredientDto,
   CreateMovementDto,
+  CreateSupplierDto,
   ListIngredientsQuery,
   SetRecipeDto,
   UpdateIngredientDto,
+  UpdateSupplierDto,
 } from './dto/inventory.dto';
 
 /** Sign is derived from the movement type, never taken from the client. */
@@ -63,10 +66,11 @@ export class InventoryService {
       });
 
       // Operational context per row, still a fixed number of queries however
-      // many ingredients exist: last ledger touch, and the 7-day CONSUMPTION
-      // total that a daily-usage figure is honestly derived from.
+      // many ingredients exist: last ledger touch, the 7-day CONSUMPTION total
+      // that a daily-usage figure is honestly derived from, and the purchase
+      // totals that a weighted-average unit cost comes from.
       const weekAgo = new Date(Date.now() - 7 * 86_400_000);
-      const [stock, lastMoves, recentUse] = await Promise.all([
+      const [stock, lastMoves, recentUse, cost] = await Promise.all([
         this.stockByIngredient(db),
         db.stockMovement.groupBy({
           by: ['ingredientId'],
@@ -77,6 +81,7 @@ export class InventoryService {
           where: { type: 'CONSUMPTION', createdAt: { gte: weekAgo } },
           _sum: { quantity: true },
         }),
+        this.costByIngredient(db),
       ]);
       const lastById = new Map(
         lastMoves.map((g) => [g.ingredientId, g._max?.createdAt ?? null]),
@@ -97,6 +102,9 @@ export class InventoryService {
           // Average of the last 7 days of automatic depletion, rounded to the
           // base unit. Zero simply means nothing was consumed this week.
           avgDailyUsage: Math.round((useById.get(i.id) ?? 0) / 7),
+          // Weighted-average purchase cost per base unit (paise, fractional).
+          // Null = never purchased with a recorded cost, so no cost basis.
+          avgUnitCostMinor: cost.get(i.id) ?? null,
         };
       });
 
@@ -119,13 +127,13 @@ export class InventoryService {
       });
       if (!ingredient) throw new NotFoundException('Ingredient not found');
 
-      const [agg, movements] = await Promise.all([
+      const [agg, movements, cost] = await Promise.all([
         db.stockMovement.aggregate({
           where: { ingredientId: id },
           _sum: { quantity: true },
         }),
         // The ledger is the interesting part: not just how much, but where it
-        // went.
+        // went — and what a purchase cost.
         db.stockMovement.findMany({
           where: { ingredientId: id },
           take: 50,
@@ -136,9 +144,11 @@ export class InventoryService {
             quantity: true,
             note: true,
             orderId: true,
+            totalCostMinor: true,
             createdAt: true,
           },
         }),
+        this.costByIngredient(db),
       ]);
 
       const currentStock = agg._sum?.quantity ?? 0;
@@ -148,6 +158,7 @@ export class InventoryService {
         isLow:
           ingredient.reorderLevel !== null &&
           currentStock <= ingredient.reorderLevel,
+        avgUnitCostMinor: cost.get(id) ?? null,
         movements,
       };
     });
@@ -247,9 +258,19 @@ export class InventoryService {
       throw new BadRequestException('Unsupported movement type');
     }
 
+    // Supplier and cost belong to a PURCHASE only — a WASTE or a count has no
+    // supplier and no receipt. Verify the supplier belongs to this tenant.
+    const isPurchase = dto.type === ManualMovementType.PURCHASE;
     return this.writeOnce(dto.idempotencyKey, () =>
       this.prisma.tx(async (db) => {
         await this.requireIngredient(db, ingredientId);
+        if (isPurchase && dto.supplierId) {
+          const supplier = await db.supplier.findFirst({
+            where: { id: dto.supplierId },
+            select: { id: true },
+          });
+          if (!supplier) throw new BadRequestException('Unknown supplier');
+        }
         return db.stockMovement.create({
           data: {
             restaurantId: ctx.restaurantId,
@@ -258,6 +279,12 @@ export class InventoryService {
             quantity: sign * dto.quantity,
             note: dto.note ?? null,
             actorUserId: ctx.userId,
+            ...(isPurchase && dto.supplierId
+              ? { supplierId: dto.supplierId }
+              : {}),
+            ...(isPurchase && dto.totalCostMinor !== undefined
+              ? { totalCostMinor: dto.totalCostMinor }
+              : {}),
             idempotencyKey: dto.idempotencyKey ?? null,
           },
           select: MOVEMENT_SELECT,
@@ -538,6 +565,186 @@ export class InventoryService {
       _sum: { quantity: true },
     });
     return new Map(grouped.map((g) => [g.ingredientId, g._sum?.quantity ?? 0]));
+  }
+
+  /**
+   * ingredientId -> weighted-average unit cost (paise per base unit,
+   * fractional), from PURCHASE movements that recorded a cost. Weighted
+   * average = SUM(total_cost) / SUM(quantity purchased) — the standard cost
+   * method, and correct even when prices change between deliveries.
+   *
+   * Purchases without a recorded cost do not distort it: they contribute
+   * neither to the cost sum nor (deliberately) to the quantity sum here, so a
+   * free sample or an unpriced receive is simply excluded from the average.
+   *
+   * ponytail: weighted-average, not FIFO. FIFO COGS needs lot tracking; the
+   * average is what a counter kitchen actually reasons about.
+   */
+  private async costByIngredient(db: TxClient): Promise<Map<string, number>> {
+    const rows = await db.$queryRaw<
+      Array<{ ingredient_id: string; cost: bigint; qty: bigint }>
+    >`
+      SELECT ingredient_id,
+             COALESCE(SUM(total_cost_minor), 0)::bigint AS cost,
+             COALESCE(SUM(quantity) FILTER (WHERE total_cost_minor IS NOT NULL), 0)::bigint AS qty
+      FROM stock_movements
+      WHERE type = 'PURCHASE' AND total_cost_minor IS NOT NULL
+      GROUP BY ingredient_id
+    `;
+    const out = new Map<string, number>();
+    for (const r of rows) {
+      const qty = Number(r.qty);
+      if (qty > 0) out.set(r.ingredient_id, Number(r.cost) / qty);
+    }
+    return out;
+  }
+
+  // -- suppliers ------------------------------------------------------------
+
+  listSuppliers(includeInactive = false) {
+    return this.prisma.tx((db) =>
+      db.supplier.findMany({
+        where: includeInactive ? undefined : { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          notes: true,
+          isActive: true,
+        },
+        orderBy: { name: 'asc' },
+      }),
+    );
+  }
+
+  async createSupplier(dto: CreateSupplierDto) {
+    const ctx = this.prisma.requireContext();
+    try {
+      return await this.prisma.tx((db) =>
+        db.supplier.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            name: dto.name,
+            phone: dto.phone ?? null,
+            notes: dto.notes ?? null,
+          },
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            notes: true,
+            isActive: true,
+          },
+        }),
+      );
+    } catch (e) {
+      if (isUniqueViolation(e)) {
+        throw new ConflictException('A supplier with that name exists');
+      }
+      throw e;
+    }
+  }
+
+  async updateSupplier(id: string, dto: UpdateSupplierDto) {
+    return this.prisma.tx(async (db) => {
+      const existing = await db.supplier.findFirst({
+        where: { id },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundException('Supplier not found');
+      try {
+        return await db.supplier.update({
+          where: { id },
+          data: {
+            ...(dto.name !== undefined ? { name: dto.name } : {}),
+            ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+            ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+            ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            notes: true,
+            isActive: true,
+          },
+        });
+      } catch (e) {
+        if (isUniqueViolation(e)) {
+          throw new ConflictException('A supplier with that name exists');
+        }
+        throw e;
+      }
+    });
+  }
+
+  /**
+   * Food-cost analysis per product: recipe cost from the weighted-average
+   * ingredient costs, and the margin against the current price.
+   *
+   * A product with no recipe, or one whose recipe uses an ingredient with no
+   * cost basis, reports costed:false — the honest "we cannot cost this yet"
+   * rather than a fake zero that would flatter the margin.
+   */
+  async productCosting() {
+    return this.prisma.tx(async (db) => {
+      const [products, recipeItems, cost] = await Promise.all([
+        db.product.findMany({
+          where: { isActive: true },
+          select: { id: true, name: true, priceMinor: true },
+          orderBy: { name: 'asc' },
+        }),
+        db.recipeItem.findMany({
+          select: { productId: true, ingredientId: true, quantity: true },
+        }),
+        this.costByIngredient(db),
+      ]);
+
+      const itemsByProduct = new Map<
+        string,
+        Array<{ ingredientId: string; quantity: number }>
+      >();
+      for (const ri of recipeItems) {
+        const arr = itemsByProduct.get(ri.productId) ?? [];
+        arr.push({ ingredientId: ri.ingredientId, quantity: ri.quantity });
+        itemsByProduct.set(ri.productId, arr);
+      }
+
+      return products.map((p) => {
+        const items = itemsByProduct.get(p.id) ?? [];
+        // No recipe, or a missing cost basis on any ingredient, means the
+        // recipe cost is unknowable — do not fabricate one.
+        const hasRecipe = items.length > 0;
+        const allCosted = items.every((it) => cost.has(it.ingredientId));
+        const costed = hasRecipe && allCosted;
+
+        const recipeCostMinor = costed
+          ? Math.round(
+              items.reduce(
+                (s, it) => s + (cost.get(it.ingredientId) ?? 0) * it.quantity,
+                0,
+              ),
+            )
+          : null;
+        const marginMinor =
+          recipeCostMinor === null ? null : p.priceMinor - recipeCostMinor;
+        const foodCostPct =
+          recipeCostMinor === null || p.priceMinor === 0
+            ? null
+            : Math.round((recipeCostMinor / p.priceMinor) * 1000) / 10;
+
+        return {
+          id: p.id,
+          name: p.name,
+          priceMinor: p.priceMinor,
+          costed,
+          hasRecipe,
+          recipeCostMinor,
+          marginMinor,
+          foodCostPct,
+        };
+      });
+    });
   }
 }
 
