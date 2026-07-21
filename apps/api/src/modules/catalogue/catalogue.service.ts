@@ -202,11 +202,17 @@ export class CatalogueService {
         );
       }
       // RLS scopes each update; an id from another tenant matches zero rows.
-      const results = await Promise.all(
-        dto.ids.map((id, index) =>
-          db.category.updateMany({ where: { id }, data: { sortOrder: index } }),
-        ),
-      );
+      // Serial, not Promise.all: concurrent queries share this transaction's one
+      // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+      const results: Array<{ count: number }> = [];
+      for (const [index, id] of dto.ids.entries()) {
+        results.push(
+          await db.category.updateMany({
+            where: { id },
+            data: { sortOrder: index },
+          }),
+        );
+      }
       if (results.some((r) => r.count === 0)) {
         throw new BadRequestException('Unknown category in order');
       }

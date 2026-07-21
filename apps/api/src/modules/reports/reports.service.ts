@@ -128,20 +128,22 @@ export class ReportsService {
   async settlement(fromStr: string, toStr: string) {
     const { from, to } = this.window(fromStr, toStr);
     return this.prisma.tx(async (db) => {
-      const [pays, refunds] = await Promise.all([
-        db.payment.groupBy({
+      // Serial, not Promise.all: concurrent queries share this transaction's one
+      // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+      const [pays, refunds] = [
+        await db.payment.groupBy({
           by: ['method'],
           where: { status: 'CAPTURED', createdAt: { gte: from, lte: to } },
           _sum: { amountMinor: true },
           _count: { _all: true },
         }),
-        db.refund.groupBy({
+        await db.refund.groupBy({
           by: ['method'],
           where: { createdAt: { gte: from, lte: to } },
           _sum: { amountMinor: true },
           _count: { _all: true },
         }),
-      ]);
+      ];
       const refundByMethod = new Map(
         refunds.map((r) => [r.method, r._sum?.amountMinor ?? 0]),
       );

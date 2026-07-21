@@ -190,24 +190,26 @@ export class CashService {
   private async settlement(db: TxClient, session: SessionRow, until: Date) {
     const window = { gte: session.openedAt, lte: until };
 
-    const [payAgg, refundAgg, movementAgg] = await Promise.all([
-      db.payment.groupBy({
+    // Serial, not Promise.all: concurrent queries share this transaction's one
+    // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+    const [payAgg, refundAgg, movementAgg] = [
+      await db.payment.groupBy({
         by: ['method'],
         where: { status: 'CAPTURED', createdAt: window },
         _sum: { amountMinor: true },
         _count: { _all: true },
       }),
-      db.refund.groupBy({
+      await db.refund.groupBy({
         by: ['method'],
         where: { createdAt: window },
         _sum: { amountMinor: true },
       }),
-      db.cashMovement.groupBy({
+      await db.cashMovement.groupBy({
         by: ['type'],
         where: { sessionId: session.id },
         _sum: { amountMinor: true },
       }),
-    ]);
+    ];
 
     const sum = (
       rows: Array<{ method: string; _sum: { amountMinor: number | null } }>,

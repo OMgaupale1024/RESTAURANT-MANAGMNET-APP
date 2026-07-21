@@ -70,19 +70,21 @@ export class InventoryService {
       // that a daily-usage figure is honestly derived from, and the purchase
       // totals that a weighted-average unit cost comes from.
       const weekAgo = new Date(Date.now() - 7 * 86_400_000);
-      const [stock, lastMoves, recentUse, cost] = await Promise.all([
-        this.stockByIngredient(db),
-        db.stockMovement.groupBy({
+      // Serial, not Promise.all: concurrent queries share this transaction's one
+      // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+      const [stock, lastMoves, recentUse, cost] = [
+        await this.stockByIngredient(db),
+        await db.stockMovement.groupBy({
           by: ['ingredientId'],
           _max: { createdAt: true },
         }),
-        db.stockMovement.groupBy({
+        await db.stockMovement.groupBy({
           by: ['ingredientId'],
           where: { type: 'CONSUMPTION', createdAt: { gte: weekAgo } },
           _sum: { quantity: true },
         }),
-        this.costByIngredient(db),
-      ]);
+        await this.costByIngredient(db),
+      ];
       const lastById = new Map(
         lastMoves.map((g) => [g.ingredientId, g._max?.createdAt ?? null]),
       );
@@ -127,14 +129,16 @@ export class InventoryService {
       });
       if (!ingredient) throw new NotFoundException('Ingredient not found');
 
-      const [agg, movements, cost] = await Promise.all([
-        db.stockMovement.aggregate({
+      // Serial, not Promise.all: concurrent queries share this transaction's one
+      // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+      const [agg, movements, cost] = [
+        await db.stockMovement.aggregate({
           where: { ingredientId: id },
           _sum: { quantity: true },
         }),
         // The ledger is the interesting part: not just how much, but where it
         // went — and what a purchase cost.
-        db.stockMovement.findMany({
+        await db.stockMovement.findMany({
           where: { ingredientId: id },
           take: 50,
           orderBy: { createdAt: 'desc' },
@@ -148,8 +152,8 @@ export class InventoryService {
             createdAt: true,
           },
         }),
-        this.costByIngredient(db),
-      ]);
+        await this.costByIngredient(db),
+      ];
 
       const currentStock = agg._sum?.quantity ?? 0;
       return {
@@ -204,10 +208,12 @@ export class InventoryService {
       if (!existing) throw new NotFoundException('Ingredient not found');
 
       if (dto.unit !== undefined && dto.unit !== existing.unit) {
-        const [movements, recipes] = await Promise.all([
-          db.stockMovement.count({ where: { ingredientId: id } }),
-          db.recipeItem.count({ where: { ingredientId: id } }),
-        ]);
+        // Serial, not Promise.all: concurrent queries share this transaction's
+        // one pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+        const [movements, recipes] = [
+          await db.stockMovement.count({ where: { ingredientId: id } }),
+          await db.recipeItem.count({ where: { ingredientId: id } }),
+        ];
         if (movements > 0 || recipes > 0) {
           throw new ConflictException(
             'Unit cannot change once stock or recipes are recorded in it — add a new ingredient instead',
@@ -688,17 +694,19 @@ export class InventoryService {
    */
   async productCosting() {
     return this.prisma.tx(async (db) => {
-      const [products, recipeItems, cost] = await Promise.all([
-        db.product.findMany({
+      // Serial, not Promise.all: concurrent queries share this transaction's one
+      // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+      const [products, recipeItems, cost] = [
+        await db.product.findMany({
           where: { isActive: true },
           select: { id: true, name: true, priceMinor: true },
           orderBy: { name: 'asc' },
         }),
-        db.recipeItem.findMany({
+        await db.recipeItem.findMany({
           select: { productId: true, ingredientId: true, quantity: true },
         }),
-        this.costByIngredient(db),
-      ]);
+        await this.costByIngredient(db),
+      ];
 
       const itemsByProduct = new Map<
         string,

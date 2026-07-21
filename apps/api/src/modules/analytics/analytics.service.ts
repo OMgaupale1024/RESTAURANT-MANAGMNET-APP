@@ -48,23 +48,26 @@ export class AnalyticsService {
         createdAt: { gte: from, lte: to },
       };
 
-      const [summary, itemsAgg, series, topProducts, payments, hours] =
-        await Promise.all([
-          db.order.aggregate({
-            where,
-            _count: { _all: true },
-            _sum: { totalMinor: true },
-            _avg: { totalMinor: true },
-          }),
-          db.orderItem.aggregate({
-            where: { order: where },
-            _sum: { quantity: true },
-          }),
-          this.revenueSeries(db, from, to),
-          this.topProducts(db, from, to),
-          this.paymentBreakdown(db, from, to),
-          this.peakHours(db, from, to),
-        ]);
+      // Serial, not Promise.all: every query in one interactive transaction
+      // shares a single pg connection, and concurrent queries on one connection
+      // are unsafe under @prisma/adapter-pg (pg removes it in v9). Awaiting each
+      // array element runs them one at a time.
+      const [summary, itemsAgg, series, topProducts, payments, hours] = [
+        await db.order.aggregate({
+          where,
+          _count: { _all: true },
+          _sum: { totalMinor: true },
+          _avg: { totalMinor: true },
+        }),
+        await db.orderItem.aggregate({
+          where: { order: where },
+          _sum: { quantity: true },
+        }),
+        await this.revenueSeries(db, from, to),
+        await this.topProducts(db, from, to),
+        await this.paymentBreakdown(db, from, to),
+        await this.peakHours(db, from, to),
+      ];
 
       return {
         from,

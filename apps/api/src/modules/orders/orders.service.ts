@@ -657,16 +657,18 @@ export class OrdersService {
           );
         }
 
-        const [captured, refunded] = await Promise.all([
-          db.payment.aggregate({
+        // Serial, not Promise.all: concurrent queries share this transaction's
+        // one pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+        const [captured, refunded] = [
+          await db.payment.aggregate({
             where: { orderId, status: 'CAPTURED' },
             _sum: { amountMinor: true },
           }),
-          db.refund.aggregate({
+          await db.refund.aggregate({
             where: { orderId },
             _sum: { amountMinor: true },
           }),
-        ]);
+        ];
         const refundable =
           (captured._sum?.amountMinor ?? 0) - (refunded._sum?.amountMinor ?? 0);
         if (dto.amountMinor > refundable) {
