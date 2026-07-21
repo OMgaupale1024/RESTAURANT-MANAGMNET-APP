@@ -95,7 +95,12 @@ describe('Cash drawer (e2e)', () => {
   });
 
   afterAll(async () => {
-    for (const tbl of ['audit_logs', 'order_events', 'security_events', 'cash_movements']) {
+    for (const tbl of [
+      'audit_logs',
+      'order_events',
+      'security_events',
+      'cash_movements',
+    ]) {
       await owner.$executeRawUnsafe(`ALTER TABLE ${tbl} DISABLE TRIGGER USER`);
     }
     await owner.$executeRawUnsafe(`ALTER TABLE orders DISABLE TRIGGER USER`);
@@ -109,14 +114,20 @@ describe('Cash drawer (e2e)', () => {
         select: { restaurantId: true },
       });
       const ids = ms.map((m) => m.restaurantId);
-      await owner.cashMovement.deleteMany({ where: { restaurantId: { in: ids } } });
-      await owner.cashSession.deleteMany({ where: { restaurantId: { in: ids } } });
+      await owner.cashMovement.deleteMany({
+        where: { restaurantId: { in: ids } },
+      });
+      await owner.cashSession.deleteMany({
+        where: { restaurantId: { in: ids } },
+      });
       await owner.product.deleteMany({ where: { restaurantId: { in: ids } } });
       await owner.restaurant.deleteMany({ where: { id: { in: ids } } });
       await owner.securityEvent.deleteMany({
         where: { email: { startsWith: 'cash-' } },
       });
-      await owner.user.deleteMany({ where: { email: { startsWith: 'cash-' } } });
+      await owner.user.deleteMany({
+        where: { email: { startsWith: 'cash-' } },
+      });
     } finally {
       for (const tbl of [
         'audit_logs',
@@ -174,7 +185,9 @@ describe('Cash drawer (e2e)', () => {
     // 200000 + 5000 − 3000 + 10500 = 212500
     expect(r.expectedCashMinor).toBe(212500);
     // CASH row in the method breakdown.
-    const cash = r.payByMethod.find((p: { method: string }) => p.method === 'CASH');
+    const cash = r.payByMethod.find(
+      (p: { method: string }) => p.method === 'CASH',
+    );
     expect(cash.amountMinor).toBe(10500);
     expect(cash.count).toBe(1);
   });

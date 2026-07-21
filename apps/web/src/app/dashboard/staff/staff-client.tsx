@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Copy, MailPlus, UsersRound } from 'lucide-react';
+import { Copy, Download, MailPlus, UsersRound } from 'lucide-react';
 import {
   ApiRequestError,
   clockMember,
@@ -19,7 +19,27 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
+import { downloadCsv, toCsv } from '@/lib/csv';
 import { timeShort } from '../orders/order-detail';
+
+/**
+ * Timesheet → CSV, one row per staff member: total hours plus paired sessions.
+ * The payroll input a manager actually hands to an accountant. Hours are
+ * decimal (minutes/60) so a spreadsheet can multiply by a wage rate.
+ */
+function exportTimesheetCsv(sheet: TimesheetEntry[], from: string, to: string) {
+  const csv = toCsv(
+    ['Staff', 'Role', 'Sessions', 'Total hours', 'Open session'],
+    sheet.map((s) => [
+      s.name,
+      s.role,
+      s.sessions.length,
+      (s.totalMinutes / 60).toFixed(2),
+      s.openSession ? 'yes' : '',
+    ]),
+  );
+  downloadCsv(`timesheet-${from}_to_${to}.csv`, csv);
+}
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
@@ -425,6 +445,14 @@ function AttendanceTab({
           <Field label="To">
             <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="max-w-40" />
           </Field>
+          <Button
+            variant="secondary"
+            disabled={!sheet || sheet.every((s) => s.sessions.length === 0)}
+            onClick={() => sheet && exportTimesheetCsv(sheet, from, to)}
+          >
+            <Download aria-hidden className="size-4" />
+            Export CSV
+          </Button>
         </div>
 
         <div className="rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">

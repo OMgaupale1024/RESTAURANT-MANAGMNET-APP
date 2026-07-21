@@ -11,6 +11,7 @@ import {
   Megaphone,
   Package,
   Receipt,
+  ScrollText,
   Sparkles,
   Store,
   TrendingUp,
@@ -43,6 +44,7 @@ export const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
     items: [
       { label: 'Analytics', href: '/dashboard/analytics', icon: TrendingUp },
       { label: 'Reports', href: '/dashboard/reports', icon: FileText },
+      { label: 'Audit Log', href: '/dashboard/audit', icon: ScrollText },
     ],
   },
   {

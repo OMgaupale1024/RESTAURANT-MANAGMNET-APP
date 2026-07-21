@@ -896,6 +896,102 @@ export const getSalesReport = (
     onNewToken,
   );
 
+/* --------------------------------------------------------- reports pack */
+
+const reportUrl = (kind: string, from: string, to: string) =>
+  `/reports/${kind}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+
+export type GstReport = {
+  rows: Array<{ taxRateBp: number; taxableMinor: number; taxMinor: number }>;
+  totalTaxableMinor: number;
+  totalTaxMinor: number;
+};
+export const getGstReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<GstReport>(reportUrl('gst', from, to), token, onNewToken);
+
+export type ItemSalesReport = {
+  rows: Array<{ name: string; quantity: number; revenueMinor: number }>;
+};
+export const getItemSales = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<ItemSalesReport>(reportUrl('items', from, to), token, onNewToken);
+
+export type CategorySalesReport = {
+  rows: Array<{ category: string; quantity: number; revenueMinor: number }>;
+};
+export const getCategorySales = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<CategorySalesReport>(reportUrl('categories', from, to), token, onNewToken);
+
+export type SettlementReport = {
+  rows: Array<{
+    method: string;
+    capturedMinor: number;
+    refundedMinor: number;
+    netMinor: number;
+    count: number;
+  }>;
+  totalCapturedMinor: number;
+  totalRefundedMinor: number;
+  totalNetMinor: number;
+};
+export const getSettlementReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<SettlementReport>(reportUrl('settlement', from, to), token, onNewToken);
+
+export type VoidReport = {
+  rows: Array<{
+    id: string;
+    orderNumber: number;
+    status: string;
+    totalMinor: number;
+    reason: string | null;
+    at: string;
+  }>;
+  count: number;
+  totalMinor: number;
+};
+export const getVoidReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<VoidReport>(reportUrl('voids', from, to), token, onNewToken);
+
+export type DiscountReport = {
+  rows: Array<{
+    id: string;
+    orderNumber: number;
+    subtotalMinor: number;
+    discountMinor: number;
+    totalMinor: number;
+    couponCode: string | null;
+    at: string;
+  }>;
+  count: number;
+  totalDiscountMinor: number;
+};
+export const getDiscountReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<DiscountReport>(reportUrl('discounts', from, to), token, onNewToken);
+
+export type AuditEntry = {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  userId: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+};
+export const getAuditLog = (
+  token: string,
+  onNewToken: Retry,
+  opts: { cursor?: string; limit?: number } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return authedFetch<AuditEntry[]>(
+    `/reports/audit${qs ? `?${qs}` : ''}`,
+    token,
+    onNewToken,
+  );
+};
+
 export type AiInsight = {
   type: string;
   method: 'DETERMINISTIC' | 'STATISTICAL' | 'LLM';
