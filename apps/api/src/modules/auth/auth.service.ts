@@ -27,6 +27,10 @@ const BCRYPT_COST = 12;
 // enough to read an email and click, short enough that a leaked link goes stale.
 const PASSWORD_RESET_TTL_MINUTES = 30;
 
+// Verification is lower-stakes than a reset — a day is comfortable for someone
+// to get to their inbox, and it only proves ownership, never grants access.
+const EMAIL_VERIFY_TTL_HOURS = 24;
+
 /** Opaque tokens are stored only as a hash — a DB leak must not yield reset links. */
 const hashToken = (t: string) => createHash('sha256').update(t).digest('hex');
 
@@ -78,6 +82,10 @@ export class AuthService {
       ip: meta.ip,
       userAgent: meta.userAgent,
     });
+
+    // Send a verification email, fire-and-forget — registration must not block
+    // on delivery, and a failed send must never fail the signup.
+    void this.issueVerification(user.id, user.email).catch(() => undefined);
 
     return this.tokens.issue(
       {
@@ -290,6 +298,94 @@ export class AuthService {
   }
 
   /**
+   * Mints a verification token and emails the link. Shared by register (auto)
+   * and resend (on request). Invalidates any outstanding token first so only
+   * the newest link works — same rule as password reset.
+   */
+  private async issueVerification(
+    userId: string,
+    email: string,
+  ): Promise<void> {
+    await this.prisma.emailVerificationToken.updateMany({
+      where: { userId, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+    const token = randomBytes(32).toString('base64url');
+    await this.prisma.emailVerificationToken.create({
+      data: {
+        userId,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(Date.now() + EMAIL_VERIFY_TTL_HOURS * 3_600_000),
+      },
+    });
+    const url = `${this.config.getOrThrow<string>('WEB_URL')}/verify-email?token=${token}`;
+    await this.mail.sendEmailVerificationEmail(email, url);
+  }
+
+  /**
+   * Consumes a verification token and stamps the email verified. Single-use and
+   * atomic, like the reset flow. Idempotent for an already-verified user: a
+   * second click on the same link is a friendly success, not an error.
+   */
+  async verifyEmail(token: string, meta: RequestMeta): Promise<void> {
+    const record = await this.prisma.emailVerificationToken.findUnique({
+      where: { tokenHash: hashToken(token) },
+      select: { id: true, userId: true, usedAt: true, expiresAt: true },
+    });
+    if (!record || record.expiresAt < new Date()) {
+      throw new BadRequestException(
+        'This verification link is invalid or has expired',
+      );
+    }
+    // Already used: only OK if it was this user's own verification that already
+    // landed. Consuming stamps usedAt, so a replay finds usedAt set — treat a
+    // used-but-verified account as success.
+    const claimed = await this.prisma.$transaction(async (db) => {
+      const consumed = await db.emailVerificationToken.updateMany({
+        where: { id: record.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+      if (consumed.count === 0) return false;
+      await db.user.update({
+        where: { id: record.userId },
+        data: { emailVerifiedAt: new Date() },
+      });
+      return true;
+    });
+
+    if (!claimed) {
+      // The token was already consumed. If the account is verified, that is a
+      // success; otherwise the link is spent.
+      const user = await this.prisma.user.findUnique({
+        where: { id: record.userId },
+        select: { emailVerifiedAt: true },
+      });
+      if (user?.emailVerifiedAt) return;
+      throw new BadRequestException(
+        'This verification link is invalid or has expired',
+      );
+    }
+
+    this.events.record({
+      type: 'EMAIL_VERIFIED',
+      userId: record.userId,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    });
+  }
+
+  /** Resends a verification link to the logged-in user, if still unverified. */
+  async resendVerification(userId: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, emailVerifiedAt: true, isActive: true },
+    });
+    // Nothing to do (and nothing to leak) for a verified or inactive account.
+    if (!user || !user.isActive || user.emailVerifiedAt) return;
+    await this.issueVerification(userId, user.email).catch(() => undefined);
+  }
+
+  /**
    * Issues a new token scoped to a specific restaurant (backlog #4).
    *
    * The authorization check is the entire point: a user may only select a
@@ -379,11 +475,20 @@ export class AuthService {
   }
 
   async me(userId: string) {
-    const user = await this.prisma.user.findUnique({
+    const row = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, name: true, createdAt: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        createdAt: true,
+        emailVerifiedAt: true,
+      },
     });
-    if (!user) throw new UnauthorizedException();
+    if (!row) throw new UnauthorizedException();
+    // Expose a boolean, not the instant — the client only needs "verified?".
+    const { emailVerifiedAt, ...rest } = row;
+    const user = { ...rest, emailVerified: emailVerifiedAt !== null };
 
     // memberships is RLS-protected; a user may always read their own rows.
     const memberships = await this.prisma.txAs(

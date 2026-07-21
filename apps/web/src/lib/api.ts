@@ -111,7 +111,13 @@ export type LoginResponse = {
 };
 
 export type MeResponse = {
-  user: { id: string; email: string; name: string; createdAt: string };
+  user: {
+    id: string;
+    email: string;
+    name: string;
+    createdAt: string;
+    emailVerified: boolean;
+  };
   memberships: Array<{
     id: string;
     restaurant: { id: string; name: string; slug: string };
@@ -141,6 +147,19 @@ export const resetPassword = (token: string, password: string) =>
   apiFetch<void>('/auth/reset-password', {
     method: 'POST',
     body: JSON.stringify({ token, password }),
+  });
+
+/** Confirms an email address. Throws ApiRequestError (400) on an invalid/expired link. */
+export const verifyEmail = (token: string) =>
+  apiFetch<void>('/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+
+/** Resends the verification email to the logged-in user. */
+export const resendVerification = (accessToken: string, onNewToken: (t: string) => void) =>
+  authedFetch<void>('/auth/resend-verification', accessToken, onNewToken, {
+    method: 'POST',
   });
 
 export const getMe = (accessToken: string) =>

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PinoLogger } from 'nestjs-pino';
 import {
+  emailVerificationEmail,
   passwordResetEmail,
   staffInviteEmail,
   type StaffInviteParams,
@@ -67,6 +68,13 @@ export class MailService {
 
   async sendPasswordResetEmail(to: string, resetUrl: string): Promise<void> {
     await this.send({ to, ...passwordResetEmail(resetUrl) });
+  }
+
+  async sendEmailVerificationEmail(
+    to: string,
+    verifyUrl: string,
+  ): Promise<void> {
+    await this.send({ to, ...emailVerificationEmail(verifyUrl) });
   }
 
   async sendStaffInviteEmail(

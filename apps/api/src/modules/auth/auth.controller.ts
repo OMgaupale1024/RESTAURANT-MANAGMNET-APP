@@ -19,6 +19,7 @@ import {
   RegisterDto,
   ResetPasswordDto,
   SelectRestaurantDto,
+  VerifyEmailDto,
 } from './dto/auth.dto';
 import {
   REFRESH_COOKIE,
@@ -82,6 +83,23 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
     await this.auth.resetPassword(dto, meta(req));
+  }
+
+  // Public: the verification token in the email link is the credential.
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('verify-email')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async verifyEmail(@Body() dto: VerifyEmailDto, @Req() req: Request) {
+    await this.auth.verifyEmail(dto.token, meta(req));
+  }
+
+  // Authenticated: only the logged-in user can ask to re-send their own link.
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async resendVerification(@CurrentUser() ctx: TenantContext) {
+    await this.auth.resendVerification(ctx.userId);
   }
 
   // Public because the access token is expected to be expired here — the

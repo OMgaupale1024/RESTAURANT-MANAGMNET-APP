@@ -8,6 +8,7 @@ import {
   getRestaurantProfile,
   logout as apiLogout,
   logoutAll,
+  resendVerification,
   updateRestaurantProfile,
   type MeResponse,
   type RestaurantProfile,
@@ -31,9 +32,29 @@ export function SettingsClient() {
   const router = useRouter();
   const { accessToken, setAccessToken, clear } = useAuth();
   const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const toast = useToast();
 
   const [me, setMe] = useState<MeResponse | null>(null);
   const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+  const [resending, setResending] = useState(false);
+  const [resent, setResent] = useState(false);
+
+  async function onResend() {
+    if (!accessToken || resending) return;
+    setResending(true);
+    try {
+      await resendVerification(accessToken, onNewToken);
+      setResent(true);
+      toast({ title: 'Confirmation email sent', variant: 'success' });
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not resend',
+        variant: 'danger',
+      });
+    } finally {
+      setResending(false);
+    }
+  }
 
   async function onSignOut() {
     // The button says "everywhere", so it must actually revoke every session.
@@ -75,11 +96,38 @@ export function SettingsClient() {
 
       <div className="mt-6 max-w-xl space-y-4">
         <Card>
-          <CardHeader title="Profile" />
+          <CardHeader
+            title="Profile"
+            action={
+              <Badge variant={me.user.emailVerified ? 'success' : 'warning'}>
+                {me.user.emailVerified ? 'Email verified' : 'Email unverified'}
+              </Badge>
+            }
+          />
           <dl className="space-y-3 text-sm">
             <Row label="Name" value={me.user.name} />
             <Row label="Email" value={me.user.email} />
           </dl>
+          {!me.user.emailVerified && (
+            <div className="mt-4 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
+              <p className="text-[13px] text-warning-text">
+                Confirm your email so you can recover your account if you&apos;re
+                ever locked out.
+              </p>
+              <button
+                type="button"
+                onClick={() => void onResend()}
+                disabled={resending || resent}
+                className="mt-2 rounded-md border border-line-2 bg-surface px-3 py-1.5 text-[13px] font-medium transition-colors duration-120 hover:bg-surface-2 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+              >
+                {resent
+                  ? 'Sent — check your inbox'
+                  : resending
+                    ? 'Sending…'
+                    : 'Resend confirmation email'}
+              </button>
+            </div>
+          )}
         </Card>
 
         {canEdit ? (

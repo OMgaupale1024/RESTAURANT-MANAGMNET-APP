@@ -641,6 +641,108 @@ describe('Auth (e2e)', () => {
       expect(unknown).toBeUndefined();
     });
   });
+
+  describe('email verification', () => {
+    /** Registers and returns the verification token from the sent email. */
+    async function registerAndCaptureToken(): Promise<{
+      token: string;
+      accessToken: string;
+    }> {
+      const spy = jest
+        .spyOn(mail, 'sendEmailVerificationEmail')
+        .mockResolvedValue(undefined);
+      try {
+        const reg = await register().expect(201);
+        for (let i = 0; i < 100 && spy.mock.calls.length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        const url = spy.mock.calls[0]?.[1];
+        const token = url ? new URL(url).searchParams.get('token') : null;
+        return { token: token ?? '', accessToken: reg.body.accessToken };
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    const meResponse = (accessToken: string) =>
+      api()
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${accessToken}`);
+
+    it('sends a link on register; a new account is unverified', async () => {
+      const { token, accessToken } = await registerAndCaptureToken();
+      expect(token).toBeTruthy();
+
+      const me = await meResponse(accessToken).expect(200);
+      expect(me.body.user.emailVerified).toBe(false);
+    });
+
+    it('verifies the email with the link and flips the flag', async () => {
+      const { token, accessToken } = await registerAndCaptureToken();
+
+      await api().post('/api/v1/auth/verify-email').send({ token }).expect(204);
+
+      const me = await meResponse(accessToken).expect(200);
+      expect(me.body.user.emailVerified).toBe(true);
+    });
+
+    it('treats a replayed link as success once verified', async () => {
+      const { token } = await registerAndCaptureToken();
+      await api().post('/api/v1/auth/verify-email').send({ token }).expect(204);
+      // Same link again: idempotent success, not an error.
+      await api().post('/api/v1/auth/verify-email').send({ token }).expect(204);
+    });
+
+    it('rejects a forged or unknown token', async () => {
+      await registerAndCaptureToken();
+      await api()
+        .post('/api/v1/auth/verify-email')
+        .send({ token: 'not-a-real-token' })
+        .expect(400);
+    });
+
+    it('refuses an expired link', async () => {
+      const { token, accessToken } = await registerAndCaptureToken();
+      await prisma.emailVerificationToken.updateMany({
+        where: { userId: jwtSub(accessToken) },
+        data: { expiresAt: new Date(Date.now() - 60_000) },
+      });
+      await api().post('/api/v1/auth/verify-email').send({ token }).expect(400);
+    });
+
+    it('resends a fresh link and invalidates the old one', async () => {
+      const { token: firstToken, accessToken } =
+        await registerAndCaptureToken();
+
+      const spy = jest
+        .spyOn(mail, 'sendEmailVerificationEmail')
+        .mockResolvedValue(undefined);
+      let secondToken = '';
+      try {
+        await api()
+          .post('/api/v1/auth/resend-verification')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .expect(204);
+        for (let i = 0; i < 100 && spy.mock.calls.length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        secondToken =
+          new URL(spy.mock.calls[0][1]).searchParams.get('token') ?? '';
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The old link is now dead; the new one works.
+      await api()
+        .post('/api/v1/auth/verify-email')
+        .send({ token: firstToken })
+        .expect(400);
+      await api()
+        .post('/api/v1/auth/verify-email')
+        .send({ token: secondToken })
+        .expect(204);
+    });
+  });
 });
 
 /** Reads the `sub` (userId) claim out of an access token, for test assertions. */

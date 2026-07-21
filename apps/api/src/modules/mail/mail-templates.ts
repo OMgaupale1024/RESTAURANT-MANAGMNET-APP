@@ -61,6 +61,24 @@ export function passwordResetEmail(resetUrl: string): Built {
   return { subject, html, text };
 }
 
+export function emailVerificationEmail(verifyUrl: string): Built {
+  const subject = 'Confirm your OraOS email';
+  const text =
+    'Welcome to OraOS! Confirm this email address to secure your account.\n\n' +
+    `Confirm it here (the link expires in 24 hours):\n${verifyUrl}\n\n` +
+    "If you didn't create an OraOS account, you can ignore this email.\n\n" +
+    'Need help? Reply to this email and our team will get back to you.';
+  const html = shell(
+    `<p>Welcome to OraOS! Confirm this email address to secure your account.</p>
+     <p style="margin:24px 0;">${button(verifyUrl, 'Confirm email')}</p>
+     <p style="color:#666;font-size:13px;">This link expires in <strong>24 hours</strong>.</p>
+     <p style="color:#666;font-size:13px;">If you didn't create an OraOS account, ignore this email.</p>
+     <hr style="border:none;border-top:1px solid #eee;margin:20px 0;" />
+     <p style="color:#888;font-size:12px;">Need help? Just reply to this email.</p>`,
+  );
+  return { subject, html, text };
+}
+
 export type StaffInviteParams = {
   restaurantName: string;
   roleName: string;
