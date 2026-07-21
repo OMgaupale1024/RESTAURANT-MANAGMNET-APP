@@ -660,6 +660,7 @@ enum OrderEventType {
   ITEM_ADDED
   ITEM_REMOVED
   PAYMENT_RECORDED
+  REFUND_RECORDED
   NOTE_ADDED
 
   @@map("order_event_type")
@@ -717,6 +718,7 @@ model Order {
   items      OrderItem[]
   events     OrderEvent[]
   payments   Payment[]
+  refunds    Refund[]
 
   @@unique([restaurantId, orderNumber])
   @@unique([restaurantId, idempotencyKey])
@@ -768,6 +770,34 @@ model OrderEvent {
   @@index([orderId, createdAt])
   @@index([restaurantId, createdAt])
   @@map("order_events")
+}
+
+/// Money handed BACK. A separate table from payments — payments carry a
+/// `amount_minor > 0` CHECK precisely so nothing can quietly net money out of
+/// a sale, and a refund against CASH/UPI is a counter action that deserves its
+/// own record: who returned how much, by what method, and why.
+///
+/// Append-only like every other money trail. The refund never edits the
+/// payment it reverses; both rows stay, and the balance is derived.
+model Refund {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  restaurantId   String        @map("restaurant_id") @db.Uuid
+  orderId        String        @map("order_id") @db.Uuid
+  method         PaymentMethod
+  amountMinor    Int           @map("amount_minor")
+  /// Required. "Customer complaint", "order voided — cash returned"…
+  /// A silent refund is the second-classic way money leaves a till.
+  reason         String
+  actorUserId    String?       @map("actor_user_id") @db.Uuid
+  idempotencyKey String?       @map("idempotency_key")
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, idempotencyKey])
+  @@index([orderId])
+  @@index([restaurantId, createdAt])
+  @@map("refunds")
 }
 
 /// A split payment is N rows against one order.

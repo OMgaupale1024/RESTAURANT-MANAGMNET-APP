@@ -378,6 +378,7 @@ export function KitchenClient() {
                 ? setAskDanger(to)
                 : void advance(detail.order.id, to)
             }
+            onChanged={() => void loadDetail(detail.order.id)}
           />
         )}
       </Sheet>

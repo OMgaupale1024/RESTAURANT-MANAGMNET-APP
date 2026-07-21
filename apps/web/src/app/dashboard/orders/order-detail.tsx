@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useState } from 'react';
 import {
   Ban,
   BellRing,
@@ -9,12 +10,21 @@ import {
   MessageCircle,
   Printer,
   Receipt,
+  Undo2,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
-import type { Order, RestaurantProfile, TimelineEvent } from '@/lib/api';
+import {
+  ApiRequestError,
+  recordPayment,
+  recordRefund,
+  type Order,
+  type RestaurantProfile,
+  type TimelineEvent,
+} from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
-import { formatMinor } from '@/lib/money';
+import { formatMinor, parseRupeesToMinor } from '@/lib/money';
 import { nextStatuses } from '@/lib/order-status';
 import {
   BillReceipt,
@@ -25,6 +35,9 @@ import {
 } from '@/lib/receipt';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Field, Input, Select } from '@/components/ui/input';
+import { Modal } from '@/components/ui/modal';
+import { useToast } from '@/components/ui/toast';
 
 /*
  * Order presentation shared by the Orders page (D6) and the kitchen board
@@ -106,6 +119,7 @@ export function OrderDetail({
   moving,
   onMove,
   profile,
+  onChanged,
 }: {
   order: Order;
   timeline: TimelineEvent[];
@@ -113,6 +127,8 @@ export function OrderDetail({
   onMove: (to: string) => void;
   /** Business profile for receipts; buttons wait until it has loaded. */
   profile?: RestaurantProfile | null;
+  /** Called after a payment or refund is recorded, to refresh the sheet. */
+  onChanged?: () => void;
 }) {
   const next = nextStatuses(order.status);
   const forward = next.filter((s) => !DANGER_STATUSES.includes(s));
@@ -243,25 +259,7 @@ export function OrderDetail({
         )}
       </Section>
 
-      <Section label="Payment">
-        {order.payments.length === 0 ? (
-          <p className="text-[13px] text-ink-3">No payment recorded.</p>
-        ) : (
-          <ul className="space-y-1.5">
-            {order.payments.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-2 text-[13px]">
-                <span className="flex items-center gap-2">
-                  {PAYMENT_LABEL[p.method] ?? p.method}
-                  <Badge variant={p.status === 'CAPTURED' ? 'success' : 'neutral'}>
-                    {p.status.toLowerCase()}
-                  </Badge>
-                </span>
-                <span className="tabular-nums">{formatMinor(p.amountMinor)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
+      <PaymentSection order={order} onChanged={onChanged} />
 
       {order.notes && (
         <Section label="Notes">
@@ -269,6 +267,261 @@ export function OrderDetail({
         </Section>
       )}
     </div>
+  );
+}
+
+/**
+ * Payments + refunds, with the two money actions that used to be impossible:
+ * recording a payment after placement (split legs, pay-later) and recording a
+ * refund (order.refund holders only — the server refuses everyone else).
+ */
+function PaymentSection({
+  order,
+  onChanged,
+}: {
+  order: Order;
+  onChanged?: () => void;
+}) {
+  const { accessToken, setAccessToken } = useAuth();
+  const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const toast = useToast();
+
+  const [payOpen, setPayOpen] = useState(false);
+  const [refundOpen, setRefundOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const captured = order.payments.filter((p) => p.status === 'CAPTURED');
+  const capturedMinor = captured.reduce((s, p) => s + p.amountMinor, 0);
+  const refundedMinor = order.refunds.reduce((s, r) => s + r.amountMinor, 0);
+  const outstanding = order.totalMinor - capturedMinor;
+  const refundable = capturedMinor - refundedMinor;
+
+  const reversed = ['VOIDED', 'CANCELLED'].includes(order.status);
+  const canRecordPayment = outstanding > 0 && !reversed;
+  const canRefund =
+    refundable > 0 && ['COMPLETED', 'VOIDED', 'CANCELLED'].includes(order.status);
+
+  async function submitPayment(method: string, amountMinor: number) {
+    if (!accessToken) return;
+    setBusy(true);
+    try {
+      await recordPayment(accessToken, onNewToken, order.id, {
+        method,
+        amountMinor,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      toast({ title: 'Payment recorded', variant: 'success' });
+      setPayOpen(false);
+      onChanged?.();
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not record payment',
+        variant: 'danger',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitRefund(method: string, amountMinor: number, reason: string) {
+    if (!accessToken) return;
+    setBusy(true);
+    try {
+      await recordRefund(accessToken, onNewToken, order.id, {
+        method,
+        amountMinor,
+        reason,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      toast({ title: 'Refund recorded', variant: 'success' });
+      setRefundOpen(false);
+      onChanged?.();
+    } catch (e) {
+      // A 403 is the server refusing order.refund — shown verbatim.
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not record refund',
+        variant: 'danger',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section label="Payment">
+      {order.payments.length === 0 && order.refunds.length === 0 ? (
+        <p className="text-[13px] text-ink-3">No payment recorded.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {order.payments.map((p) => (
+            <li key={p.id} className="flex items-center justify-between gap-2 text-[13px]">
+              <span className="flex items-center gap-2">
+                {PAYMENT_LABEL[p.method] ?? p.method}
+                <Badge variant={p.status === 'CAPTURED' ? 'success' : 'neutral'}>
+                  {p.status.toLowerCase()}
+                </Badge>
+              </span>
+              <span className="tabular-nums">{formatMinor(p.amountMinor)}</span>
+            </li>
+          ))}
+          {order.refunds.map((r) => (
+            <li key={r.id} className="text-[13px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-2">
+                  Refund — {PAYMENT_LABEL[r.method] ?? r.method}
+                  <Badge variant="danger">refunded</Badge>
+                </span>
+                <span className="tabular-nums text-danger-text">
+                  −{formatMinor(r.amountMinor)}
+                </span>
+              </div>
+              <p className="mt-0.5 text-[12px] text-ink-3">“{r.reason}”</p>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {outstanding > 0 && !reversed && (
+        <p className="mt-2 text-[13px] font-medium text-warning-text">
+          {formatMinor(outstanding)} outstanding
+        </p>
+      )}
+
+      {(canRecordPayment || canRefund) && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {canRecordPayment && (
+            <Button variant="secondary" size="sm" onClick={() => setPayOpen(true)}>
+              Record payment
+            </Button>
+          )}
+          {canRefund && (
+            <Button variant="secondary" size="sm" onClick={() => setRefundOpen(true)}>
+              <Undo2 aria-hidden className="size-3.5" />
+              Refund
+            </Button>
+          )}
+        </div>
+      )}
+
+      <MoneyModal
+        open={payOpen}
+        onClose={() => setPayOpen(false)}
+        title={`Record payment — ${formatMinor(outstanding)} outstanding`}
+        maxMinor={outstanding}
+        defaultMinor={outstanding}
+        confirmLabel="Record payment"
+        busy={busy}
+        onSubmit={(m, a) => void submitPayment(m, a)}
+      />
+      <MoneyModal
+        open={refundOpen}
+        onClose={() => setRefundOpen(false)}
+        title={`Refund — up to ${formatMinor(refundable)}`}
+        maxMinor={refundable}
+        defaultMinor={refundable}
+        confirmLabel="Record refund"
+        busy={busy}
+        requireReason
+        onSubmit={(m, a, reason) => void submitRefund(m, a, reason ?? '')}
+      />
+    </Section>
+  );
+}
+
+/** Amount + method (+ optional reason) — shared by payment and refund. */
+function MoneyModal({
+  open,
+  onClose,
+  title,
+  maxMinor,
+  defaultMinor,
+  confirmLabel,
+  busy,
+  requireReason = false,
+  onSubmit,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  maxMinor: number;
+  defaultMinor: number;
+  confirmLabel: string;
+  busy: boolean;
+  requireReason?: boolean;
+  onSubmit: (method: string, amountMinor: number, reason?: string) => void;
+}) {
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState('CASH');
+  const [reason, setReason] = useState('');
+  // Re-prime the amount each time the modal opens for a fresh balance.
+  const [primedFor, setPrimedFor] = useState<number | null>(null);
+  if (open && primedFor !== defaultMinor) {
+    setPrimedFor(defaultMinor);
+    setAmount((defaultMinor / 100).toFixed(2));
+  }
+  if (!open && primedFor !== null) {
+    setPrimedFor(null);
+  }
+
+  const amountMinor = parseRupeesToMinor(amount);
+  const valid =
+    amountMinor !== null &&
+    amountMinor >= 1 &&
+    amountMinor <= maxMinor &&
+    (!requireReason || reason.trim().length > 0);
+
+  return (
+    <Modal open={open} onClose={onClose} title={title}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (valid) onSubmit(method, amountMinor!, reason.trim() || undefined);
+        }}
+        className="space-y-4"
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Amount (₹)">
+            <Input
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </Field>
+          <Field label="Method">
+            <Select value={method} onChange={(e) => setMethod(e.target.value)}>
+              <option value="CASH">Cash</option>
+              <option value="UPI">UPI</option>
+              <option value="CARD">Card</option>
+              <option value="WALLET">Wallet</option>
+              <option value="OTHER">Other</option>
+            </Select>
+          </Field>
+        </div>
+        {requireReason && (
+          <Field label="Reason">
+            <Input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              maxLength={300}
+              placeholder="Why is money going back?"
+            />
+          </Field>
+        )}
+        {amountMinor !== null && amountMinor > maxMinor && (
+          <p className="text-[12px] text-danger-text">
+            More than {formatMinor(maxMinor)}.
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" disabled={!valid || busy}>
+            {busy ? 'Saving…' : confirmLabel}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -311,7 +564,19 @@ function Timeline({ events }: { events: TimelineEvent[] }) {
             <p className="text-[13px] leading-tight font-medium">
               {e.type === 'CREATED'
                 ? 'Order placed'
-                : `${statusLabel(e.fromStatus)} → ${statusLabel(e.toStatus)}`}
+                : e.type === 'PAYMENT_RECORDED'
+                  ? `Payment recorded — ${String(e.metadata?.method ?? '')} ${
+                      typeof e.metadata?.amountMinor === 'number'
+                        ? formatMinor(e.metadata.amountMinor)
+                        : ''
+                    }`
+                  : e.type === 'REFUND_RECORDED'
+                    ? `Refund — ${String(e.metadata?.method ?? '')} ${
+                        typeof e.metadata?.amountMinor === 'number'
+                          ? formatMinor(e.metadata.amountMinor)
+                          : ''
+                      }`
+                    : `${statusLabel(e.fromStatus)} → ${statusLabel(e.toStatus)}`}
             </p>
             <p className="mt-0.5 text-[12px] text-ink-3 tabular-nums">{timeFull(e.createdAt)}</p>
             {reason && <p className="mt-0.5 text-[12px] text-ink-2">“{reason}”</p>}

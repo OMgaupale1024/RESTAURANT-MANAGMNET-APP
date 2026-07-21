@@ -251,6 +251,13 @@ export type Order = {
     notes: string | null;
   }>;
   payments: Array<{ id: string; method: string; status: string; amountMinor: number }>;
+  refunds: Array<{
+    id: string;
+    method: string;
+    amountMinor: number;
+    reason: string;
+    createdAt: string;
+  }>;
   customer: { id: string; name: string; phone: string } | null;
 };
 
@@ -377,6 +384,39 @@ export const getOrder = (token: string, onNewToken: Retry, id: string) =>
 
 export const getTimeline = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<TimelineEvent[]>(`/orders/${id}/timeline`, token, onNewToken);
+
+/** A split leg, or the payment on an order taken without one. */
+export const recordPayment = (
+  token: string,
+  onNewToken: Retry,
+  orderId: string,
+  body: {
+    method: string;
+    amountMinor: number;
+    reference?: string;
+    idempotencyKey?: string;
+  },
+) =>
+  authedFetch<Order>(`/orders/${orderId}/payments`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const recordRefund = (
+  token: string,
+  onNewToken: Retry,
+  orderId: string,
+  body: {
+    method: string;
+    amountMinor: number;
+    reason: string;
+    idempotencyKey?: string;
+  },
+) =>
+  authedFetch<Order>(`/orders/${orderId}/refunds`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 
 export const updateOrderStatus = (
   token: string,

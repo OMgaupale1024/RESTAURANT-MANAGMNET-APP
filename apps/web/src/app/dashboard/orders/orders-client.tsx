@@ -480,6 +480,10 @@ export function OrdersClient() {
             onMove={(to) =>
               DANGER_STATUSES.includes(to) ? setAskDanger(to) : void move(detail.order.id, to)
             }
+            onChanged={() => {
+              void refetch();
+              void loadDetail(detail.order.id);
+            }}
           />
         )}
       </Sheet>

@@ -20,6 +20,7 @@ import {
   SearchX,
   ShoppingCart,
   Smartphone,
+  Split,
   UtensilsCrossed,
   X,
 } from 'lucide-react';
@@ -31,6 +32,7 @@ import {
   getRestaurantProfile,
   listCategories,
   listProducts,
+  recordPayment,
   type Category,
   type Order,
   type Product,
@@ -38,13 +40,13 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
-import { formatMinor } from '@/lib/money';
+import { formatMinor, parseRupeesToMinor } from '@/lib/money';
 import { BillReceipt, usePrintArea } from '@/lib/receipt';
 import { useCountUp } from '@/lib/use-count-up';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
-import { Input } from '@/components/ui/input';
+import { Field, Input } from '@/components/ui/input';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
 import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -58,6 +60,9 @@ const METHODS = [
   { key: 'CASH', label: 'Cash', icon: Banknote },
   { key: 'UPI', label: 'UPI', icon: Smartphone },
   { key: 'CARD', label: 'Card', icon: CreditCard },
+  // SPLIT charges the order UNPAID; the success panel then records each leg
+  // against POST /orders/:id/payments until the balance is zero.
+  { key: 'SPLIT', label: 'Split', icon: Split },
 ] as const;
 type MethodKey = (typeof METHODS)[number]['key'];
 
@@ -67,7 +72,7 @@ const SHORTCUTS: Array<{ keys: string[]; does: string }> = [
   { keys: ['Esc'], does: 'Clear search / close dialogs' },
   { keys: ['Ctrl', 'Enter'], does: 'Charge the order' },
   { keys: ['Ctrl', 'Backspace'], does: 'Clear the cart' },
-  { keys: ['Alt', '1 · 2 · 3'], does: 'Cash / UPI / Card' },
+  { keys: ['Alt', '1 · 2 · 3 · 4'], does: 'Cash / UPI / Card / Split' },
   { keys: ['?'], does: 'Open this help' },
 ];
 
@@ -269,7 +274,9 @@ export function PosClient() {
     try {
       const order = await createOrder(accessToken, onNewToken, {
         items: activeCart.map((l) => ({ productId: l.product.id, quantity: l.quantity })),
-        paymentMethod: method,
+        // SPLIT: the order is placed unpaid; legs are recorded on the
+        // success panel one by one.
+        ...(method !== 'SPLIT' ? { paymentMethod: method } : {}),
         ...(customer ? { customerId: customer.id } : {}),
         ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
         ...(note.trim() ? { notes: note.trim() } : {}),
@@ -288,12 +295,36 @@ export function PosClient() {
     }
   }
 
-  // The confirmation stays long enough to read, then the till resets itself.
+  // The confirmation stays long enough to read, then the till resets itself —
+  // but NEVER while money is still owed (a split mid-recording must not
+  // vanish under the cashier's hands).
   useEffect(() => {
     if (!success) return;
+    const captured = success.payments
+      .filter((p) => p.status === 'CAPTURED')
+      .reduce((s, p) => s + p.amountMinor, 0);
+    if (captured < success.totalMinor) return;
     const t = setTimeout(() => setSuccess(null), 6000);
     return () => clearTimeout(t);
   }, [success]);
+
+  /** One split leg. The server caps the sum at the order total. */
+  async function recordLeg(orderId: string, m: string, amountMinor: number) {
+    if (!accessToken) return;
+    try {
+      const updated = await recordPayment(accessToken, onNewToken, orderId, {
+        method: m,
+        amountMinor,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      setSuccess(updated);
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not record payment',
+        variant: 'danger',
+      });
+    }
+  }
 
   // One document-level handler for every POS shortcut, re-bound each render
   // so it always closes over fresh state — cheaper than a ref dance and
@@ -318,7 +349,7 @@ export function PosClient() {
         return;
       }
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
-        const i = ['Digit1', 'Digit2', 'Digit3'].indexOf(e.code);
+        const i = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
         if (i !== -1) {
           e.preventDefault();
           setMethod(METHODS[i].key);
@@ -383,6 +414,7 @@ export function PosClient() {
           ? (o: Order) => printNode(<BillReceipt order={o} profile={profile} />)
           : undefined
       }
+      onRecordLeg={recordLeg}
       charge={() => void charge()}
       changeQty={changeQty}
       removeLine={removeLine}
@@ -654,6 +686,7 @@ function CartPanel({
   success,
   onNewOrder,
   onPrintBill,
+  onRecordLeg,
   charge,
   changeQty,
   removeLine,
@@ -677,6 +710,8 @@ function CartPanel({
   onNewOrder: () => void;
   /** Absent until the business profile has loaded. */
   onPrintBill?: (order: Order) => void;
+  /** Records one split leg against the placed order. */
+  onRecordLeg: (orderId: string, method: string, amountMinor: number) => Promise<void>;
   charge: () => void;
   changeQty: (id: string, delta: number) => void;
   removeLine: (id: string) => void;
@@ -686,6 +721,21 @@ function CartPanel({
   const total = useCountUp(subtotal + tax, 300);
 
   if (success) {
+    const captured = success.payments.filter((p) => p.status === 'CAPTURED');
+    const capturedMinor = captured.reduce((s, p) => s + p.amountMinor, 0);
+    const remaining = success.totalMinor - capturedMinor;
+
+    if (remaining > 0) {
+      return (
+        <SplitRecorder
+          key={success.id}
+          order={success}
+          remaining={remaining}
+          onRecordLeg={onRecordLeg}
+        />
+      );
+    }
+
     return (
       <div
         key={success.id}
@@ -698,7 +748,15 @@ function CartPanel({
         />
         <div>
           <p className="text-lg font-semibold">Order #{success.orderNumber} placed</p>
-          <p className="mt-1 text-[13px] text-ink-2">Paid by {success.payments[0]?.method ?? '—'}</p>
+          <p className="mt-1 text-[13px] text-ink-2">
+            {captured.length === 0
+              ? 'No payment recorded'
+              : captured.length === 1
+                ? `Paid by ${captured[0].method}`
+                : `Paid — ${captured
+                    .map((p) => `${p.method} ${formatMinor(p.amountMinor)}`)
+                    .join(' + ')}`}
+          </p>
         </div>
         {/* The server's figures — including any coupon discount it computed. */}
         <dl className="w-full max-w-60 space-y-1.5 text-[13px]">
@@ -902,7 +960,7 @@ function CartPanel({
             </div>
           </dl>
 
-          <div className="mt-3 grid grid-cols-3 gap-2" aria-label="Payment method">
+          <div className="mt-3 grid grid-cols-4 gap-2" aria-label="Payment method">
             {METHODS.map((m, i) => (
               <button
                 key={m.key}
@@ -925,6 +983,11 @@ function CartPanel({
             ))}
           </div>
 
+          {method === 'CASH' && (
+            // Keyed by cart emptiness: refilling after a clear starts fresh.
+            <CashTendered key={cart.length === 0 ? 0 : 1} totalMinor={subtotal + tax} />
+          )}
+
           <Button
             variant="primary"
             disabled={placing}
@@ -932,10 +995,132 @@ function CartPanel({
             title="Ctrl+Enter"
             className="mt-2 h-[52px] w-full text-[15px]"
           >
-            {placing ? 'Charging…' : `Charge ${formatMinor(total)}`}
+            {placing
+              ? 'Charging…'
+              : method === 'SPLIT'
+                ? `Charge ${formatMinor(total)} — split next`
+                : `Charge ${formatMinor(total)}`}
           </Button>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Cash arithmetic for the cashier: what was handed over, what goes back.
+ * Display only — the server never sees the tendered amount.
+ */
+function CashTendered({ totalMinor }: { totalMinor: number }) {
+  const [value, onChange] = useState('');
+  const tenderedMinor = parseRupeesToMinor(value);
+  const change = tenderedMinor !== null ? tenderedMinor - totalMinor : null;
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <Input
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Cash received"
+        aria-label="Cash received"
+        className="h-9 flex-1 text-[13px]"
+      />
+      <p className="shrink-0 text-[13px] tabular-nums" aria-live="polite">
+        {change === null ? (
+          <span className="text-ink-3">Change —</span>
+        ) : change < 0 ? (
+          <span className="text-danger-text">Short {formatMinor(-change)}</span>
+        ) : (
+          <span className="font-medium">
+            Change <span className="font-semibold">{formatMinor(change)}</span>
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
+/** Records split legs until the balance hits zero. */
+function SplitRecorder({
+  order,
+  remaining,
+  onRecordLeg,
+}: {
+  order: Order;
+  remaining: number;
+  onRecordLeg: (orderId: string, method: string, amountMinor: number) => Promise<void>;
+}) {
+  const [amount, setAmount] = useState(() => (remaining / 100).toFixed(2));
+  const [busy, setBusy] = useState(false);
+  const amountMinor = parseRupeesToMinor(amount);
+  const valid = amountMinor !== null && amountMinor >= 1 && amountMinor <= remaining;
+
+  async function leg(m: string) {
+    if (!valid || busy) return;
+    setBusy(true);
+    try {
+      await onRecordLeg(order.id, m, amountMinor!);
+      // Parent state refreshes with the server's order; prefill what's left.
+      setAmount(((remaining - amountMinor!) / 100).toFixed(2));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const captured = order.payments.filter((p) => p.status === 'CAPTURED');
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col p-4">
+      <h2 className="text-[15px] font-semibold">
+        Order #{order.orderNumber} — collect payment
+      </h2>
+      <dl className="mt-3 space-y-1.5 text-[13px]">
+        <TotalRow label="Total" value={formatMinor(order.totalMinor)} />
+        {captured.map((p) => (
+          <TotalRow
+            key={p.id}
+            label={`Received — ${p.method}`}
+            value={formatMinor(p.amountMinor)}
+            accent
+          />
+        ))}
+        <div className="flex justify-between border-t border-line pt-1.5 text-[15px] font-semibold">
+          <dt>Remaining</dt>
+          <dd className="tabular-nums">{formatMinor(remaining)}</dd>
+        </div>
+      </dl>
+
+      <div className="mt-4">
+        <Field label="Amount (₹)">
+          <Input
+            inputMode="decimal"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            aria-label="Leg amount"
+          />
+        </Field>
+        {amountMinor !== null && amountMinor > remaining && (
+          <p className="mt-1.5 text-[12px] text-danger-text">
+            More than the remaining balance.
+          </p>
+        )}
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          {(['CASH', 'UPI', 'CARD'] as const).map((m) => (
+            <Button
+              key={m}
+              variant="secondary"
+              disabled={!valid || busy}
+              onClick={() => void leg(m)}
+            >
+              {m === 'CASH' ? 'Cash' : m === 'UPI' ? 'UPI' : 'Card'}
+            </Button>
+          ))}
+        </div>
+        <p className="mt-3 text-[12px] text-ink-3">
+          Record each part of the payment. The order completes when the
+          remaining balance reaches zero.
+        </p>
+      </div>
     </div>
   );
 }

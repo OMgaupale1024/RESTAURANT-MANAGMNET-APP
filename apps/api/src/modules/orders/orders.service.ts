@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type { CreateOrderDto } from './dto/create-order.dto';
+import type { RecordPaymentDto, RecordRefundDto } from './dto/payment.dto';
 import type { OrderStatus } from '../../generated/prisma/enums';
 import {
   REVERSING_STATUSES,
@@ -429,6 +430,208 @@ export class OrdersService {
     return result;
   }
 
+  /**
+   * Records a payment against an existing order — the split-payment leg, and
+   * the "pay later" resolution that used to be a dead end.
+   *
+   * The ceiling is the rule that matters: captured payments never exceed the
+   * order total. Checked inside the transaction; the idempotency unique index
+   * is what makes a retried leg safe.
+   */
+  // ponytail: check-then-insert inside the tx; two concurrent legs on ONE
+  // order could race past the ceiling. A single till per order makes that
+  // contention unreal today; take a row lock on the order if it ever isn't.
+  async recordPayment(orderId: string, dto: RecordPaymentDto) {
+    const ctx = this.prisma.requireContext();
+
+    const replay = async () =>
+      dto.idempotencyKey
+        ? this.prisma.tx(async (db) => {
+            const p = await db.payment.findFirst({
+              where: { idempotencyKey: dto.idempotencyKey },
+              select: { orderId: true },
+            });
+            return p ? this.load(db, p.orderId) : null;
+          })
+        : null;
+
+    const existing = await replay();
+    if (existing) return existing;
+
+    try {
+      return await this.prisma.tx(async (db) => {
+        const order = await db.order.findFirst({
+          where: { id: orderId },
+          select: { id: true, status: true, totalMinor: true },
+        });
+        if (!order) throw new NotFoundException('Order not found');
+
+        // A reversed sale takes no money. (Refunds are the other direction.)
+        if (order.status === 'VOIDED' || order.status === 'CANCELLED') {
+          throw new ConflictException(
+            'Cannot record a payment on a reversed order',
+          );
+        }
+
+        const captured = await db.payment.aggregate({
+          where: { orderId, status: 'CAPTURED' },
+          _sum: { amountMinor: true },
+        });
+        const outstanding =
+          order.totalMinor - (captured._sum?.amountMinor ?? 0);
+        if (dto.amountMinor > outstanding) {
+          throw new BadRequestException(
+            `Payment exceeds the outstanding balance (${outstanding} paise left)`,
+          );
+        }
+
+        await db.payment.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            method: dto.method,
+            status: 'CAPTURED',
+            amountMinor: dto.amountMinor,
+            reference: dto.reference ?? null,
+            idempotencyKey: dto.idempotencyKey ?? null,
+          },
+        });
+
+        await db.orderEvent.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            type: 'PAYMENT_RECORDED',
+            actorUserId: ctx.userId,
+            metadata: { method: dto.method, amountMinor: dto.amountMinor },
+          },
+        });
+
+        return this.load(db, orderId);
+      });
+    } catch (e) {
+      // A concurrent identical leg won the unique index — its result is ours.
+      if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
+        const won = await replay();
+        if (won) return won;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Records money handed back. Permission is order.refund (owner/manager —
+   * the same trust level as voiding), checked at the controller.
+   *
+   * Rules: only against a finished or reversed order, and never more than
+   * was actually captured. The refund is a new append-only row plus an audit
+   * entry — the payment it reverses is never edited.
+   */
+  async recordRefund(orderId: string, dto: RecordRefundDto) {
+    const ctx = this.prisma.requireContext();
+
+    const replay = async () =>
+      dto.idempotencyKey
+        ? this.prisma.tx(async (db) => {
+            const r = await db.refund.findFirst({
+              where: { idempotencyKey: dto.idempotencyKey },
+              select: { orderId: true },
+            });
+            return r ? this.load(db, r.orderId) : null;
+          })
+        : null;
+
+    const existing = await replay();
+    if (existing) return existing;
+
+    try {
+      return await this.prisma.tx(async (db) => {
+        const order = await db.order.findFirst({
+          where: { id: orderId },
+          select: { id: true, status: true, orderNumber: true },
+        });
+        if (!order) throw new NotFoundException('Order not found');
+
+        // An order still being cooked is corrected by voiding it, not by
+        // handing cash back while it stays live.
+        if (!['COMPLETED', 'VOIDED', 'CANCELLED'].includes(order.status)) {
+          throw new ConflictException(
+            'Refunds apply to completed or reversed orders — void or complete it first',
+          );
+        }
+
+        const [captured, refunded] = await Promise.all([
+          db.payment.aggregate({
+            where: { orderId, status: 'CAPTURED' },
+            _sum: { amountMinor: true },
+          }),
+          db.refund.aggregate({
+            where: { orderId },
+            _sum: { amountMinor: true },
+          }),
+        ]);
+        const refundable =
+          (captured._sum?.amountMinor ?? 0) - (refunded._sum?.amountMinor ?? 0);
+        if (dto.amountMinor > refundable) {
+          throw new BadRequestException(
+            `Refund exceeds captured payments (${refundable} paise refundable)`,
+          );
+        }
+
+        await db.refund.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            method: dto.method,
+            amountMinor: dto.amountMinor,
+            reason: dto.reason,
+            actorUserId: ctx.userId,
+            idempotencyKey: dto.idempotencyKey ?? null,
+          },
+        });
+
+        await db.orderEvent.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            type: 'REFUND_RECORDED',
+            actorUserId: ctx.userId,
+            metadata: {
+              method: dto.method,
+              amountMinor: dto.amountMinor,
+              reason: dto.reason,
+            },
+          },
+        });
+
+        // Refunds sit next to voids in the owner's review — money went out.
+        await db.auditLog.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            userId: ctx.userId,
+            action: 'order.refunded',
+            entityType: 'order',
+            entityId: orderId,
+            metadata: {
+              orderNumber: order.orderNumber,
+              method: dto.method,
+              amountMinor: dto.amountMinor,
+              reason: dto.reason,
+            },
+          },
+        });
+
+        return this.load(db, orderId);
+      });
+    } catch (e) {
+      if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
+        const won = await replay();
+        if (won) return won;
+      }
+      throw e;
+    }
+  }
+
   async getById(id: string) {
     try {
       return await this.prisma.tx((db) => this.load(db, id));
@@ -493,6 +696,16 @@ export class OrdersService {
         },
         payments: {
           select: { id: true, method: true, status: true, amountMinor: true },
+        },
+        refunds: {
+          select: {
+            id: true,
+            method: true,
+            amountMinor: true,
+            reason: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'asc' },
         },
         customer: { select: { id: true, name: true, phone: true } },
       },
