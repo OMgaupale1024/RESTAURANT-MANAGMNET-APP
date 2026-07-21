@@ -896,6 +896,23 @@ export const clockMember = (
     body: JSON.stringify({ type }),
   });
 
+/**
+ * A backdated attendance correction for a staff member — a manager fixing a
+ * forgotten clock-out. Needs attendance.manage; `at` is an ISO instant, `note`
+ * records why. The append-only ledger keeps both the correction and when it
+ * was actually entered.
+ */
+export const correctAttendance = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { type: 'CLOCK_IN' | 'CLOCK_OUT'; at: string; note?: string },
+) =>
+  authedFetch<unknown>(`/staff/${id}/clock`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
 /** PUBLIC — no token: the invitee has no account yet. */
 export const describeInvite = (inviteToken: string) =>
   apiFetch<{
