@@ -42,6 +42,8 @@ function api() {
   return {
     post: (url: string) => request(server).post(url).set('X-Forwarded-For', ip),
     get: (url: string) => request(server).get(url).set('X-Forwarded-For', ip),
+    patch: (url: string) =>
+      request(server).patch(url).set('X-Forwarded-For', ip),
   };
 }
 
@@ -386,6 +388,95 @@ describe('Restaurants (e2e)', () => {
       await expect(
         prisma.securityEvent.delete({ where: { id: ev!.id } }),
       ).rejects.toThrow();
+    });
+  });
+
+  describe('business profile', () => {
+    /** A user with a created + selected restaurant (tenant-scoped token). */
+    async function scopedTenant() {
+      const email = `r-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
+      const reg = await api()
+        .post('/api/v1/auth/register')
+        .send({ email, password, name: 'Owner' })
+        .expect(201);
+      const cookie = reg.headers['set-cookie'][0].split(';')[0];
+      const created = await api()
+        .post('/api/v1/restaurants')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .send({ name: `Profile Cafe ${Date.now()}` })
+        .expect(201);
+      const scoped = await api()
+        .post('/api/v1/auth/select-restaurant')
+        .set('Authorization', `Bearer ${reg.body.accessToken}`)
+        .set('Cookie', cookie)
+        .send({ restaurantId: created.body.restaurant.id })
+        .expect(200);
+      return { token: scoped.body.accessToken as string };
+    }
+
+    it('starts empty, saves every field, and clears with an empty string', async () => {
+      const t = await scopedTenant();
+
+      const fresh = await api()
+        .get('/api/v1/restaurants/current')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(fresh.body.gstin).toBeNull();
+      expect(fresh.body.address).toBeNull();
+
+      const updated = await api()
+        .patch('/api/v1/restaurants/current')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({
+          address: '12 MG Road, Pune 411001',
+          // Formatted input; stored digits-only, same rule as customers.
+          phone: '+91 98765-43210',
+          // Lowercase input; stored uppercased.
+          gstin: '27aapfu0939f1zv',
+          fssai: '10012031000123',
+          receiptHeader: 'Jai Ambe Momos',
+          receiptFooter: 'Thank you, visit again!',
+        })
+        .expect(200);
+      expect(updated.body).toMatchObject({
+        address: '12 MG Road, Pune 411001',
+        phone: '919876543210',
+        gstin: '27AAPFU0939F1ZV',
+        fssai: '10012031000123',
+        receiptHeader: 'Jai Ambe Momos',
+        receiptFooter: 'Thank you, visit again!',
+      });
+
+      // '' clears — a receipt must be able to drop a lapsed registration.
+      const cleared = await api()
+        .patch('/api/v1/restaurants/current')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ gstin: '' })
+        .expect(200);
+      expect(cleared.body.gstin).toBeNull();
+      expect(cleared.body.fssai).toBe('10012031000123'); // untouched
+    });
+
+    it('rejects malformed GSTIN and FSSAI', async () => {
+      const t = await scopedTenant();
+      await api()
+        .patch('/api/v1/restaurants/current')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ gstin: 'NOT-A-GSTIN' })
+        .expect(400);
+      await api()
+        .patch('/api/v1/restaurants/current')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ fssai: '123' })
+        .expect(400);
+    });
+
+    it('requires a tenant-scoped token', async () => {
+      const { token } = await newUser(); // registered, no restaurant selected
+      await api()
+        .get('/api/v1/restaurants/current')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
     });
   });
 });

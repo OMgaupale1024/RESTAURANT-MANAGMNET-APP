@@ -30,10 +30,27 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 /// Tenant root.
+///
+/// The profile fields exist for one consumer above all: the printed receipt.
+/// A GST invoice needs the legal name, address, phone and GSTIN on it, and
+/// FSSAI display is mandatory on Indian food-business invoices. All nullable —
+/// an unregistered stall can run without any of them; the receipt simply
+/// omits the lines it does not have. Never fabricated.
 model Restaurant {
   id        String   @id @default(uuid(7)) @db.Uuid
   name      String
   slug      String   @unique
+  address   String?
+  /// Digits only, normalised on write (same discipline as customers.phone).
+  phone     String?
+  /// 15-character GST registration, uppercased. Format-checked at the API.
+  gstin     String?
+  /// 14-digit FSSAI licence number.
+  fssai     String?
+  /// Free text above the items on a printed receipt (e.g. "Jai Ambe Momos").
+  receiptHeader String? @map("receipt_header")
+  /// Free text below the total (e.g. "Thank you! No refunds after billing.").
+  receiptFooter String? @map("receipt_footer")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

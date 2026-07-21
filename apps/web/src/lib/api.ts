@@ -188,6 +188,38 @@ export const logout = () =>
 export const logoutAll = (accessToken: string) =>
   apiFetch<void>('/auth/logout-all', { method: 'POST', accessToken });
 
+export type RestaurantProfile = {
+  id: string;
+  name: string;
+  slug: string;
+  address: string | null;
+  phone: string | null;
+  gstin: string | null;
+  fssai: string | null;
+  receiptHeader: string | null;
+  receiptFooter: string | null;
+  createdAt: string;
+};
+
+export const getRestaurantProfile = (token: string, onNewToken: (t: string) => void) =>
+  authedFetch<RestaurantProfile>('/restaurants/current', token, onNewToken);
+
+/** Empty strings clear a field (the API turns '' into null). */
+export const updateRestaurantProfile = (
+  token: string,
+  onNewToken: (t: string) => void,
+  body: Partial<
+    Pick<
+      RestaurantProfile,
+      'name' | 'address' | 'phone' | 'gstin' | 'fssai' | 'receiptHeader' | 'receiptFooter'
+    >
+  >,
+) =>
+  authedFetch<RestaurantProfile>('/restaurants/current', token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
 export type Product = {
   id: string;
   name: string;
