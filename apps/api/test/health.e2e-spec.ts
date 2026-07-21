@@ -82,7 +82,9 @@ describe('Health (e2e)', () => {
     const statuses: number[] = [];
     for (let batch = 0; batch < 12; batch++) {
       const res = await Promise.all(
-        Array.from({ length: 10 }, () => request(server()).get('/api/v1/health')),
+        Array.from({ length: 10 }, () =>
+          request(server()).get('/api/v1/health'),
+        ),
       );
       statuses.push(...res.map((r) => r.status));
     }

@@ -72,8 +72,8 @@ browser-verify → commit → push before the next).
 | 3 | Email infrastructure (Resend) — real delivery, templates, retry/timeouts | ✅ done |
 | 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ✅ done |
 | 5 | Docker (API, Web, prod compose, env handling) | ✅ done |
-| 6 | GitHub Actions CI (install, lint, typecheck, test, build) | ⬜ next |
-| 7 | Production deployment (env, reverse proxy, HTTPS, guide, backups, migration & rollback, zero-downtime) | ⬜ |
+| 6 | GitHub Actions CI (install, lint, typecheck, test, build, docker) | ✅ done |
+| 7 | Production deployment (env, reverse proxy, HTTPS, guide, backups, migration & rollback, zero-downtime) | ⬜ next |
 
 ## Milestone 1 — Invite acceptance security
 
@@ -287,6 +287,55 @@ Dockerfile.
 Password reset (M2) and staff-invite email delivery (M3) are shipped; `BACKLOG.md`
 #1 and #26 and `DEPLOYMENT.md` updated to reflect that. (Email *verification*,
 BACKLOG #2, remains open — distinct from password reset.)
+
+## Milestone 6 — GitHub Actions CI
+
+**Issue.** No CI; all gates (lint/typecheck/test/build) ran manually. Nothing
+stopped broken code from reaching a mainline branch.
+
+**CI architecture** (`.github/workflows/ci.yml`, on push to `main`/
+`production-hardening` and every PR; sequential steps fail fast; concurrency
+cancels superseded runs):
+- **`verify` job** — checkout → `pnpm/action-setup` → `setup-node` with
+  `cache: pnpm` → `install --frozen-lockfile` → `prisma generate` → **lint**
+  (`pnpm -r lint` then `git diff --exit-code`, so an auto-fixable issue still
+  fails) → **typecheck** → **unit tests + coverage** → **DB prep** → **e2e** →
+  **build API** → **build Web** → upload coverage artifact.
+  - DB for e2e: a `postgres:16-alpine` **service** named `neondb` (the app-role
+    migration grants `CONNECT` on that name). Prep runs `prisma migrate deploy`
+    (schema + RLS + the `oraos_api` role + grants), `db:seed` (global roles &
+    permissions — required before staff/auth e2e), then `ALTER ROLE oraos_api
+    … LOGIN PASSWORD` so `DATABASE_URL_APP` can connect. `NODE_ENV=test`, so the
+    production verify-full/https guards don't apply.
+- **`docker` job** — Buildx builds both images (`push: false`, GHA layer cache).
+  This is the **first real `docker build` validation** of the M5 Dockerfiles
+  (Docker was unavailable in the dev environment).
+
+CI-only env (JWT_SECRET, DB URLs) are non-secret placeholders in the workflow;
+no production secrets are used or uploaded.
+
+**Files changed.** `.github/workflows/ci.yml` (new); `apps/api/test/health.e2e-spec.ts`
+(prettier formatting — see below).
+
+**Verification.** Docker daemon and `act` are both unavailable locally, so the
+workflow itself couldn't be executed here; validated by (a) YAML parse + structure
+check, and (b) running every runnable step directly: lint (eslint, both apps),
+typecheck (both), unit tests + coverage 30/30, API build, and the Web standalone
+build (M5). The e2e DB bootstrap is derived from the migration/seed/role scripts
+but was not executed (no local Postgres).
+
+**Repository quality.** `.gitignore`, `.dockerignore`, `pnpm-lock.yaml`, and
+`pnpm-workspace.yaml` all present and correct; `--frozen-lockfile` enforces the
+lockfile in CI. No changes needed.
+
+**Discovered issues.**
+- **RECOMMENDED — committed formatting drift.** `health.e2e-spec.ts` carried a
+  prettier violation (from an M4 edit not re-fixed); the new lint gate caught it.
+  Fixed (formatting only) so the pipeline is green on current code — and proof the
+  gate works.
+- **RECOMMENDED (reported) — the API `lint` script uses `--fix`,** so it isn't a
+  pure gate. CI compensates with `git diff --exit-code`; a dedicated non-fix
+  `lint:ci` script would be cleaner. Not changed (out of automation scope).
 
 ## General backlog
 

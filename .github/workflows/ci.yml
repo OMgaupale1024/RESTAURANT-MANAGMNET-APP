@@ -1,0 +1,142 @@
+name: CI
+
+# Gate every push to a mainline branch and every PR. Nothing merges without
+# lint, typecheck, unit + e2e tests, both app builds, and both Docker builds
+# passing. Any failure fails the run immediately (steps are sequential).
+on:
+  push:
+    branches: [main, production-hardening]
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '11.13.1'
+
+jobs:
+  verify:
+    name: Lint · Typecheck · Test · Build
+    runs-on: ubuntu-latest
+
+    # Real Postgres for the e2e suite. Named `neondb` because the app-role
+    # migration grants CONNECT on that database name explicitly.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: neondb
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d neondb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      NODE_ENV: test
+      # Owner role — migrations + test setup/teardown (bypasses RLS).
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/neondb
+      # Least-privilege runtime role — the app connects as this, subject to RLS.
+      DATABASE_URL_APP: postgresql://oraos_api:ci_app_pw@localhost:5432/neondb
+      # CI-only, not a real secret. >=32 chars so env validation accepts it.
+      JWT_SECRET: ci-only-jwt-secret-do-not-use-in-production-0
+      # Baked into the web build; a placeholder is fine for a build check.
+      NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node (pnpm store cached)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm --filter @oraos/api exec prisma generate
+
+      # The API lint script auto-fixes; `git diff --exit-code` turns any fix
+      # into a failure, so a fixable issue still fails CI. The web lint does not
+      # fix and fails directly.
+      - name: Lint
+        run: |
+          pnpm -r lint
+          git diff --exit-code
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Unit tests (with coverage)
+        run: pnpm --filter @oraos/api test:cov
+
+      # e2e needs the schema, RLS, seeded reference data, and a login-capable
+      # runtime role. Migrations create the role NOLOGIN; give it a password.
+      - name: Prepare database
+        run: |
+          pnpm --filter @oraos/api exec prisma migrate deploy
+          pnpm --filter @oraos/api db:seed
+          PGPASSWORD=postgres psql -h localhost -U postgres -d neondb \
+            -c "ALTER ROLE oraos_api WITH LOGIN PASSWORD 'ci_app_pw';"
+
+      - name: E2E tests
+        run: pnpm --filter @oraos/api test:e2e
+
+      - name: Build API
+        run: pnpm --filter @oraos/api build
+
+      - name: Build Web
+        run: pnpm --filter @oraos/web build
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage
+          path: apps/api/coverage
+          if-no-files-found: ignore
+          retention-days: 7
+
+  docker:
+    name: Docker build (verify only, no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: false
+          tags: oraos-api:ci
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          tags: oraos-web:ci
+          build-args: |
+            NEXT_PUBLIC_API_URL=http://localhost:3001/api/v1
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
