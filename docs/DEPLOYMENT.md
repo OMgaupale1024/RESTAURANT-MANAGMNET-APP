@@ -7,8 +7,8 @@ production (`apps/api/src/config/env.ts`).
 
 ## Target stack
 
-From BLUEPRINT §10. Nothing here needs a Dockerfile — every layer builds Node /
-Next from source.
+From BLUEPRINT §10. Either deploy from source on a Node/Next buildpack (below),
+or use the containers added in Release M5 (see **Docker** section).
 
 | Layer | Service | Notes |
 |---|---|---|
@@ -86,6 +86,32 @@ one-time `db:setup-app-role` (owner privileges). Run that once per environment.
 On SIGTERM (redeploy) the API drains in-flight requests and disconnects the
 Postgres pool via shutdown hooks before exiting.
 
+## Docker (Release M5)
+
+Both apps ship multi-stage, non-root, healthchecked images. The build context is
+the **repo root** (pnpm workspace).
+
+```bash
+cp .env.example .env          # fill in real values
+docker compose up -d --build  # migrate (one-shot) → api → web
+```
+
+- `migrate` runs `prisma migrate deploy` with the **owner** `DATABASE_URL`, then
+  exits; `api` waits for it (`service_completed_successfully`).
+- `api` runs as non-root, connects via `DATABASE_URL_APP`, `HEALTHCHECK` →
+  `/api/v1/health`; SIGTERM (on `docker stop`/redeploy) drains and disconnects.
+- `web` is a Next standalone image; `NEXT_PUBLIC_API_URL` is a **build arg**
+  (baked into the bundle + CSP), `HEALTHCHECK` → `/healthz`.
+- Image bases are `node:22-alpine`; the API needs no Prisma query-engine binary
+  (`@prisma/adapter-pg` uses the `pg` driver).
+
+Individual builds:
+
+```bash
+docker build -f apps/api/Dockerfile -t oraos-api .
+docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api/v1 -t oraos-web .
+```
+
 ## Backups
 
 Neon does point-in-time restore. An untested backup is not a backup
@@ -97,8 +123,10 @@ confirm the data is intact.
 - **CI/CD** — intended pipeline (BLUEPRINT §10): PR → typecheck + lint + test +
   migration dry-run → preview deploy → merge → staging → manual gate → prod. Add
   as a GitHub Actions workflow when a hosting target is chosen.
-- **Password reset (#1) and email verification (#2)** — both need an email
-  provider, which is still an open decision (BLUEPRINT §14). Deferred rather
-  than built against a speculative provider. **#1 becomes urgent the moment a
-  real restaurant relies on this** — a locked-out owner currently has no
-  self-service recovery.
+- **Email verification (#2)** — anyone can register with an address they do not
+  own. Still open (distinct from password reset). Lower urgency: a fake email
+  hurts the registrant, not the business.
+
+Shipped since this doc was written: **password reset (#1)** and **invite email
+delivery (#26)** — both via Resend (Release M2/M3). Set `RESEND_API_KEY` and
+`MAIL_FROM`, or email falls back to a log transport.

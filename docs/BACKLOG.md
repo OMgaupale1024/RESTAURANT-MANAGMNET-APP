@@ -8,7 +8,7 @@ arrives and it is still open, it blocks that step.
 
 | # | Gap | Raised | Target | Why not now |
 |---|-----|--------|--------|-------------|
-| 1 | **Password reset** — a locked-out owner has no recovery path | Step 5 | Step 20 (needs email provider) | Requires an email service; no provider chosen yet. **Becomes urgent the moment a real restaurant uses this.** |
+| ~~1~~ | ~~**Password reset** — a locked-out owner has no recovery path~~ | Step 5 | **CLOSED in Release M2/M3** | `POST /auth/forgot-password` + `/auth/reset-password`: single-use, 30-min, SHA-256-hashed token; no account enumeration; a reset revokes every session. Email delivered via Resend (M3), with a dev log transport when unconfigured. |
 | 2 | **Email verification** — anyone can register with an address they do not own | Step 5 | Step 20 (needs email provider) | Same dependency. Lower urgency than #1: a fake email hurts the registrant, not the business. |
 | ~~3~~ | ~~**Auth events not written to `audit_logs`**~~ | Step 5 | **CLOSED in Step 8** | Separate `security_events` table (global, append-only). Chose this over a nullable `restaurant_id`, which would have punched a hole in the RLS policy. Verified: LOGIN_FAILED recorded for unknown emails; table is tamper-proof. |
 | ~~4~~ | ~~**Restaurant selection when a user has >1 membership**~~ | Step 5 | **CLOSED in Step 8** | `POST /auth/select-restaurant`. Membership verified server-side; returns 403 (not 404) for both non-member and non-existent, so existence does not leak. |
@@ -37,7 +37,7 @@ arrives and it is still open, it blocks that step.
 
 | 24 | **No payroll / wage rates** | Step 14 | When asked | Attendance gives hours; there is no pay rate or salary. Timesheet minutes are the input a payroll step would consume. Additive. |
 | 25 | **No shift scheduling** | Step 14 | When asked | Attendance records what happened, not a planned roster. Predictive staffing (blueprint) needs the schedule side. |
-| 26 | **Invite email is not delivered** — the link is shown once in-app for manual sharing | Step 14 | Step 20 (email provider) | Deliberate: dodges the email dependency (#1/#2) and matches how Indian restaurants share links (WhatsApp). Auto-delivery is additive once a provider exists. |
+| ~~26~~ | ~~**Invite email is not delivered** — the link is shown once in-app for manual sharing~~ | Step 14 | **CLOSED in Release M3** | Invite creation now sends the invitation email (Resend) with restaurant name, role, expiry, and accept link — fire-and-forget, and the `inviteUrl` is still returned so manual sharing (WhatsApp) still works. |
 | 27 | **No attendance correction UI** — a manager can append a corrected clock event via API but there is no dedicated screen** | Step 14 | When a real manager needs it | The append-only model supports it (recordedBy marks manager-entered events); only the UI affordance is missing. |
 
 | 28 | **Kitchen board refetches on every event** rather than patching state | Step 15 | When order volume is high | Simplest correct approach; the active list is small. At high volume, apply the event payload to local state instead of refetching. |

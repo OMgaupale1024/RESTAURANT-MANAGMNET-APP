@@ -71,8 +71,8 @@ browser-verify → commit → push before the next).
 | 2 | Password reset (forgot / token / expiry / email / browser flow) | ✅ done |
 | 3 | Email infrastructure (Resend) — real delivery, templates, retry/timeouts | ✅ done |
 | 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ✅ done |
-| 5 | Docker (API, Web, prod compose, env handling) | ⬜ next |
-| 6 | GitHub Actions CI (install, lint, typecheck, test, build) | ⬜ |
+| 5 | Docker (API, Web, prod compose, env handling) | ✅ done |
+| 6 | GitHub Actions CI (install, lint, typecheck, test, build) | ⬜ next |
 | 7 | Production deployment (env, reverse proxy, HTTPS, guide, backups, migration & rollback, zero-downtime) | ⬜ |
 
 ## Milestone 1 — Invite acceptance security
@@ -238,6 +238,55 @@ signal path is proven in-process rather than by killing a live process.
   `@SkipThrottle()` on the health controller.
 - **V1.1 — response compression not implemented.** Deferred to the reverse
   proxy/CDN in Milestone 7 rather than adding an app-level dependency.
+
+## Milestone 5 — Docker & production containers
+
+**Issue.** No container artifacts; deployment relied on platform buildpacks
+(Vercel/Railway). Package both apps as reproducible, minimal, non-root images.
+
+**Docker architecture.**
+- **API image** (`apps/api/Dockerfile`, context = repo root) — three stages off
+  `node:22-alpine`:
+  - `build`: `pnpm fetch` → `pnpm install --offline` (with `python3/make/g++` for
+    native bcrypt) → `prisma generate` → `nest build` → `pnpm --legacy deploy --prod`
+    (self-contained prod bundle: dist + prod `node_modules`, no devDeps, no prisma
+    CLI). `@prisma/adapter-pg` means **no query-engine binary** at runtime.
+  - `migrator`: thin layer over `build`; `CMD prisma migrate deploy`. Runs as a
+    one-shot container with the owner URL before the API starts.
+  - `runtime`: the pruned bundle only, non-root `nodejs` user, `HEALTHCHECK` →
+    `/api/v1/health`, exec-form `CMD ["node","dist/main.js"]` so PID 1 gets SIGTERM
+    (graceful shutdown from M4).
+- **Web image** (`apps/web/Dockerfile`) — `next build` with `output: 'standalone'`
+  + `outputFileTracingRoot` (monorepo), runtime copies only `.next/standalone`
+  (~21 MB) + static + public, non-root, `HEALTHCHECK` → `/healthz` (new route).
+  `NEXT_PUBLIC_API_URL` is a build arg (baked into the bundle + CSP).
+- **Compose** (`docker-compose.yml`) — `migrate` (one-shot) → `api`
+  (`depends_on: service_completed_successfully`) → `web`; bridge network,
+  `restart: unless-stopped`, `${VAR:?}` fail-fast on missing config. Config via a
+  root `.env` (see `.env.example`).
+
+**Files changed.**
+- `apps/api/Dockerfile`, `apps/web/Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example` (new)
+- `apps/web/next.config.ts` — standalone + tracing root
+- `apps/web/src/app/healthz/route.ts` — web liveness route
+- `docs/DEPLOYMENT.md`, `docs/BACKLOG.md` — doc-drift fixes (below)
+
+**Verification.** typecheck ✓ lint ✓ · API `nest build` + `prisma generate` ✓ ·
+`pnpm --legacy deploy --prod` produces a complete bundle (dist + bcrypt +
+@prisma/client + adapter + `pg` resolvable, prisma CLI excluded) ✓ · **web
+standalone build ✓ and the standalone server runs**: `/healthz` → 200, `/login` →
+200 with the nonce CSP ✓ · health smoke test 6/6. **Docker daemon is not available
+in this environment**, so `docker build`/`compose up` could not be executed here;
+every build step the Dockerfiles invoke was exercised directly instead.
+
+**Discovered issue.** `pnpm deploy` requires `--legacy` on pnpm 10+ for a
+non-injected workspace — caught by running the deploy locally; the flag is in the
+Dockerfile.
+
+## Doc-drift fixes (Recommended #7)
+Password reset (M2) and staff-invite email delivery (M3) are shipped; `BACKLOG.md`
+#1 and #26 and `DEPLOYMENT.md` updated to reflect that. (Email *verification*,
+BACKLOG #2, remains open — distinct from password reset.)
 
 ## General backlog
 

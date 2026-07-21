@@ -1,0 +1,71 @@
+# Production composition for OraOS.
+#
+#   cp .env.example .env   # fill in real values
+#   docker compose up -d --build
+#
+# This is NOT for local development: no hot reload, no source mounts — the images
+# are the pruned production builds. `${VAR:?}` makes compose fail fast when a
+# required variable is missing, matching the API's fail-to-boot philosophy.
+name: oraos
+
+services:
+  # One-shot: apply pending migrations with the OWNER role, then exit. The API
+  # waits for this to finish successfully before it starts.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: migrator
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?owner database URL is required}
+    networks: [oraos]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      # Owner URL present only for the boot-time "must differ from APP" check;
+      # runtime traffic connects exclusively via DATABASE_URL_APP.
+      DATABASE_URL: ${DATABASE_URL:?}
+      DATABASE_URL_APP: ${DATABASE_URL_APP:?least-privilege runtime URL is required}
+      JWT_SECRET: ${JWT_SECRET:?}
+      CORS_ORIGINS: ${CORS_ORIGINS:?}
+      WEB_URL: ${WEB_URL:?}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      APP_VERSION: ${APP_VERSION:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - '${API_PORT:-3001}:3001'
+    networks: [oraos]
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Baked into the browser bundle + CSP at build time — must be the PUBLIC
+        # API URL the browser will reach, not the internal service name.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?public API URL is required}
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    depends_on:
+      - api
+    ports:
+      - '${WEB_PORT:-3000}:3000'
+    networks: [oraos]
+    restart: unless-stopped
+
+networks:
+  oraos:
+    driver: bridge
