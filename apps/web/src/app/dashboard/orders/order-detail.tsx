@@ -80,6 +80,12 @@ export const PAYMENT_LABEL: Record<string, string> = {
   WALLET: 'Wallet',
 };
 
+export const TYPE_LABEL: Record<string, string> = {
+  DINE_IN: 'Dine-in',
+  TAKEAWAY: 'Takeaway',
+  DELIVERY: 'Delivery',
+};
+
 export function statusLabel(s: string | null): string {
   return (s && STATUS_META[s]?.label) ?? (s ?? '');
 }
@@ -141,8 +147,9 @@ export function OrderDetail({
         <p className="text-2xl font-semibold tracking-tight tabular-nums">
           {formatMinor(order.totalMinor)}
         </p>
-        <p className="mt-0.5 text-[12px] text-ink-3">
+        <p className="mt-0.5 flex items-center gap-2 text-[12px] text-ink-3">
           {timeFull(order.placedAt ?? order.createdAt)}
+          <Badge>{TYPE_LABEL[order.orderType] ?? order.orderType}</Badge>
         </p>
       </div>
 

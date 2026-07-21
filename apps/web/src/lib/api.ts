@@ -233,6 +233,7 @@ export type Order = {
   id: string;
   orderNumber: number;
   status: string;
+  orderType: string;
   subtotalMinor: number;
   discountMinor: number;
   taxMinor: number;
@@ -336,8 +337,11 @@ export const createOrder = (
   token: string,
   onNewToken: Retry,
   body: {
-    items: Array<{ productId: string; quantity: number }>;
+    items: Array<{ productId: string; quantity: number; notes?: string }>;
     paymentMethod?: string;
+    orderType?: string;
+    /** Park as DRAFT: no kitchen, no stock, no payment until resumed. */
+    hold?: boolean;
     customerId?: string;
     couponCode?: string;
     notes?: string;
@@ -353,6 +357,7 @@ export type OrderSummary = {
   id: string;
   orderNumber: number;
   status: string;
+  orderType: string;
   totalMinor: number;
   createdAt: string;
   placedAt: string | null;
@@ -372,12 +377,22 @@ export type TimelineEvent = {
   createdAt: string;
 };
 
-export const listOrders = (token: string, onNewToken: Retry, status?: string) =>
-  authedFetch<OrderSummary[]>(
-    status ? `/orders?status=${encodeURIComponent(status)}` : '/orders',
+export const listOrders = (
+  token: string,
+  onNewToken: Retry,
+  opts: { status?: string; cursor?: string; limit?: number } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return authedFetch<OrderSummary[]>(
+    `/orders${qs ? `?${qs}` : ''}`,
     token,
     onNewToken,
   );
+};
 
 export const getOrder = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<Order>(`/orders/${id}`, token, onNewToken);

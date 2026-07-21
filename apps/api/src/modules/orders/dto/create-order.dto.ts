@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -13,7 +14,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { PaymentMethod } from '../../../generated/prisma/enums';
+import { OrderType, PaymentMethod } from '../../../generated/prisma/enums';
 
 /**
  * Note what a line item does NOT accept: a price.
@@ -49,6 +50,20 @@ export class CreateOrderDto {
   @IsOptional()
   @IsEnum(PaymentMethod)
   paymentMethod?: PaymentMethod;
+
+  /** Dine-in / takeaway / delivery. Defaults to TAKEAWAY (counter reality). */
+  @IsOptional()
+  @IsEnum(OrderType)
+  orderType?: OrderType;
+
+  /**
+   * Park the order as a DRAFT: priced and numbered, but not sent to the
+   * kitchen and depleting no stock until it is placed. A held order cannot
+   * carry a payment — money is taken when it is resumed.
+   */
+  @IsOptional()
+  @IsBoolean()
+  hold?: boolean;
 
   /**
    * Optional: most orders are anonymous walk-ins.

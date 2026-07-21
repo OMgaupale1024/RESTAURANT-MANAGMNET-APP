@@ -29,7 +29,11 @@ export class OrdersController {
   @RequirePermissions('order.read')
   @Get()
   list(@Query() query: ListOrdersQuery) {
-    return this.orders.list({ status: query.status, limit: query.limit });
+    return this.orders.list({
+      status: query.status,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
   }
 
   @RequirePermissions('order.read')

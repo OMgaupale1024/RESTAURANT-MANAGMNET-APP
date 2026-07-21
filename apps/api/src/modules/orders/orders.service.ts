@@ -37,6 +37,15 @@ export class OrdersService {
   async create(dto: CreateOrderDto) {
     const ctx = this.prisma.requireContext();
 
+    // A held order takes no money: payment happens at placement, where the
+    // split recorder already lives. Refusing here beats a payment row on an
+    // order the kitchen has never heard of.
+    if (dto.hold && dto.paymentMethod) {
+      throw new BadRequestException(
+        'A held order cannot take a payment — collect it when placing',
+      );
+    }
+
     // An idempotent replay must return the original order, not a second one.
     if (dto.idempotencyKey) {
       const existing = await this.findByIdempotencyKey(dto.idempotencyKey);
@@ -49,12 +58,15 @@ export class OrdersService {
         const order = await this.insert(ctx.restaurantId, ctx.userId, dto);
         // Emit AFTER commit: an event fired inside the transaction would
         // announce an order to the kitchen that a rollback then erased. Scoped
-        // to this tenant's room only.
-        this.realtime.emitToTenant(ctx.restaurantId, 'order.created', {
-          id: order.id,
-          orderNumber: order.orderNumber,
-          status: order.status,
-        });
+        // to this tenant's room only. A DRAFT is deliberately silent — the
+        // kitchen hears about it when it is placed.
+        if (order.status !== 'DRAFT') {
+          this.realtime.emitToTenant(ctx.restaurantId, 'order.created', {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+          });
+        }
         return order;
       } catch (e) {
         if (isUniqueViolation(e, 'order_number')) continue;
@@ -168,14 +180,19 @@ export class OrdersService {
       const last = await db.order.aggregate({ _max: { orderNumber: true } });
       const orderNumber = (last._max.orderNumber ?? 0) + 1;
 
+      // A hold parks the order as DRAFT: numbered and priced (the customer
+      // was quoted this total), but unplaced — no kitchen, no stock, no money.
+      const held = dto.hold === true;
+
       const order = await db.order.create({
         data: {
           restaurantId,
           branchId: branch.id,
           customerId: dto.customerId ?? null,
           orderNumber,
-          status: 'PLACED',
-          placedAt: new Date(),
+          status: held ? 'DRAFT' : 'PLACED',
+          orderType: dto.orderType ?? 'TAKEAWAY',
+          placedAt: held ? null : new Date(),
           subtotalMinor: subtotal,
           discountMinor: discount,
           taxMinor: tax,
@@ -220,17 +237,22 @@ export class OrdersService {
       // commit or neither does. A sale that succeeded while its stock movement
       // failed would silently corrupt food cost.
       //
+      // A DRAFT depletes nothing — the food has not been cooked. Depletion
+      // happens at placement (updateStatus DRAFT -> PLACED).
+      //
       // This does NOT block on insufficient stock — see depleteForOrder.
-      await this.inventory.depleteForOrder(
-        db,
-        restaurantId,
-        userId,
-        order.id,
-        dto.items.map((i) => ({
-          productId: i.productId,
-          quantity: i.quantity,
-        })),
-      );
+      if (!held) {
+        await this.inventory.depleteForOrder(
+          db,
+          restaurantId,
+          userId,
+          order.id,
+          dto.items.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+          })),
+        );
+      }
 
       // Append-only trail. This is what the order timeline reads.
       await db.orderEvent.create({
@@ -238,7 +260,7 @@ export class OrdersService {
           restaurantId,
           orderId: order.id,
           type: 'CREATED',
-          toStatus: 'PLACED',
+          toStatus: held ? 'DRAFT' : 'PLACED',
           actorUserId: userId,
           metadata: { itemCount: lines.length, totalMinor: total },
         },
@@ -248,20 +270,28 @@ export class OrdersService {
     });
   }
 
-  /** Recent orders, newest first, optionally filtered by status. */
-  list(opts: { limit?: number; status?: OrderStatus } = {}) {
+  /**
+   * Recent orders, newest first, optionally filtered by status, keyset-
+   * paginated by id (UUIDv7 is time-ordered, so id order IS creation order —
+   * and unlike OFFSET it cannot skip or duplicate rows while new orders land).
+   */
+  list(opts: { limit?: number; status?: OrderStatus; cursor?: string } = {}) {
     const take = Math.min(opts.limit ?? 50, 100);
     return this.prisma.tx((db) =>
       db.order.findMany({
         take,
         // RLS scopes this to the tenant; there is deliberately no
         // `where: { restaurantId }` that could be forgotten.
-        where: opts.status ? { status: opts.status } : undefined,
-        orderBy: { createdAt: 'desc' },
+        where: {
+          ...(opts.status ? { status: opts.status } : {}),
+          ...(opts.cursor ? { id: { lt: opts.cursor } } : {}),
+        },
+        orderBy: { id: 'desc' },
         select: {
           id: true,
           orderNumber: true,
           status: true,
+          orderType: true,
           totalMinor: true,
           createdAt: true,
           placedAt: true,
@@ -366,12 +396,36 @@ export class OrdersService {
         );
       }
 
+      // Resuming a held order IS the moment of sale: stamp placedAt and
+      // deplete stock now, in this same transaction — exactly what creation
+      // does for a non-held order.
+      const resuming = from === 'DRAFT' && to === 'PLACED';
+
       await db.order.update({
         where: { id: orderId },
-        // Only status. The money columns are frozen by trigger anyway, but not
-        // touching them is the honest expression of intent.
-        data: { status: to },
+        // Only status (plus placedAt on resume). The money columns are frozen
+        // by trigger anyway, but not touching them is the honest expression
+        // of intent.
+        data: { status: to, ...(resuming ? { placedAt: new Date() } : {}) },
       });
+
+      if (resuming) {
+        const items = await db.orderItem.findMany({
+          where: { orderId },
+          select: { productId: true, quantity: true },
+        });
+        await this.inventory.depleteForOrder(
+          db,
+          ctx.restaurantId,
+          ctx.userId,
+          orderId,
+          items.flatMap((i) =>
+            i.productId
+              ? [{ productId: i.productId, quantity: i.quantity }]
+              : [],
+          ),
+        );
+      }
 
       await db.orderEvent.create({
         data: {
@@ -674,6 +728,7 @@ export class OrdersService {
         id: true,
         orderNumber: true,
         status: true,
+        orderType: true,
         subtotalMinor: true,
         discountMinor: true,
         taxMinor: true,

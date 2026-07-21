@@ -5,6 +5,12 @@ import { createPortal } from 'react-dom';
 import type { Order, RestaurantProfile } from '@/lib/api';
 import { formatMinor } from '@/lib/money';
 
+const TYPE_LABEL: Record<string, string> = {
+  DINE_IN: 'Dine-in',
+  TAKEAWAY: 'Takeaway',
+  DELIVERY: 'Delivery',
+};
+
 /**
  * Receipts — the paper the customer takes home, and the KOT the kitchen works
  * from.
@@ -131,6 +137,7 @@ export function BillReceipt({
       <p>
         Bill #{order.orderNumber} · {when(order)}
       </p>
+      <p>{TYPE_LABEL[order.orderType] ?? order.orderType}</p>
       {order.customer && (
         <p>
           {order.customer.name} · {order.customer.phone}
@@ -208,7 +215,9 @@ export function KotTicket({
   return (
     <div className="rc rc-kot">
       <header className="rc-center">
-        <p className="rc-title">KOT #{order.orderNumber}</p>
+        <p className="rc-title">
+          KOT #{order.orderNumber} — {TYPE_LABEL[order.orderType] ?? order.orderType}
+        </p>
         {profile && <p>{profile.name}</p>}
         <p>{when(order)}</p>
       </header>

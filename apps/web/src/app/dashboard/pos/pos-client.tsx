@@ -13,6 +13,8 @@ import {
   CreditCard,
   Keyboard,
   Minus,
+  PauseCircle,
+  Pencil,
   Plus,
   Printer,
   ScanBarcode,
@@ -29,12 +31,16 @@ import {
   ApiRequestError,
   createOrder,
   getCustomer,
+  getOrder,
   getRestaurantProfile,
   listCategories,
+  listOrders,
   listProducts,
   recordPayment,
+  updateOrderStatus,
   type Category,
   type Order,
+  type OrderSummary,
   type Product,
   type RestaurantProfile,
 } from '@/lib/api';
@@ -53,8 +59,15 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { CustomerPicker, type PosCustomer } from './customer-picker';
 
-type CartLine = { product: Product; quantity: number };
+type CartLine = { product: Product; quantity: number; notes?: string };
 type LastAction = { label: string; productId: string; at: number };
+
+const ORDER_TYPES = [
+  { key: 'DINE_IN', label: 'Dine-in' },
+  { key: 'TAKEAWAY', label: 'Takeaway' },
+  { key: 'DELIVERY', label: 'Delivery' },
+] as const;
+type OrderTypeKey = (typeof ORDER_TYPES)[number]['key'];
 
 const METHODS = [
   { key: 'CASH', label: 'Cash', icon: Banknote },
@@ -79,6 +92,16 @@ const SHORTCUTS: Array<{ keys: string[]; does: string }> = [
 /** How long a removed cart line takes to collapse before it leaves the state. */
 const LINE_OUT_MS = 160;
 
+/** Compact "3m ago" for the held-orders tray. */
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+}
+
 export function PosClient() {
   const { accessToken, setAccessToken } = useAuth();
   const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
@@ -95,7 +118,9 @@ export function PosClient() {
   const [coupon, setCoupon] = useState('');
   const [note, setNote] = useState('');
   const [method, setMethod] = useState<MethodKey>('CASH');
+  const [orderType, setOrderType] = useState<OrderTypeKey>('TAKEAWAY');
   const [placing, setPlacing] = useState(false);
+  const [holding, setHolding] = useState(false);
   const [success, setSuccess] = useState<Order | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
   const [lastAction, setLastAction] = useState<LastAction | null>(null);
@@ -103,7 +128,22 @@ export function PosClient() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+  // Held (parked) orders — DRAFTs with no payment, resumed later.
+  const [held, setHeld] = useState<OrderSummary[]>([]);
+  const [heldOpen, setHeldOpen] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const { printNode, portal: printPortal } = usePrintArea();
+
+  const reloadHeld = useCallback(() => {
+    if (!accessToken) return;
+    listOrders(accessToken, onNewToken, { status: 'DRAFT', limit: 50 })
+      .then(setHeld)
+      .catch(() => undefined);
+  }, [accessToken, onNewToken]);
+
+  useEffect(() => {
+    reloadHeld();
+  }, [reloadHeld]);
 
   // Business profile for the bill header. Loaded once; failing only greys
   // the Print button.
@@ -250,6 +290,10 @@ export function PosClient() {
     );
   }
 
+  function setLineNote(id: string, notes: string) {
+    setCart((c) => c.map((l) => (l.product.id === id ? { ...l, notes } : l)));
+  }
+
   function clearCart() {
     for (const t of leavingTimers.current.values()) clearTimeout(t);
     leavingTimers.current.clear();
@@ -257,6 +301,7 @@ export function PosClient() {
     setCart([]);
     setCoupon('');
     setNote('');
+    setOrderType('TAKEAWAY');
     setCustomer(null);
     setLastAction(null);
     idemKey.current = null;
@@ -268,15 +313,25 @@ export function PosClient() {
     ? cart.filter((l) => !leaving.includes(l.product.id))
     : cart;
 
+  /** The item payload shared by charge and hold — carries per-line notes. */
+  function cartItems() {
+    return activeCart.map((l) => ({
+      productId: l.product.id,
+      quantity: l.quantity,
+      ...(l.notes?.trim() ? { notes: l.notes.trim() } : {}),
+    }));
+  }
+
   async function charge() {
     if (!accessToken || activeCart.length === 0 || placing) return;
     setPlacing(true);
     try {
       const order = await createOrder(accessToken, onNewToken, {
-        items: activeCart.map((l) => ({ productId: l.product.id, quantity: l.quantity })),
+        items: cartItems(),
         // SPLIT: the order is placed unpaid; legs are recorded on the
         // success panel one by one.
         ...(method !== 'SPLIT' ? { paymentMethod: method } : {}),
+        orderType,
         ...(customer ? { customerId: customer.id } : {}),
         ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
         ...(note.trim() ? { notes: note.trim() } : {}),
@@ -292,6 +347,58 @@ export function PosClient() {
       });
     } finally {
       setPlacing(false);
+    }
+  }
+
+  /** Park the cart as a DRAFT — no kitchen, no stock, no payment yet. */
+  async function hold() {
+    if (!accessToken || activeCart.length === 0 || holding) return;
+    setHolding(true);
+    try {
+      await createOrder(accessToken, onNewToken, {
+        items: cartItems(),
+        orderType,
+        hold: true,
+        ...(customer ? { customerId: customer.id } : {}),
+        ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
+        ...(note.trim() ? { notes: note.trim() } : {}),
+        idempotencyKey: idemKey.current ?? crypto.randomUUID(),
+      });
+      toast({ title: 'Order held', variant: 'success' });
+      clearCart();
+      reloadHeld();
+    } catch (e) {
+      toast({
+        title: 'Could not hold the order',
+        description: e instanceof ApiRequestError ? e.message : undefined,
+        variant: 'danger',
+      });
+    } finally {
+      setHolding(false);
+    }
+  }
+
+  /**
+   * Resume a held order: place it (DRAFT -> PLACED, which deplete stock and
+   * stamps placedAt server-side), then hand it to the success panel so the
+   * cashier collects payment exactly as for a fresh unpaid order.
+   */
+  async function resume(id: string) {
+    if (!accessToken || resuming) return;
+    setResuming(true);
+    try {
+      await updateOrderStatus(accessToken, onNewToken, id, 'PLACED');
+      const order = await getOrder(accessToken, onNewToken, id);
+      setHeldOpen(false);
+      setSuccess(order);
+      reloadHeld();
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not resume the order',
+        variant: 'danger',
+      });
+    } finally {
+      setResuming(false);
     }
   }
 
@@ -406,7 +513,11 @@ export function PosClient() {
       setNote={setNote}
       method={method}
       setMethod={setMethod}
+      orderType={orderType}
+      setOrderType={setOrderType}
       placing={placing}
+      holding={holding}
+      onHold={() => void hold()}
       success={success}
       onNewOrder={() => setSuccess(null)}
       onPrintBill={
@@ -418,6 +529,7 @@ export function PosClient() {
       charge={() => void charge()}
       changeQty={changeQty}
       removeLine={removeLine}
+      setLineNote={setLineNote}
       askClear={() => setConfirmClear(true)}
       customerSlot={
         <CustomerPicker
@@ -464,6 +576,19 @@ export function PosClient() {
                 /
               </kbd>
             </div>
+            {held.length > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setHeldOpen(true)}
+                className="h-9 shrink-0"
+                title="Resume a held order"
+              >
+                <PauseCircle aria-hidden className="size-4" />
+                Held
+                <Badge className="ml-1 tabular-nums">{held.length}</Badge>
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -649,6 +774,46 @@ export function PosClient() {
         confirmLabel="Clear order"
       />
 
+      <Sheet open={heldOpen} onClose={() => setHeldOpen(false)} title="Held orders">
+        {held.length === 0 ? (
+          <EmptyState
+            icon={PauseCircle}
+            title="No held orders"
+            body="Hold an order to park it here, then resume it to take payment."
+          />
+        ) : (
+          <ul className="space-y-2">
+            {held.map((o) => (
+              <li key={o.id}>
+                <button
+                  type="button"
+                  disabled={resuming}
+                  onClick={() => void resume(o.id)}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3 py-2.5 text-left transition-colors duration-120 hover:bg-surface-2 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                >
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm font-semibold tabular-nums">
+                      #{o.orderNumber}
+                    </p>
+                    <p className="truncate text-[12px] text-ink-3">
+                      {o._count.items} item{o._count.items === 1 ? '' : 's'}
+                      {o.customer ? ` · ${o.customer.name}` : ''} · held{' '}
+                      {timeAgo(o.createdAt)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-sm font-semibold tabular-nums">
+                      {formatMinor(o.totalMinor)}
+                    </span>
+                    <Badge>Resume</Badge>
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Sheet>
+
       {printPortal}
 
       <Modal open={helpOpen} onClose={() => setHelpOpen(false)} title="Keyboard shortcuts">
@@ -682,7 +847,11 @@ function CartPanel({
   setNote,
   method,
   setMethod,
+  orderType,
+  setOrderType,
   placing,
+  holding,
+  onHold,
   success,
   onNewOrder,
   onPrintBill,
@@ -690,6 +859,7 @@ function CartPanel({
   charge,
   changeQty,
   removeLine,
+  setLineNote,
   askClear,
   customerSlot,
 }: {
@@ -705,7 +875,11 @@ function CartPanel({
   setNote: (v: string) => void;
   method: MethodKey;
   setMethod: (m: MethodKey) => void;
+  orderType: OrderTypeKey;
+  setOrderType: (t: OrderTypeKey) => void;
   placing: boolean;
+  holding: boolean;
+  onHold: () => void;
   success: Order | null;
   onNewOrder: () => void;
   /** Absent until the business profile has loaded. */
@@ -715,6 +889,7 @@ function CartPanel({
   charge: () => void;
   changeQty: (id: string, delta: number) => void;
   removeLine: (id: string) => void;
+  setLineNote: (id: string, notes: string) => void;
   askClear: () => void;
   customerSlot: React.ReactNode;
 }) {
@@ -921,6 +1096,10 @@ function CartPanel({
                         <X aria-hidden className="size-3.5" />
                       </Button>
                     </div>
+                    <LineNote
+                      value={l.notes ?? ''}
+                      onChange={(v) => setLineNote(l.product.id, v)}
+                    />
                   </div>
                 </li>
               );
@@ -943,6 +1122,29 @@ function CartPanel({
               aria-label="Order note"
               className="h-8 text-[12px]"
             />
+          </div>
+
+          <div
+            className="mt-3 grid grid-cols-3 gap-1.5"
+            aria-label="Order type"
+          >
+            {ORDER_TYPES.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                aria-pressed={orderType === t.key}
+                onClick={() => setOrderType(t.key)}
+                className={cn(
+                  'h-8 rounded-lg border text-[12px] font-medium transition-[border-color,background-color,color] duration-120',
+                  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current',
+                  orderType === t.key
+                    ? 'border-ink bg-surface-2 text-ink'
+                    : 'border-line-2 text-ink-2 hover:bg-surface-2',
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
 
           <dl className="mt-3 space-y-1.5 border-t border-line pt-3 text-[13px]">
@@ -988,22 +1190,73 @@ function CartPanel({
             <CashTendered key={cart.length === 0 ? 0 : 1} totalMinor={subtotal + tax} />
           )}
 
-          <Button
-            variant="primary"
-            disabled={placing}
-            onClick={charge}
-            title="Ctrl+Enter"
-            className="mt-2 h-[52px] w-full text-[15px]"
-          >
-            {placing
-              ? 'Charging…'
-              : method === 'SPLIT'
-                ? `Charge ${formatMinor(total)} — split next`
-                : `Charge ${formatMinor(total)}`}
-          </Button>
+          <div className="mt-2 flex gap-2">
+            <Button
+              variant="secondary"
+              disabled={holding || placing}
+              onClick={onHold}
+              title="Park this order to resume later"
+              className="h-[52px] shrink-0 px-4 text-[15px]"
+            >
+              <PauseCircle aria-hidden className="size-4" />
+              {holding ? 'Holding…' : 'Hold'}
+            </Button>
+            <Button
+              variant="primary"
+              disabled={placing || holding}
+              onClick={charge}
+              title="Ctrl+Enter"
+              className="h-[52px] flex-1 text-[15px]"
+            >
+              {placing
+                ? 'Charging…'
+                : method === 'SPLIT'
+                  ? `Charge ${formatMinor(total)} — split next`
+                  : `Charge ${formatMinor(total)}`}
+            </Button>
+          </div>
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Per-line kitchen note ("no onion", "extra spicy"). Collapsed to a small
+ * affordance until used, so it never clutters a fast till — but the note the
+ * kitchen actually reads lives here, per item, not just on the whole order.
+ */
+function LineNote({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!open && !value) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-1 inline-flex items-center gap-1 text-[11px] text-ink-3 transition-colors duration-120 hover:text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+      >
+        <Pencil aria-hidden className="size-3" />
+        Add note
+      </button>
+    );
+  }
+  return (
+    <Input
+      autoFocus={open}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={() => setOpen(false)}
+      maxLength={200}
+      placeholder="e.g. no onion, extra spicy"
+      aria-label="Item note"
+      className="mt-1 h-7 text-[12px]"
+    />
   );
 }
 

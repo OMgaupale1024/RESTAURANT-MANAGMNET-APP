@@ -654,6 +654,16 @@ enum OrderStatus {
   @@map("order_status")
 }
 
+/// How the order leaves the building. No table numbers yet — a momos counter
+/// needs the tag (KOT routing, day-end mix), not floor management.
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+
+  @@map("order_type")
+}
+
 enum OrderEventType {
   CREATED
   STATUS_CHANGED
@@ -696,6 +706,7 @@ model Order {
   customerId    String?     @map("customer_id") @db.Uuid
   orderNumber   Int         @map("order_number")
   status        OrderStatus @default(DRAFT)
+  orderType     OrderType   @default(TAKEAWAY) @map("order_type")
   subtotalMinor Int         @map("subtotal_minor")
   discountMinor Int         @default(0) @map("discount_minor")
   taxMinor      Int         @map("tax_minor")

@@ -23,6 +23,7 @@ import {
   QUICK,
   StatusBadge,
   timeShort,
+  TYPE_LABEL,
 } from '../orders/order-detail';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -61,6 +62,7 @@ function toSummary(o: Order): OrderSummary {
     id: o.id,
     orderNumber: o.orderNumber,
     status: o.status,
+    orderType: o.orderType,
     totalMinor: o.totalMinor,
     createdAt: o.createdAt,
     placedAt: o.placedAt,
@@ -453,7 +455,14 @@ const Ticket = memo(function Ticket({
           >
             #{order.orderNumber}
           </button>
-          <Elapsed since={since} />
+          <span className="flex items-center gap-1.5">
+            {order.orderType !== 'TAKEAWAY' && (
+              <Badge variant={order.orderType === 'DELIVERY' ? 'info' : 'warning'}>
+                {TYPE_LABEL[order.orderType] ?? order.orderType}
+              </Badge>
+            )}
+            <Elapsed since={since} />
+          </span>
         </div>
 
         {order.customer && (
