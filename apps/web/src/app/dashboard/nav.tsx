@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useLayoutEffect, useRef, useState } from 'react';
 import {
+  BookOpen,
   ChefHat,
   FileText,
   LayoutDashboard,
@@ -52,6 +53,7 @@ export const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
   {
     label: 'Manage',
     items: [
+      { label: 'Menu', href: '/dashboard/menu', icon: BookOpen },
       { label: 'Inventory', href: '/dashboard/inventory', icon: Package },
       { label: 'Staff', href: '/dashboard/staff', icon: UserCog },
     ],

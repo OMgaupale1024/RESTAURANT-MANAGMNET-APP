@@ -22,10 +22,10 @@ import {
   UtensilsCrossed,
   X,
 } from 'lucide-react';
+import Link from 'next/link';
 import {
   ApiRequestError,
   createOrder,
-  createProduct,
   getCustomer,
   listCategories,
   listProducts,
@@ -35,7 +35,7 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
-import { formatMinor, parseRupeesToMinor } from '@/lib/money';
+import { formatMinor } from '@/lib/money';
 import { useCountUp } from '@/lib/use-count-up';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -77,7 +77,6 @@ export function PosClient() {
 
   const [products, setProducts] = useState<Product[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [reloadKey, setReloadKey] = useState(0);
 
   const [q, setQ] = useState('');
   const [cat, setCat] = useState<string>('all');
@@ -129,7 +128,7 @@ export function PosClient() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, onNewToken, reloadKey, toast]);
+  }, [accessToken, onNewToken, toast]);
 
   const setCustomer = (c: PosCustomer | null) => {
     setVisits(null);
@@ -459,12 +458,15 @@ export function PosClient() {
               <EmptyState
                 icon={UtensilsCrossed}
                 title="No menu items yet"
-                body="Add your first item below — it appears here instantly and you can start selling."
-              />
-              <AddProduct
-                accessToken={accessToken}
-                onNewToken={onNewToken}
-                onAdded={() => setReloadKey((k) => k + 1)}
+                body="Set up your menu first — items appear here instantly and you can start selling."
+                action={
+                  <Link
+                    href="/dashboard/menu"
+                    className="inline-flex h-9 items-center rounded-lg bg-brand px-3.5 text-sm font-medium text-brand-ink"
+                  >
+                    Set up the menu →
+                  </Link>
+                }
               />
             </div>
           ) : filtered.length === 0 ? (
@@ -534,16 +536,16 @@ export function PosClient() {
                   );
                 })}
               </ul>
-              <details className="mt-6">
-                <summary className="cursor-pointer text-[13px] text-ink-3 transition-colors duration-120 hover:text-ink">
-                  Add a menu item
-                </summary>
-                <AddProduct
-                  accessToken={accessToken}
-                  onNewToken={onNewToken}
-                  onAdded={() => setReloadKey((k) => k + 1)}
-                />
-              </details>
+              <p className="mt-6 text-[13px] text-ink-3">
+                Menu changes live in{' '}
+                <Link
+                  href="/dashboard/menu"
+                  className="font-medium text-ink-2 underline-offset-4 hover:underline"
+                >
+                  Menu
+                </Link>
+                .
+              </p>
             </>
           )}
         </div>
@@ -929,65 +931,3 @@ function TimeAgo({ at }: { at: number }) {
   return <>{s < 2 ? 'just now' : s < 60 ? `${s} sec ago` : `${Math.floor(s / 60)} min ago`}</>;
 }
 
-/** Minimal menu entry (existing capability). Full menu management is a later module. */
-function AddProduct({
-  accessToken,
-  onNewToken,
-  onAdded,
-}: {
-  accessToken: string | null;
-  onNewToken: (t: string) => void;
-  onAdded: () => void;
-}) {
-  const toast = useToast();
-  const [name, setName] = useState('');
-  const [price, setPrice] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const priceMinor = parseRupeesToMinor(price);
-  const valid = name.trim().length > 0 && priceMinor !== null;
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!accessToken || !valid) return;
-    setBusy(true);
-    try {
-      await createProduct(accessToken, onNewToken, {
-        name: name.trim(),
-        priceMinor: priceMinor!,
-      });
-      setName('');
-      setPrice('');
-      onAdded();
-    } catch (err) {
-      toast({
-        title: 'Could not add the item',
-        description: err instanceof ApiRequestError ? err.message : undefined,
-        variant: 'danger',
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="mt-3 flex flex-wrap items-end gap-2">
-      <label className="min-w-40 flex-1">
-        <span className="text-label mb-1.5 block">Item name</span>
-        <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
-      </label>
-      <label className="w-28">
-        <span className="text-label mb-1.5 block">Price (₹)</span>
-        <Input
-          inputMode="decimal"
-          value={price}
-          onChange={(e) => setPrice(e.target.value)}
-          placeholder="120.00"
-        />
-      </label>
-      <Button type="submit" variant="secondary" disabled={!valid || busy}>
-        Add
-      </Button>
-    </form>
-  );
-}

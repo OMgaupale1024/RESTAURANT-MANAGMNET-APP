@@ -194,6 +194,7 @@ export type Product = {
   priceMinor: number;
   taxRateBp: number;
   categoryId: string | null;
+  isActive: boolean;
 };
 
 export type Order = {
@@ -221,10 +222,10 @@ export type Order = {
 
 type Retry = (t: string) => void;
 
-export const listProducts = (token: string, onNewToken: Retry) =>
-  authedFetch<Product[]>('/products', token, onNewToken);
+export const listProducts = (token: string, onNewToken: Retry, all?: boolean) =>
+  authedFetch<Product[]>(`/products${all ? '?include=all' : ''}`, token, onNewToken);
 
-export type Category = { id: string; name: string };
+export type Category = { id: string; name: string; sortOrder: number };
 
 export const listCategories = (token: string, onNewToken: Retry) =>
   authedFetch<Category[]>('/categories', token, onNewToken);
@@ -232,11 +233,62 @@ export const listCategories = (token: string, onNewToken: Retry) =>
 export const createProduct = (
   token: string,
   onNewToken: Retry,
-  body: { name: string; priceMinor: number },
+  body: {
+    name: string;
+    priceMinor: number;
+    taxRateBp?: number;
+    categoryId?: string;
+  },
 ) =>
   authedFetch<Product>('/products', token, onNewToken, {
     method: 'POST',
     body: JSON.stringify(body),
+  });
+
+export const updateProduct = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    priceMinor?: number;
+    taxRateBp?: number;
+    categoryId?: string | null;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<Product>(`/products/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const createCategory = (token: string, onNewToken: Retry, name: string) =>
+  authedFetch<Category>('/categories', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+
+export const updateCategory = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { name?: string },
+) =>
+  authedFetch<Category>(`/categories/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteCategory = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/categories/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
+/** The full display order — sortOrder becomes the index in `ids`. */
+export const reorderCategories = (token: string, onNewToken: Retry, ids: string[]) =>
+  authedFetch<Category[]>('/categories/order', token, onNewToken, {
+    method: 'PUT',
+    body: JSON.stringify({ ids }),
   });
 
 export const createOrder = (
