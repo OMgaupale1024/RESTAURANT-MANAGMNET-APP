@@ -486,6 +486,7 @@ export class OrdersService {
             unitPriceMinor: true,
             quantity: true,
             lineTotalMinor: true,
+            taxRateBp: true,
             taxMinor: true,
             notes: true,
           },

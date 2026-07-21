@@ -246,6 +246,8 @@ export type Order = {
     unitPriceMinor: number;
     quantity: number;
     lineTotalMinor: number;
+    taxRateBp: number;
+    taxMinor: number;
     notes: string | null;
   }>;
   payments: Array<{ id: string; method: string; status: string; amountMinor: number }>;

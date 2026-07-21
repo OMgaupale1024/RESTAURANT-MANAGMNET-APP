@@ -6,14 +6,23 @@ import {
   CheckCircle2,
   ChefHat,
   FileText,
+  MessageCircle,
+  Printer,
   Receipt,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
-import type { Order, TimelineEvent } from '@/lib/api';
+import type { Order, RestaurantProfile, TimelineEvent } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatMinor } from '@/lib/money';
 import { nextStatuses } from '@/lib/order-status';
+import {
+  BillReceipt,
+  KotTicket,
+  buildShareText,
+  usePrintArea,
+  waShareUrl,
+} from '@/lib/receipt';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
@@ -96,15 +105,19 @@ export function OrderDetail({
   timeline,
   moving,
   onMove,
+  profile,
 }: {
   order: Order;
   timeline: TimelineEvent[];
   moving: boolean;
   onMove: (to: string) => void;
+  /** Business profile for receipts; buttons wait until it has loaded. */
+  profile?: RestaurantProfile | null;
 }) {
   const next = nextStatuses(order.status);
   const forward = next.filter((s) => !DANGER_STATUSES.includes(s));
   const danger = next.filter((s) => DANGER_STATUSES.includes(s));
+  const { printNode, portal } = usePrintArea();
 
   return (
     <div className="space-y-6">
@@ -131,6 +144,51 @@ export function OrderDetail({
           ))}
         </div>
       )}
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!profile}
+          title={profile ? 'Print the customer bill' : 'Loading business profile…'}
+          onClick={() =>
+            profile && printNode(<BillReceipt order={order} profile={profile} />)
+          }
+        >
+          <Printer aria-hidden className="size-3.5" />
+          Print bill
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => printNode(<KotTicket order={order} profile={profile ?? null} />)}
+        >
+          <ChefHat aria-hidden className="size-3.5" />
+          Print KOT
+        </Button>
+        {profile && (
+          <Button
+            variant="secondary"
+            size="sm"
+            title={
+              order.customer
+                ? `Send the bill to ${order.customer.name} on WhatsApp`
+                : 'Share the bill on WhatsApp'
+            }
+            onClick={() =>
+              window.open(
+                waShareUrl(buildShareText(order, profile), order.customer?.phone),
+                '_blank',
+                'noopener,noreferrer',
+              )
+            }
+          >
+            <MessageCircle aria-hidden className="size-3.5" />
+            Share
+          </Button>
+        )}
+      </div>
+      {portal}
 
       <Section label="Timeline">
         <Timeline events={timeline} />

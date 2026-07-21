@@ -80,8 +80,11 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
     name: 'Cashier',
     // Deliberately cannot void or refund: those are the theft vectors, and
     // the blueprint's threat model puts the cashier at the top of the list.
+    // restaurant.read is here because the till prints bills, and a bill
+    // carries the shop's name, address and GSTIN.
     permissions: [
       'attendance.record',
+      'restaurant.read',
       'product.read',
       'customer.read',
       'customer.manage',
@@ -92,8 +95,10 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
   },
   KITCHEN: {
     name: 'Kitchen',
+    // restaurant.read: the KOT header names the shop.
     permissions: [
       'attendance.record',
+      'restaurant.read',
       'product.read',
       'inventory.read',
       'inventory.manage',

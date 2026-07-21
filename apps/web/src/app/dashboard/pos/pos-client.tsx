@@ -14,6 +14,7 @@ import {
   Keyboard,
   Minus,
   Plus,
+  Printer,
   ScanBarcode,
   Search,
   SearchX,
@@ -27,15 +28,18 @@ import {
   ApiRequestError,
   createOrder,
   getCustomer,
+  getRestaurantProfile,
   listCategories,
   listProducts,
   type Category,
   type Order,
   type Product,
+  type RestaurantProfile,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor } from '@/lib/money';
+import { BillReceipt, usePrintArea } from '@/lib/receipt';
 import { useCountUp } from '@/lib/use-count-up';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -93,6 +97,18 @@ export function PosClient() {
   const [leaving, setLeaving] = useState<string[]>([]);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+  const { printNode, portal: printPortal } = usePrintArea();
+
+  // Business profile for the bill header. Loaded once; failing only greys
+  // the Print button.
+  useEffect(() => {
+    if (!accessToken) return;
+    getRestaurantProfile(accessToken, (t) => setAccessToken(t))
+      .then(setProfile)
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   const searchRef = useRef<HTMLInputElement>(null);
   // Lines mid-collapse: id → removal timer. Lets a re-add cancel the removal.
@@ -362,6 +378,11 @@ export function PosClient() {
       placing={placing}
       success={success}
       onNewOrder={() => setSuccess(null)}
+      onPrintBill={
+        profile
+          ? (o: Order) => printNode(<BillReceipt order={o} profile={profile} />)
+          : undefined
+      }
       charge={() => void charge()}
       changeQty={changeQty}
       removeLine={removeLine}
@@ -596,6 +617,8 @@ export function PosClient() {
         confirmLabel="Clear order"
       />
 
+      {printPortal}
+
       <Modal open={helpOpen} onClose={() => setHelpOpen(false)} title="Keyboard shortcuts">
         <dl className="space-y-2.5">
           {SHORTCUTS.map((s) => (
@@ -630,6 +653,7 @@ function CartPanel({
   placing,
   success,
   onNewOrder,
+  onPrintBill,
   charge,
   changeQty,
   removeLine,
@@ -651,6 +675,8 @@ function CartPanel({
   placing: boolean;
   success: Order | null;
   onNewOrder: () => void;
+  /** Absent until the business profile has loaded. */
+  onPrintBill?: (order: Order) => void;
   charge: () => void;
   changeQty: (id: string, delta: number) => void;
   removeLine: (id: string) => void;
@@ -688,9 +714,20 @@ function CartPanel({
         </dl>
         {/* The panel is rendered twice (rail + sheet); focus() on the hidden
             copy is a no-op, so autoFocus lands on the visible one. */}
-        <Button variant="primary" onClick={onNewOrder} autoFocus>
-          New order
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            disabled={!onPrintBill}
+            title={onPrintBill ? 'Print the customer bill' : 'Loading business profile…'}
+            onClick={() => onPrintBill?.(success)}
+          >
+            <Printer aria-hidden className="size-4" />
+            Print bill
+          </Button>
+          <Button variant="primary" onClick={onNewOrder} autoFocus>
+            New order
+          </Button>
+        </div>
       </div>
     );
   }

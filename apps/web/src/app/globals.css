@@ -399,3 +399,92 @@ select {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------------------------------------------------------------- receipts
+   #print-area is portalled into <body> by usePrintArea (lib/receipt.tsx).
+   On screen it stays hidden; in print it is the ONLY thing on the page.
+   Sized for 80mm thermal paper (72mm printable); harmless on A4. */
+#print-area {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 4mm;
+  }
+  body.printing > :not(#print-area) {
+    display: none !important;
+  }
+  body.printing #print-area {
+    display: block;
+  }
+}
+
+.rc {
+  width: 72mm;
+  color: #000;
+  background: #fff;
+  font-family: ui-monospace, 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.rc-center {
+  text-align: center;
+}
+.rc-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+.rc-rule {
+  border-top: 1px dashed #000;
+  margin: 4px 0;
+}
+.rc-items,
+.rc-totals {
+  width: 100%;
+  border-collapse: collapse;
+}
+.rc-items td,
+.rc-totals td {
+  vertical-align: top;
+  padding: 1px 0;
+}
+.rc-qty {
+  white-space: nowrap;
+  padding-right: 4px;
+  font-weight: 700;
+}
+.rc-amt {
+  text-align: right;
+  white-space: nowrap;
+  padding-left: 6px;
+}
+.rc-note {
+  font-size: 10px;
+}
+.rc-grand td {
+  font-size: 13px;
+  font-weight: 700;
+  border-top: 1px solid #000;
+  padding-top: 3px;
+}
+
+/* KOT: read from arm's length in a hot kitchen. */
+.rc-kot {
+  font-size: 14px;
+}
+.rc-kot .rc-title {
+  font-size: 18px;
+}
+.rc-kot-items {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.rc-kot-items li {
+  padding: 3px 0;
+  font-weight: 600;
+}
+.rc-kot-note {
+  font-weight: 700;
+}

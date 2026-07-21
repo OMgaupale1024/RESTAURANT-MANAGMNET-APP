@@ -5,11 +5,13 @@ import { BellRing, CheckCircle2, ChefHat, Receipt, UserRound, type LucideIcon } 
 import {
   ApiRequestError,
   getOrder,
+  getRestaurantProfile,
   getTimeline,
   listActiveOrders,
   updateOrderStatus,
   type Order,
   type OrderSummary,
+  type RestaurantProfile,
   type TimelineEvent,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -90,6 +92,16 @@ export function KitchenClient() {
   const [detail, setDetail] = useState<{ order: Order; timeline: TimelineEvent[] } | null>(null);
   const [askDanger, setAskDanger] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+
+  // For the KOT header; a failure only means the ticket prints without it.
+  useEffect(() => {
+    if (!accessToken) return;
+    getRestaurantProfile(accessToken, onNewToken)
+      .then(setProfile)
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   const tokenRef = useRef(accessToken);
   useEffect(() => {
@@ -360,6 +372,7 @@ export function KitchenClient() {
             order={detail.order}
             timeline={detail.timeline}
             moving={moving}
+            profile={profile}
             onMove={(to) =>
               DANGER_STATUSES.includes(to)
                 ? setAskDanger(to)

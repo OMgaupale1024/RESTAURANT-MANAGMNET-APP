@@ -6,11 +6,13 @@ import { Receipt, Search, SearchX } from 'lucide-react';
 import {
   ApiRequestError,
   getOrder,
+  getRestaurantProfile,
   getTimeline,
   listOrders,
   updateOrderStatus,
   type Order,
   type OrderSummary,
+  type RestaurantProfile,
   type TimelineEvent,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -80,6 +82,17 @@ export function OrdersClient() {
   const [detail, setDetail] = useState<{ order: Order; timeline: TimelineEvent[] } | null>(null);
   const [askDanger, setAskDanger] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+
+  // Business profile for receipts — fetched once; a failure only disables
+  // the print button, it never blocks the orders screen.
+  useEffect(() => {
+    if (!accessToken) return;
+    getRestaurantProfile(accessToken, onNewToken)
+      .then(setProfile)
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   // Fresh values for socket handlers without re-subscribing the socket.
   const tokenRef = useRef(accessToken);
@@ -463,6 +476,7 @@ export function OrdersClient() {
             order={detail.order}
             timeline={detail.timeline}
             moving={moving}
+            profile={profile}
             onMove={(to) =>
               DANGER_STATUSES.includes(to) ? setAskDanger(to) : void move(detail.order.id, to)
             }
