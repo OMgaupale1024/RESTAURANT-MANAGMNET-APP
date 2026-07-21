@@ -76,19 +76,16 @@ describe('Health (e2e)', () => {
   it('does not rate-limit health probes (over the global limit of 100/min)', async () => {
     // The baseline throttle is 100/min per IP. Health is @SkipThrottle, so 120
     // hits in one window must all succeed — otherwise a probe would start
-    // getting 429s and the platform would read the app as down. Sent in small
-    // batches (one IP, same window) to avoid a 120-socket ECONNRESET storm
-    // against the in-process test server.
-    const statuses: number[] = [];
-    for (let batch = 0; batch < 12; batch++) {
-      const res = await Promise.all(
-        Array.from({ length: 10 }, () =>
-          request(server()).get('/api/v1/health'),
-        ),
-      );
-      statuses.push(...res.map((r) => r.status));
+    // getting 429s and the platform would read the app as down.
+    //
+    // Sequential, not concurrent: firing 10 at a time opened a socket burst
+    // against the in-process server that resets under load on Linux CI runners
+    // (the rest of the suite is sequential and stable there). One at a time is
+    // deterministic across platforms and still proves the point — a throttled
+    // route 429s after 100 regardless of concurrency, so this fails fast on a
+    // real regression.
+    for (let i = 0; i < 120; i++) {
+      await request(server()).get('/api/v1/health').expect(200);
     }
-    expect(statuses).toHaveLength(120);
-    expect(statuses.every((s) => s === 200)).toBe(true);
   });
 });
