@@ -2,10 +2,22 @@
 
 AI-powered Restaurant Operating System.
 
+**Status: v1.0 Release Candidate.** Core hardening and release preparation are
+complete — see [PRODUCTION_HARDENING.md](docs/PRODUCTION_HARDENING.md).
+
 - **[Roadmap & session state](docs/ROADMAP.md) — read this first.** Where the build is, working rules, commands, and the gotchas already paid for.
 - [Blueprint](docs/BLUEPRINT.md) — product vision, data model, AI phases
 - [Architecture](docs/ARCHITECTURE.md) — decisions that constrain all development
 - [Backlog](docs/BACKLOG.md) — known gaps, scheduled against the step that owns them
+
+### Operations
+
+- [Deployment](docs/DEPLOYMENT.md) — prerequisites, steps, Docker, HTTPS, rollback
+- [Environment](docs/ENVIRONMENT.md) — every variable, required/optional, defaults
+- [Runbook](docs/RUNBOOK.md) — restart, logs, health, common failures
+- [Backup & restore](docs/BACKUP_RESTORE.md) — PITR, restore drill, disaster recovery
+- [Security](docs/SECURITY.md) — auth, RLS, cookies, CSP, redaction
+- [Release checklist](docs/RELEASE_CHECKLIST.md) — the go/no-go gate
 
 ## Structure
 

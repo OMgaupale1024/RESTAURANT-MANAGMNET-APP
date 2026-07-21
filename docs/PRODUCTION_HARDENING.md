@@ -5,8 +5,8 @@ is lost, resume from the latest pushed commit and this file.
 
 - **Branch:** `production-hardening`
 - **Base:** `main`
-- **Current phase:** v1.0 Release Preparation (see bottom). Production hardening is **frozen** — do not revisit unless a direct regression is found.
-- **Current production status:** hardening complete; no known unshipped defects.
+- **Current phase:** v1.0 Release Preparation **COMPLETE** — Release Candidate. Production hardening is **frozen** — do not revisit unless a direct regression is found.
+- **Current production status:** hardening + release prep complete; no known Critical issues.
 
 ## Completed sprints (approved)
 
@@ -73,7 +73,9 @@ browser-verify → commit → push before the next).
 | 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ✅ done |
 | 5 | Docker (API, Web, prod compose, env handling) | ✅ done |
 | 6 | GitHub Actions CI (install, lint, typecheck, test, build, docker) | ✅ done |
-| 7 | Production deployment (env, reverse proxy, HTTPS, guide, backups, migration & rollback, zero-downtime) | ⬜ next |
+| 7 | Production deployment docs (env, reverse proxy, HTTPS, guide, backups, migration & rollback) | ✅ done |
+
+**Release Preparation is COMPLETE — OraOS is a v1.0 Release Candidate.**
 
 ## Milestone 1 — Invite acceptance security
 
@@ -336,6 +338,47 @@ lockfile in CI. No changes needed.
 - **RECOMMENDED (reported) — the API `lint` script uses `--fix`,** so it isn't a
   pure gate. CI compensates with `git diff --exit-code`; a dedicated non-fix
   `lint:ci` script would be cleaner. Not changed (out of automation scope).
+
+## Milestone 7 — Production deployment documentation
+
+**Issue.** Deployment was possible but under-documented; operators lacked
+runbooks, an environment reference, backup/recovery procedure, a security
+summary, and a go/no-go checklist.
+
+**Documentation created** (`docs/`):
+- **DEPLOYMENT.md** (completed) — prerequisites, env, deploy sequence + startup
+  order, Docker Compose, **HTTPS & reverse proxy** (platform + nginx/Caddy, trust-
+  proxy note), **domains**, **SSL renewal**, **rollback** (code vs migration).
+- **ENVIRONMENT.md** — every variable: purpose, required/optional, default,
+  example, and the boot-time cross-field rules.
+- **RUNBOOK.md** — restart, logs, health, and triage for auth/email/database/
+  migration failures and service restore.
+- **BACKUP_RESTORE.md** — Neon PITR strategy, the recorded restore drill, recovery
+  checklist, and disaster recovery.
+- **SECURITY.md** — auth, cookies, JWT, RLS, secrets, CSP, log redaction, and
+  operational recommendations.
+- **RELEASE_CHECKLIST.md** — the pre-deploy → deploy → post-deploy → smoke → sign-
+  off gate.
+
+**Doc sync.** `README.md` links the operations docs and marks the v1.0 RC state;
+`DEPLOYMENT.md` stale notes fixed (CI now automated; Docker section current);
+`BACKLOG.md` #1/#26 already closed in M5. Recommended findings addressed: doc
+drift (#7), trust-proxy verification note, external-error-reporting documentation,
+backup restore procedure.
+
+**Verification.** typecheck ✓ lint ✓ · API `nest build` + Web standalone build ✓
+· documentation reviewed for accuracy against the implementation.
+
+---
+
+# Release Preparation Complete
+
+All seven milestones and the mid-point Production Readiness Audit are done and
+pushed. **No Critical issues remain.** OraOS is a **v1.0 Release Candidate**.
+
+Remaining work is Recommended/V1.1 and tracked in `docs/BACKLOG.md` and the
+"operational recommendations" in `docs/SECURITY.md` (external error alerting,
+per-recipient reset throttling, credential-stuffing defence, email verification).
 
 ## General backlog
 

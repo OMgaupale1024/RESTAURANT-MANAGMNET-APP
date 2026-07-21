@@ -1,9 +1,27 @@
 # Deployment
 
-Production runbook for OraOS. Step 20. The philosophy is the same as the code:
-a misconfigured deploy should **fail to boot**, not boot insecure. The API
+Production runbook for OraOS. The philosophy is the same as the code: a
+misconfigured deploy should **fail to boot**, not boot insecure. The API
 validates its whole environment at startup and crashes on anything unsafe in
 production (`apps/api/src/config/env.ts`).
+
+See also: [ENVIRONMENT.md](ENVIRONMENT.md) (every variable) ·
+[RUNBOOK.md](RUNBOOK.md) (operations) · [BACKUP_RESTORE.md](BACKUP_RESTORE.md) ·
+[SECURITY.md](SECURITY.md) · [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+
+## Prerequisites
+
+- A **Postgres** database — Neon (publicly-trusted TLS, so `verify-full` needs no
+  custom CA). Any Postgres 15+ works.
+- A host for the **API** (container or Node buildpack) and one for the **web**
+  app (container, Node, or Vercel).
+- **Node 22** and **pnpm 11** if building from source; **Docker + Compose** if
+  using the container path.
+- A **secret manager** for `JWT_SECRET`, the two DB URLs, and the mail key.
+- **DNS** control for two same-site hostnames (web + API) and **TLS**
+  certificates (via the platform or a reverse proxy).
+- A **Resend** account (`RESEND_API_KEY` + a verified `MAIL_FROM`) for real
+  email — optional; without it, email is logged, not sent.
 
 ## Target stack
 
@@ -86,7 +104,7 @@ one-time `db:setup-app-role` (owner privileges). Run that once per environment.
 On SIGTERM (redeploy) the API drains in-flight requests and disconnects the
 Postgres pool via shutdown hooks before exiting.
 
-## Docker (Release M5)
+## Docker
 
 Both apps ship multi-stage, non-root, healthchecked images. The build context is
 the **repo root** (pnpm workspace).
@@ -112,21 +130,108 @@ docker build -f apps/api/Dockerfile -t oraos-api .
 docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api/v1 -t oraos-web .
 ```
 
+## HTTPS and reverse proxy
+
+TLS is **mandatory** in production — the API refuses to boot unless
+`CORS_ORIGINS` and `WEB_URL` are `https://`, cookies are set `Secure`, and helmet
+sends HSTS.
+
+Two common topologies:
+
+**Platform-terminated TLS (Vercel / Railway / Fly).** The platform provisions
+and renews certificates and terminates TLS at its edge, forwarding plain HTTP to
+the container. The API already runs behind a proxy: `app.set('trust proxy', 1)`
+trusts the first hop, so `X-Forwarded-For` (used for rate-limit keying) and
+`X-Forwarded-Proto` are honoured. **Verify the hop count** — if your platform
+chains more than one proxy, the client IP will be a proxy address and rate
+limiting keys on the wrong value; raise `trust proxy` to the real depth for that
+platform.
+
+**Self-managed reverse proxy (nginx / Caddy).** Terminate TLS at the proxy and
+forward to the API (`:3001`) and web (`:3000`) containers. Minimal nginx for the
+API host:
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name api.example.com;
+  ssl_certificate     /etc/letsencrypt/live/api.example.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
+
+  location / {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;                 # WebSocket (Socket.IO)
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+  }
+}
+```
+
+Caddy does the same with automatic certificates in two lines
+(`api.example.com { reverse_proxy 127.0.0.1:3001 }`).
+
+### Domains
+
+Web and API must be **same-site** so the `SameSite=Strict` refresh cookie is
+delivered — e.g. `app.example.com` (web) and `api.example.com` (API) under one
+registrable domain. A separate apex for the API breaks refresh. Point both A/CNAME
+records at the respective hosts, then set `WEB_URL`, `CORS_ORIGINS`, and the
+web build's `NEXT_PUBLIC_API_URL` to the https URLs.
+
+### SSL renewal
+
+- **Platform-terminated:** renewal is automatic; nothing to do.
+- **Let's Encrypt via certbot:** certificates last 90 days. `certbot renew` (via
+  its systemd timer/cron) renews at ~60 days; reload the proxy on success
+  (`--deploy-hook "nginx -s reload"`). Caddy renews automatically. **Monitor
+  expiry** regardless — an expired cert takes the whole app down.
+
+## Rollback
+
+The application layer is stateless, so a rollback is a redeploy of the previous
+artifact. The database is the part that needs care.
+
+**Code / image rollback (safe, fast):**
+
+```bash
+# Docker Compose: rebuild from the previous commit/tag.
+git checkout <previous-tag> && docker compose up -d --build api web
+# Or repoint to a previously built image tag if you push images to a registry.
+```
+
+Because every migration is **backward-compatible with the previous app version**
+(the zero-downtime rule), the old code runs fine against the newer schema — a
+code rollback needs **no** database change. This is the normal, low-risk path.
+
+**Migration rollback (rare, careful):** Prisma migrations are forward-only — do
+**not** edit or delete an applied migration. To undo a schema change, ship a **new**
+migration that reverses it (still backward-compatible). To undo bad *data*,
+restore from PITR into a scratch branch and reconcile
+([BACKUP_RESTORE.md](BACKUP_RESTORE.md#recovery-checklist)).
+
+**After any rollback:** confirm `GET /health` shows the expected `version`, both
+health endpoints are `200`, and one real login + write succeed.
+
 ## Backups
 
-Neon does point-in-time restore. An untested backup is not a backup
-(BLUEPRINT §8): schedule a periodic **restore drill** into a scratch branch and
-confirm the data is intact.
+Neon point-in-time restore is the backup of record. An untested backup is not a
+backup (BLUEPRINT §8): schedule a periodic **restore drill** and record it. Full
+strategy, verification drill, recovery checklist, and disaster recovery are in
+[BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
-## Not yet automated
+## Known operational gaps
 
-- **CI/CD** — intended pipeline (BLUEPRINT §10): PR → typecheck + lint + test +
-  migration dry-run → preview deploy → merge → staging → manual gate → prod. Add
-  as a GitHub Actions workflow when a hosting target is chosen.
-- **Email verification (#2)** — anyone can register with an address they do not
-  own. Still open (distinct from password reset). Lower urgency: a fake email
-  hurts the registrant, not the business.
+- **External error alerting (Sentry) not wired.** Errors are logged once with a
+  request id, but nothing pages an operator. Add Sentry or platform log alerts on
+  `level:50` before real traffic.
+- **Email verification (#2)** — a registrant's address is not verified. Distinct
+  from password reset (shipped); lower urgency (a fake email hurts the
+  registrant, not the business).
+- **Per-recipient reset throttling** and **credential-stuffing defence** — see
+  [SECURITY.md](SECURITY.md#operational-recommendations) and BACKLOG #8.
 
-Shipped since this doc was written: **password reset (#1)** and **invite email
-delivery (#26)** — both via Resend (Release M2/M3). Set `RESEND_API_KEY` and
-`MAIL_FROM`, or email falls back to a log transport.
+CI is automated (GitHub Actions): every push/PR runs lint, typecheck, unit + e2e
+tests, both app builds, and both docker builds.
