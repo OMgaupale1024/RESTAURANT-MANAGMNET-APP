@@ -27,6 +27,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AiModule } from './modules/ai/ai.module';
 import { MarketingModule } from './modules/marketing/marketing.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { CashModule } from './modules/cash/cash.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { ReportsModule } from './modules/reports/reports.module';
     AiModule,
     MarketingModule,
     ReportsModule,
+    CashModule,
   ],
   controllers: [HealthController],
   providers: [

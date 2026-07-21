@@ -132,9 +132,15 @@ describe('Order operations (e2e)', () => {
         select: { restaurantId: true },
       });
       const ids = ms.map((m) => m.restaurantId);
-      await owner.stockMovement.deleteMany({ where: { restaurantId: { in: ids } } });
-      await owner.recipeItem.deleteMany({ where: { restaurantId: { in: ids } } });
-      await owner.ingredient.deleteMany({ where: { restaurantId: { in: ids } } });
+      await owner.stockMovement.deleteMany({
+        where: { restaurantId: { in: ids } },
+      });
+      await owner.recipeItem.deleteMany({
+        where: { restaurantId: { in: ids } },
+      });
+      await owner.ingredient.deleteMany({
+        where: { restaurantId: { in: ids } },
+      });
       await owner.product.deleteMany({ where: { restaurantId: { in: ids } } });
       await owner.restaurant.deleteMany({ where: { id: { in: ids } } });
       await owner.securityEvent.deleteMany({
@@ -182,7 +188,9 @@ describe('Order operations (e2e)', () => {
         .get('/api/v1/orders?status=DRAFT')
         .set(auth(t.token))
         .expect(200);
-      expect(drafts.body.map((o: { id: string }) => o.id)).toContain(held.body.id);
+      expect(drafts.body.map((o: { id: string }) => o.id)).toContain(
+        held.body.id,
+      );
     });
 
     it('a held order cannot carry a payment', async () => {
@@ -283,7 +291,11 @@ describe('Order operations (e2e)', () => {
         .set(auth(t.token))
         .send({
           items: [
-            { productId: t.productId, quantity: 2, notes: 'no onion, extra spicy' },
+            {
+              productId: t.productId,
+              quantity: 2,
+              notes: 'no onion, extra spicy',
+            },
           ],
           idempotencyKey: randomUUID(),
         })

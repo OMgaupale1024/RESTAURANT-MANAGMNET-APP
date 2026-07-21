@@ -229,6 +229,99 @@ export type Product = {
   isActive: boolean;
 };
 
+/* ------------------------------------------------------------ cash drawer */
+
+export type CashMovementRow = {
+  id: string;
+  type: 'PAY_IN' | 'PAY_OUT';
+  amountMinor: number;
+  reason: string;
+  createdAt: string;
+};
+
+export type CashSettlement = {
+  openingFloatMinor: number;
+  payInMinor: number;
+  payOutMinor: number;
+  cashSalesMinor: number;
+  cashRefundsMinor: number;
+  expectedCashMinor: number;
+  grossSalesMinor: number;
+  netSalesMinor: number;
+  refundsMinor: number;
+  payByMethod: Array<{ method: string; amountMinor: number; count: number }>;
+  refundByMethod: Array<{ method: string; amountMinor: number }>;
+  countedCashMinor: number | null;
+  varianceMinor: number | null;
+};
+
+export type CashSession = {
+  id: string;
+  status: 'OPEN' | 'CLOSED';
+  openingFloatMinor: number;
+  openedAt: string;
+  closedAt: string | null;
+  closingCountedMinor: number | null;
+  expectedCashMinor: number | null;
+  varianceMinor: number | null;
+  notes: string | null;
+  movements: CashMovementRow[];
+  report: CashSettlement;
+};
+
+/** Lightweight row for the session history list (no report/movements). */
+export type CashSessionRow = {
+  id: string;
+  status: 'OPEN' | 'CLOSED';
+  openingFloatMinor: number;
+  openedAt: string;
+  closedAt: string | null;
+  closingCountedMinor: number | null;
+  expectedCashMinor: number | null;
+  varianceMinor: number | null;
+};
+
+export const getCurrentSession = (token: string, onNewToken: (t: string) => void) =>
+  authedFetch<CashSession | null>('/cash/sessions/current', token, onNewToken);
+
+export const listSessions = (token: string, onNewToken: (t: string) => void) =>
+  authedFetch<CashSessionRow[]>('/cash/sessions', token, onNewToken);
+
+export const getSession = (token: string, onNewToken: (t: string) => void, id: string) =>
+  authedFetch<CashSession>(`/cash/sessions/${id}`, token, onNewToken);
+
+export const openSession = (
+  token: string,
+  onNewToken: (t: string) => void,
+  body: { openingFloatMinor: number; notes?: string },
+) =>
+  authedFetch<CashSession>('/cash/sessions', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const recordCashMovement = (
+  token: string,
+  onNewToken: (t: string) => void,
+  id: string,
+  body: { type: 'PAY_IN' | 'PAY_OUT'; amountMinor: number; reason: string },
+) =>
+  authedFetch<CashSession>(`/cash/sessions/${id}/movements`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const closeSession = (
+  token: string,
+  onNewToken: (t: string) => void,
+  id: string,
+  body: { closingCountedMinor: number; notes?: string },
+) =>
+  authedFetch<CashSession>(`/cash/sessions/${id}/close`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
 export type Order = {
   id: string;
   orderNumber: number;

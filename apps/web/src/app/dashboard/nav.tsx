@@ -16,6 +16,7 @@ import {
   TrendingUp,
   UserCog,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -34,6 +35,7 @@ export const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
       { label: 'POS', href: '/dashboard/pos', icon: Store },
       { label: 'Orders', href: '/dashboard/orders', icon: Receipt },
       { label: 'Kitchen', href: '/dashboard/kitchen', icon: ChefHat },
+      { label: 'Day Close', href: '/dashboard/cash', icon: Wallet },
     ],
   },
   {
@@ -77,6 +79,7 @@ export function allowedHrefs(roleKey: string): Set<string> | null {
       '/dashboard/pos',
       '/dashboard/orders',
       '/dashboard/kitchen',
+      '/dashboard/cash',
       '/dashboard/customers',
     ]);
   return null; // OWNER / MANAGER: everything

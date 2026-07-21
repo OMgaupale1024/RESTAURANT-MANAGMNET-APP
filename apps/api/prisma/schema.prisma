@@ -74,9 +74,10 @@ model Branch {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  restaurant  Restaurant   @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  memberships Membership[]
-  orders      Order[]
+  restaurant   Restaurant    @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  memberships  Membership[]
+  orders       Order[]
+  cashSessions CashSession[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId])
@@ -636,6 +637,83 @@ model Customer {
   @@unique([restaurantId, phone])
   @@index([restaurantId, name])
   @@map("customers")
+}
+
+// ---------------------------------------------------------------------------
+// Cash drawer — day close
+// ---------------------------------------------------------------------------
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+
+  @@map("cash_session_type")
+}
+
+/// One till session: opened with a float, closed with a physical count.
+///
+/// A partial unique index (see migration) permits at most ONE open session per
+/// tenant, which is what lets the settlement scope its takings by the session's
+/// time window without tagging every payment.
+///
+/// ponytail: single active register per tenant. Multi-drawer would need a
+/// sessionId stamped on each payment; add it when a second till exists.
+///
+/// The close figures are SNAPSHOTTED (expectedCashMinor, varianceMinor) so a
+/// Z-report reprints identically even after later corrections — a closed
+/// session is a historical document, not a live query.
+model CashSession {
+  id                  String            @id @default(uuid(7)) @db.Uuid
+  restaurantId        String            @map("restaurant_id") @db.Uuid
+  branchId            String            @map("branch_id") @db.Uuid
+  status              CashSessionStatus @default(OPEN)
+  openingFloatMinor   Int               @map("opening_float_minor")
+  openedByUserId      String            @map("opened_by_user_id") @db.Uuid
+  openedAt            DateTime          @default(now()) @map("opened_at")
+  closedByUserId      String?           @map("closed_by_user_id") @db.Uuid
+  closedAt            DateTime?         @map("closed_at")
+  /// Physically counted cash at close. Null while open.
+  closingCountedMinor Int?              @map("closing_counted_minor")
+  /// Snapshot at close: float + payIns − payOuts + cashSales − cashRefunds.
+  expectedCashMinor   Int?              @map("expected_cash_minor")
+  /// counted − expected. Negative = short, positive = over.
+  varianceMinor       Int?              @map("variance_minor")
+  notes               String?
+  createdAt           DateTime          @default(now()) @map("created_at")
+
+  branch    Branch         @relation(fields: [branchId], references: [id])
+  movements CashMovement[]
+
+  @@index([restaurantId, openedAt])
+  @@map("cash_sessions")
+}
+
+enum CashMovementType {
+  /// Money added to the drawer that is not a sale (change float top-up).
+  PAY_IN
+  /// Money removed that is not a refund (petty cash, supplier paid from till).
+  PAY_OUT
+
+  @@map("cash_movement_type")
+}
+
+/// Non-sale cash in or out during a session. Append-only, like every money
+/// trail: a mistake is corrected by an opposing movement, never an edit.
+model CashMovement {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  restaurantId String           @map("restaurant_id") @db.Uuid
+  sessionId    String           @map("session_id") @db.Uuid
+  type         CashMovementType
+  /// Positive magnitude; the sign comes from the type.
+  amountMinor  Int              @map("amount_minor")
+  reason       String
+  actorUserId  String?          @map("actor_user_id") @db.Uuid
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  session CashSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("cash_movements")
 }
 
 // ---------------------------------------------------------------------------
