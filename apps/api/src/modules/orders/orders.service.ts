@@ -46,6 +46,21 @@ export class OrdersService {
       );
     }
 
+    // A manual discount is a client-supplied amount off, so it is gated
+    // exactly where a coupon is not: one discount source only, and the
+    // permission that a plain order-taker may not hold.
+    if (dto.manualDiscountMinor && dto.couponCode) {
+      throw new BadRequestException(
+        'Use either a coupon or a manual discount, not both',
+      );
+    }
+    if (
+      dto.manualDiscountMinor &&
+      !ctx.permissions.includes('order.discount')
+    ) {
+      throw new ForbiddenException('Missing permission: order.discount');
+    }
+
     // An idempotent replay must return the original order, not a second one.
     if (dto.idempotencyKey) {
       const existing = await this.findByIdempotencyKey(dto.idempotencyKey);
@@ -167,6 +182,15 @@ export class OrdersService {
           couponId: result.couponId,
           discountMinor: result.discountMinor,
         };
+      } else if (dto.manualDiscountMinor) {
+        // Capped at the subtotal — the DB CHECK enforces this too, but a clear
+        // 400 beats a constraint violation. Permission was checked in create().
+        if (dto.manualDiscountMinor > subtotal) {
+          throw new BadRequestException(
+            'Discount cannot exceed the order subtotal',
+          );
+        }
+        discount = dto.manualDiscountMinor;
       }
 
       // total = subtotal - discount + tax. The DB CHECK enforces this exact
@@ -216,6 +240,25 @@ export class OrdersService {
           order.id,
           couponRedemption.discountMinor,
         );
+      }
+
+      // A manual discount is money moved off a sale by a person — it lands in
+      // the audit log next to voids and refunds, with the reason.
+      if (dto.manualDiscountMinor) {
+        await db.auditLog.create({
+          data: {
+            restaurantId,
+            userId,
+            action: 'order.discounted',
+            entityType: 'order',
+            entityId: order.id,
+            metadata: {
+              orderNumber: order.orderNumber,
+              discountMinor: discount,
+              reason: dto.discountReason ?? null,
+            },
+          },
+        });
       }
 
       if (dto.paymentMethod) {

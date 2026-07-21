@@ -41,6 +41,7 @@ const PERMISSIONS: Record<string, string> = {
   'order.create': 'Take an order',
   'order.read': 'View orders',
   'order.update': 'Change order contents or status',
+  'order.discount': 'Apply a manual discount to an order',
   'order.void': 'Void an order',
   'order.refund': 'Refund a payment',
   'audit.read': 'View the audit log',
@@ -75,6 +76,7 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
       'order.create',
       'order.read',
       'order.update',
+      'order.discount',
       'order.void',
       'order.refund',
       'audit.read',
@@ -99,6 +101,7 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
       'order.create',
       'order.read',
       'order.update',
+      'order.discount',
     ],
   },
   KITCHEN: {

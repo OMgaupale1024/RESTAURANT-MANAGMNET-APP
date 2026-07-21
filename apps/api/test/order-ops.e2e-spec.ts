@@ -342,4 +342,68 @@ describe('Order operations (e2e)', () => {
       expect(p2ids.every((id: string) => id < cursor)).toBe(true);
     });
   });
+
+  describe('manual discount', () => {
+    it('applies a manual discount and records it in the audit log', async () => {
+      const t = await newTenant();
+      // Product is 10000 @ 5% → subtotal 10000, tax 500. Discount 2000.
+      const order = await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({
+          items: [{ productId: t.productId, quantity: 1 }],
+          manualDiscountMinor: 2000,
+          discountReason: 'regular customer',
+          paymentMethod: 'CASH',
+          idempotencyKey: randomUUID(),
+        })
+        .expect(201);
+      expect(order.body.discountMinor).toBe(2000);
+      // total = subtotal − discount + tax = 10000 − 2000 + 500
+      expect(order.body.totalMinor).toBe(8500);
+
+      const audit = await api()
+        .get('/api/v1/reports/audit')
+        .set(auth(t.token))
+        .expect(200);
+      const entry = audit.body.find(
+        (e: { action: string }) => e.action === 'order.discounted',
+      );
+      expect(entry).toBeDefined();
+      expect(entry.metadata.discountMinor).toBe(2000);
+      expect(entry.metadata.reason).toBe('regular customer');
+    });
+
+    it('rejects a coupon and a manual discount together', async () => {
+      const t = await newTenant();
+      await api()
+        .post('/api/v1/marketing/coupons')
+        .set(auth(t.token))
+        .send({ code: 'BOTH10', type: 'PERCENT', percentBp: 1000 })
+        .expect(201);
+      await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({
+          items: [{ productId: t.productId, quantity: 1 }],
+          couponCode: 'BOTH10',
+          manualDiscountMinor: 500,
+          idempotencyKey: randomUUID(),
+        })
+        .expect(400);
+    });
+
+    it('rejects a discount larger than the subtotal', async () => {
+      const t = await newTenant();
+      await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({
+          items: [{ productId: t.productId, quantity: 1 }], // subtotal 10000
+          manualDiscountMinor: 20000,
+          idempotencyKey: randomUUID(),
+        })
+        .expect(400);
+    });
+  });
 });

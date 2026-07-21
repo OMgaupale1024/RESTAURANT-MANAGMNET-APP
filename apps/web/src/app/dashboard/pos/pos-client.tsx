@@ -116,6 +116,7 @@ export function PosClient() {
   const [customer, setCustomerState] = useState<PosCustomer | null>(null);
   const [visits, setVisits] = useState<number | null>(null);
   const [coupon, setCoupon] = useState('');
+  const [discount, setDiscount] = useState('');
   const [note, setNote] = useState('');
   const [method, setMethod] = useState<MethodKey>('CASH');
   const [orderType, setOrderType] = useState<OrderTypeKey>('TAKEAWAY');
@@ -300,6 +301,7 @@ export function PosClient() {
     setLeaving([]);
     setCart([]);
     setCoupon('');
+    setDiscount('');
     setNote('');
     setOrderType('TAKEAWAY');
     setCustomer(null);
@@ -322,6 +324,16 @@ export function PosClient() {
     }));
   }
 
+  /** Discount fields shared by charge and hold. Coupon and manual are exclusive. */
+  function discountFields() {
+    const code = coupon.trim();
+    const manual = discount.trim() ? parseRupeesToMinor(discount) : null;
+    return {
+      ...(code ? { couponCode: code.toUpperCase() } : {}),
+      ...(!code && manual ? { manualDiscountMinor: manual } : {}),
+    };
+  }
+
   async function charge() {
     if (!accessToken || activeCart.length === 0 || placing) return;
     setPlacing(true);
@@ -333,7 +345,7 @@ export function PosClient() {
         ...(method !== 'SPLIT' ? { paymentMethod: method } : {}),
         orderType,
         ...(customer ? { customerId: customer.id } : {}),
-        ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
+        ...discountFields(),
         ...(note.trim() ? { notes: note.trim() } : {}),
         idempotencyKey: idemKey.current ?? crypto.randomUUID(),
       });
@@ -360,7 +372,7 @@ export function PosClient() {
         orderType,
         hold: true,
         ...(customer ? { customerId: customer.id } : {}),
-        ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
+        ...discountFields(),
         ...(note.trim() ? { notes: note.trim() } : {}),
         idempotencyKey: idemKey.current ?? crypto.randomUUID(),
       });
@@ -509,6 +521,8 @@ export function PosClient() {
       tax={tax}
       coupon={coupon}
       setCoupon={setCoupon}
+      discount={discount}
+      setDiscount={setDiscount}
       note={note}
       setNote={setNote}
       method={method}
@@ -843,6 +857,8 @@ function CartPanel({
   tax,
   coupon,
   setCoupon,
+  discount,
+  setDiscount,
   note,
   setNote,
   method,
@@ -871,6 +887,8 @@ function CartPanel({
   tax: number;
   coupon: string;
   setCoupon: (v: string) => void;
+  discount: string;
+  setDiscount: (v: string) => void;
   note: string;
   setNote: (v: string) => void;
   method: MethodKey;
@@ -893,7 +911,10 @@ function CartPanel({
   askClear: () => void;
   customerSlot: React.ReactNode;
 }) {
-  const total = useCountUp(subtotal + tax, 300);
+  // Manual-discount preview (server recomputes and caps it authoritatively).
+  const manualMinor = discount.trim() ? (parseRupeesToMinor(discount) ?? 0) : 0;
+  const clampedDiscount = Math.min(manualMinor, subtotal);
+  const total = useCountUp(Math.max(0, subtotal + tax - clampedDiscount), 300);
 
   if (success) {
     const captured = success.payments.filter((p) => p.status === 'CAPTURED');
@@ -1106,19 +1127,29 @@ function CartPanel({
             })}
           </ul>
 
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="mt-3 grid grid-cols-3 gap-2">
             <Input
               value={coupon}
               onChange={(e) => setCoupon(e.target.value)}
-              placeholder="Coupon code"
+              disabled={discount.trim() !== ''}
+              placeholder="Coupon"
               aria-label="Coupon code"
               className="h-8 font-mono text-[12px] uppercase placeholder:font-sans placeholder:normal-case"
+            />
+            <Input
+              inputMode="decimal"
+              value={discount}
+              onChange={(e) => setDiscount(e.target.value)}
+              disabled={coupon.trim() !== ''}
+              placeholder="₹ off"
+              aria-label="Manual discount"
+              className="h-8 text-[12px]"
             />
             <Input
               value={note}
               onChange={(e) => setNote(e.target.value)}
               maxLength={500}
-              placeholder="Order note"
+              placeholder="Note"
               aria-label="Order note"
               className="h-8 text-[12px]"
             />
@@ -1149,6 +1180,9 @@ function CartPanel({
 
           <dl className="mt-3 space-y-1.5 border-t border-line pt-3 text-[13px]">
             <TotalRow label="Subtotal" value={formatMinor(subtotal)} />
+            {clampedDiscount > 0 && (
+              <TotalRow label="Discount" value={`−${formatMinor(clampedDiscount)}`} accent />
+            )}
             <TotalRow label="Tax" value={formatMinor(tax)} />
             {coupon.trim() && (
               <p className="text-[11px] text-ink-3">

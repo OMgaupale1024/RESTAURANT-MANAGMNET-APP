@@ -90,7 +90,11 @@ const getIngredient = (token: string, id: string) =>
     .set('Authorization', `Bearer ${token}`);
 
 /** Creates a product at a given price and returns its id. */
-async function makeProductPriced(token: string, name: string, priceMinor: number) {
+async function makeProductPriced(
+  token: string,
+  name: string,
+  priceMinor: number,
+) {
   const res = await api()
     .post('/api/v1/products')
     .set('Authorization', `Bearer ${token}`)
@@ -1101,7 +1105,9 @@ describe('Inventory (e2e)', () => {
         .get('/api/v1/products/costing')
         .set('Authorization', `Bearer ${t.token}`)
         .expect(200);
-      const row = costing.body.find((r: { name: string }) => r.name === 'Paneer Momo');
+      const row = costing.body.find(
+        (r: { name: string }) => r.name === 'Paneer Momo',
+      );
       expect(row.costed).toBe(true);
       expect(row.recipeCostMinor).toBe(2000);
       expect(row.marginMinor).toBe(8000); // 10000 − 2000
@@ -1130,7 +1136,9 @@ describe('Inventory (e2e)', () => {
         .get('/api/v1/products/costing')
         .set('Authorization', `Bearer ${t.token}`)
         .expect(200);
-      const row = costing.body.find((r: { name: string }) => r.name === 'Mystery Dish');
+      const row = costing.body.find(
+        (r: { name: string }) => r.name === 'Mystery Dish',
+      );
       expect(row.costed).toBe(false);
       expect(row.recipeCostMinor).toBeNull();
       expect(row.marginMinor).toBeNull();

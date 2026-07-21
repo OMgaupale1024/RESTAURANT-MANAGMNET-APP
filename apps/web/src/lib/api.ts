@@ -437,6 +437,9 @@ export const createOrder = (
     hold?: boolean;
     customerId?: string;
     couponCode?: string;
+    /** Ad-hoc discount in paise. Needs order.discount; excludes couponCode. */
+    manualDiscountMinor?: number;
+    discountReason?: string;
     notes?: string;
     idempotencyKey?: string;
   },

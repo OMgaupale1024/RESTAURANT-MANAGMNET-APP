@@ -86,6 +86,27 @@ export class CreateOrderDto {
   @MaxLength(32)
   couponCode?: string;
 
+  /**
+   * An ad-hoc discount in paise, keyed in by the cashier ("₹20 off").
+   *
+   * Unlike a line PRICE — which the server always owns — this is a legitimate
+   * counter decision the server cannot compute. It is therefore gated:
+   * requires the order.discount permission, is capped at the subtotal, is
+   * mutually exclusive with a coupon, and every use is written to the audit
+   * log. That is the difference between a discount and the classic zero-price
+   * attack.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(10_000_000)
+  manualDiscountMinor?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  discountReason?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)
