@@ -70,8 +70,8 @@ browser-verify → commit → push before the next).
 | 1 | Invite acceptance security — refresh token via httpOnly cookie, not JSON | ✅ done |
 | 2 | Password reset (forgot / token / expiry / email / browser flow) | ✅ done |
 | 3 | Email infrastructure (Resend) — real delivery, templates, retry/timeouts | ✅ done |
-| 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ⬜ next |
-| 5 | Docker (API, Web, prod compose, env handling) | ⬜ |
+| 4 | Production monitoring (`/health`, readiness, structured logging, request IDs, error reporting, graceful shutdown) | ✅ done |
+| 5 | Docker (API, Web, prod compose, env handling) | ⬜ next |
 | 6 | GitHub Actions CI (install, lint, typecheck, test, build) | ⬜ |
 | 7 | Production deployment (env, reverse proxy, HTTPS, guide, backups, migration & rollback, zero-downtime) | ⬜ |
 
@@ -176,6 +176,68 @@ restaurant.
   (links are single-use and prior ones are invalidated, so it's nuisance, not
   account risk). This is the M2 endpoint, not M3 — left for a hardening pass to
   avoid scope creep.
+
+## Milestone 4 — Production monitoring
+
+**Issue.** The app was mostly observable already (pino structured logging, request
+ids, an exception filter, helmet, throttling, shutdown hooks) but had gaps: the
+health endpoint lacked version/timestamp, there was no slow-request signal, and —
+the real find — the staff-invite token leaked into request logs.
+
+**Monitoring architecture (what exists, and what this milestone added).**
+- **Health.** `GET /health` (liveness — no DB touch) now returns status, uptime,
+  version (`APP_VERSION` or the package version), and timestamp. `GET /health/ready`
+  (readiness) runs `SELECT 1` and returns `200 {ready, database:up}` or `503`.
+  Both are `@Public` and `@SkipThrottle` — a throttled probe would read as "down".
+- **Structured logging.** pino (`nestjs-pino`) emits JSON in production (pretty in
+  dev) with timestamp, request id, method, path, status, and duration per request.
+- **Request IDs.** `genReqId` propagates a safe caller-supplied `X-Request-Id`
+  (bounded charset, ≤64 chars) or generates a UUID, sets it on the response, and
+  threads it through every log and error body.
+- **Redaction.** Authorization/cookie headers, set-cookie, and password/token/
+  refreshToken bodies were already redacted; **added** URL masking (`redactUrl`)
+  and `req.params` redaction so the invite token in `/join/:token` never lands in
+  a log.
+- **Exception handling.** `AllExceptionsFilter` (unchanged) — one JSON shape,
+  stack hidden from clients, request id included, 4xx warn / 5xx error once.
+- **Slow requests.** `SlowRequestInterceptor` warns once for any request ≥1000ms,
+  with the request id and a masked path.
+- **Graceful shutdown.** `enableShutdownHooks()` (main.ts) wires SIGTERM/SIGINT;
+  shutdown stops the server, disconnects Prisma (`onModuleDestroy`), and runs
+  `ShutdownService` (logs the signal). Verified by an integration test.
+- **Verified present (OPTIONAL items):** helmet security headers (CSP, HSTS,
+  X-Frame-Options, nosniff…), `ThrottlerModule` rate limiting (100/min baseline,
+  tighter on auth) — both confirmed live in response headers. Compression: **not
+  added** — belongs at the reverse proxy/CDN (Milestone 7), not the app.
+
+**Files changed.**
+- `apps/api/src/health.controller.ts` — version/timestamp, `@SkipThrottle`
+- `apps/api/src/common/interceptors/slow-request.interceptor.ts` (+ spec)
+- `apps/api/src/common/logging/redact-url.ts` (+ spec)
+- `apps/api/src/common/lifecycle/shutdown.service.ts`
+- `apps/api/src/app.module.ts` — URL-mask serializer, request-id propagation, `req.params` redaction, interceptor + ShutdownService wiring
+- `apps/api/.env.example` — `APP_VERSION`
+- `apps/api/test/health.e2e-spec.ts`, `test/shutdown.e2e-spec.ts`
+
+**Verification.** typecheck ✓ lint ✓ build ✓ · unit 30/30 (redact-url, slow-request,
+mail, env) · e2e health 6 + shutdown 1 + auth regression 35. Live: health fields,
+request-id generate/propagate/reject, readiness, structured log fields, and
+**invite token absent from logs** (`params:"[REDACTED]"`, url masked). Graceful
+shutdown verified by integration test (signals wired; close drains Prisma and runs
+the hook) — Windows cannot deliver a catchable SIGTERM to a console app, so the
+signal path is proven in-process rather than by killing a live process.
+
+**Discovered issues.**
+- **CRITICAL — staff-invite token leaked into request logs.** `/api/v1/join/:token`
+  put the token in `req.url` and `req.params`; existing redaction only covered
+  headers and bodies. Directly in scope (the "never log invite tokens" rule) →
+  fixed: `redactUrl` serializer + `req.params` redaction, covered by unit + live
+  test.
+- **RECOMMENDED — health probes were rate-limited.** The global throttle applied
+  to `/health`; a probe burst could hit `429` and be read as an outage. Fixed:
+  `@SkipThrottle()` on the health controller.
+- **V1.1 — response compression not implemented.** Deferred to the reverse
+  proxy/CDN in Milestone 7 rather than adding an app-level dependency.
 
 ## General backlog
 
