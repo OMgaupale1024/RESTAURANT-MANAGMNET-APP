@@ -3,23 +3,18 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ApiRequestError, getMe, login } from '@/lib/api';
+import { ApiRequestError, register } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 
 /**
- * The access token is held in component state — in memory, never in
- * localStorage or a readable cookie.
- *
- * Anything JavaScript can read, an XSS payload can exfiltrate. Memory dies
- * with the tab; the refresh token lives in an httpOnly cookie the browser
- * sends automatically and JS cannot touch. That pair is the whole design.
- *
- * The token is handed to AuthProvider, which also restores it after a reload
- * by calling /auth/refresh with the httpOnly cookie.
+ * Creates the owner's account, then sends them straight to /setup — a fresh
+ * registrant has zero memberships by construction, so there is no need to
+ * call getMe first the way login does.
  */
-export function LoginForm() {
+export function RegisterForm() {
   const router = useRouter();
   const { setAccessToken } = useAuth();
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [pending, setPending] = useState(false);
@@ -31,18 +26,11 @@ export function LoginForm() {
     setPending(true);
 
     try {
-      const { accessToken } = await login(email, password);
+      const { accessToken } = await register(email, password, name);
       setAccessToken(accessToken);
       setPassword('');
-
-      // Owners with a restaurant go to the dashboard; everyone else must set
-      // one up first. There is nothing else they can usefully do.
-      const me = await getMe(accessToken);
-      router.push(me.memberships.length > 0 ? '/dashboard' : '/setup');
+      router.push('/setup');
     } catch (err) {
-      // Show the server's message verbatim. It is deliberately vague
-      // ("Invalid email or password") so the UI must not try to be helpful by
-      // guessing which field was wrong — that is account enumeration.
       if (err instanceof ApiRequestError) {
         setError(
           err.status === 429
@@ -70,6 +58,24 @@ export function LoginForm() {
       )}
 
       <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
+        <label htmlFor="name" className="block text-sm font-medium">
+          Your name
+        </label>
+        <input
+          id="name"
+          name="name"
+          type="text"
+          autoComplete="name"
+          required
+          minLength={1}
+          maxLength={120}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+        />
+      </div>
+
+      <div className="animate-fade-up" style={{ animationDelay: '80ms' }}>
         <label htmlFor="email" className="block text-sm font-medium">
           Email
         </label>
@@ -85,7 +91,7 @@ export function LoginForm() {
         />
       </div>
 
-      <div className="animate-fade-up" style={{ animationDelay: '80ms' }}>
+      <div className="animate-fade-up" style={{ animationDelay: '120ms' }}>
         <label htmlFor="password" className="block text-sm font-medium">
           Password
         </label>
@@ -93,39 +99,34 @@ export function LoginForm() {
           id="password"
           name="password"
           type="password"
-          autoComplete="current-password"
+          autoComplete="new-password"
           required
+          minLength={12}
+          maxLength={72}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mt-1 mb-6 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-1 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
         />
+        <p className="mb-6 text-xs text-ink-3">At least 12 characters.</p>
       </div>
 
-      <div className="animate-fade-up" style={{ animationDelay: '120ms' }}>
+      <div className="animate-fade-up" style={{ animationDelay: '160ms' }}>
         <button
           type="submit"
           disabled={pending}
           className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
         >
-          {pending ? 'Signing in…' : 'Sign in'}
+          {pending ? 'Creating account…' : 'Create account'}
         </button>
       </div>
 
       <p
         className="animate-fade-up mt-4 text-center text-sm text-ink-3"
-        style={{ animationDelay: '160ms' }}
+        style={{ animationDelay: '200ms' }}
       >
-        <Link href="/forgot-password" className="underline hover:text-ink-1">
-          Forgot your password?
-        </Link>
-      </p>
-      <p
-        className="animate-fade-up mt-2 text-center text-sm text-ink-3"
-        style={{ animationDelay: '180ms' }}
-      >
-        New restaurant?{' '}
-        <Link href="/register" className="underline hover:text-ink-1">
-          Create an account
+        Already have an account?{' '}
+        <Link href="/login" className="underline hover:text-ink-1">
+          Sign in
         </Link>
       </p>
     </form>

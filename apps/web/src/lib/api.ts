@@ -131,6 +131,13 @@ export const login = (email: string, password: string) =>
     body: JSON.stringify({ email, password }),
   });
 
+/** Creates the owner's account. Same response shape as login — the refresh cookie is set the same way. */
+export const register = (email: string, password: string, name: string) =>
+  apiFetch<LoginResponse>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, name }),
+  });
+
 /**
  * Starts a password reset. Resolves the same way whether or not the email has
  * an account — the API never reveals which addresses are registered, so the UI
