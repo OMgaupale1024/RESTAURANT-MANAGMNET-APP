@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Copy, MailPlus, UsersRound } from 'lucide-react';
+import { Copy, Download, MailPlus, PencilLine, UsersRound } from 'lucide-react';
 import {
   ApiRequestError,
   clockMember,
   clockSelf,
+  correctAttendance,
   createInvite,
   getMe,
   getTimesheet,
@@ -19,7 +20,27 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
+import { downloadCsv, toCsv } from '@/lib/csv';
 import { timeShort } from '../orders/order-detail';
+
+/**
+ * Timesheet → CSV, one row per staff member: total hours plus paired sessions.
+ * The payroll input a manager actually hands to an accountant. Hours are
+ * decimal (minutes/60) so a spreadsheet can multiply by a wage rate.
+ */
+function exportTimesheetCsv(sheet: TimesheetEntry[], from: string, to: string) {
+  const csv = toCsv(
+    ['Staff', 'Role', 'Sessions', 'Total hours', 'Open session'],
+    sheet.map((s) => [
+      s.name,
+      s.role,
+      s.sessions.length,
+      (s.totalMinutes / 60).toFixed(2),
+      s.openSession ? 'yes' : '',
+    ]),
+  );
+  downloadCsv(`timesheet-${from}_to_${to}.csv`, csv);
+}
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
@@ -164,7 +185,12 @@ export function StaffClient() {
           onRevoked={reload}
         />
       ) : (
-        <AttendanceTab team={team} myUserId={myUserId} onClock={clock} />
+        <AttendanceTab
+          team={team}
+          myUserId={myUserId}
+          onClock={clock}
+          onCorrected={reload}
+        />
       )}
 
       <Sheet
@@ -355,10 +381,12 @@ function AttendanceTab({
   team,
   myUserId,
   onClock,
+  onCorrected,
 }: {
   team: StaffMember[];
   myUserId: string | null;
   onClock: (m: StaffMember) => Promise<void>;
+  onCorrected: () => void;
 }) {
   const { accessToken, setAccessToken } = useAuth();
   const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
@@ -367,6 +395,8 @@ function AttendanceTab({
   const [from, setFrom] = useState(() => isoDay(new Date(Date.now() - 6 * 86_400_000)));
   const [to, setTo] = useState(() => isoDay(new Date()));
   const [sheet, setSheet] = useState<TimesheetEntry[] | null>(null);
+  const [correcting, setCorrecting] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!accessToken || from > to) return;
@@ -389,7 +419,7 @@ function AttendanceTab({
     return () => {
       cancelled = true;
     };
-  }, [accessToken, onNewToken, from, to, toast]);
+  }, [accessToken, onNewToken, from, to, toast, reloadKey]);
 
   const onShift = team.filter((m) => m.onShift);
   const me = team.find((m) => m.user.id === myUserId) ?? null;
@@ -425,7 +455,30 @@ function AttendanceTab({
           <Field label="To">
             <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="max-w-40" />
           </Field>
+          <Button variant="secondary" onClick={() => setCorrecting(true)}>
+            <PencilLine aria-hidden className="size-4" />
+            Correction
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={!sheet || sheet.every((s) => s.sessions.length === 0)}
+            onClick={() => sheet && exportTimesheetCsv(sheet, from, to)}
+          >
+            <Download aria-hidden className="size-4" />
+            Export CSV
+          </Button>
         </div>
+
+        <CorrectionModal
+          open={correcting}
+          onClose={() => setCorrecting(false)}
+          team={team}
+          onDone={() => {
+            setCorrecting(false);
+            setReloadKey((k) => k + 1);
+            onCorrected();
+          }}
+        />
 
         <div className="rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
           {sheet === null ? (
@@ -477,6 +530,116 @@ function AttendanceTab({
         </div>
       </section>
     </div>
+  );
+}
+
+/**
+ * A manager records a backdated clock event to fix a forgotten in/out. The
+ * ledger is append-only, so this appends a corrected event (recordedBy marks
+ * it manager-entered) rather than editing history — the API enforces the same.
+ */
+function CorrectionModal({
+  open,
+  onClose,
+  team,
+  onDone,
+}: {
+  open: boolean;
+  onClose: () => void;
+  team: StaffMember[];
+  onDone: () => void;
+}) {
+  const { accessToken, setAccessToken } = useAuth();
+  const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const toast = useToast();
+
+  const active = team.filter((m) => m.isActive);
+  const [membershipId, setMembershipId] = useState('');
+  const [type, setType] = useState<'CLOCK_IN' | 'CLOCK_OUT'>('CLOCK_OUT');
+  const [when, setWhen] = useState('');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const valid = membershipId !== '' && when !== '';
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!accessToken || !valid || busy) return;
+    // datetime-local is wall time; toISOString sends the instant.
+    const at = new Date(when);
+    if (Number.isNaN(at.getTime())) {
+      toast({ title: 'Pick a valid date and time', variant: 'warning' });
+      return;
+    }
+    setBusy(true);
+    try {
+      await correctAttendance(accessToken, onNewToken, membershipId, {
+        type,
+        at: at.toISOString(),
+        ...(note.trim() ? { note: note.trim() } : {}),
+      });
+      toast({ title: 'Correction recorded', variant: 'success' });
+      setMembershipId('');
+      setWhen('');
+      setNote('');
+      onDone();
+    } catch (err) {
+      toast({
+        title: err instanceof ApiRequestError ? err.message : 'Could not record the correction',
+        variant: 'danger',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Attendance correction">
+      <form onSubmit={submit} className="space-y-4">
+        <p className="text-[12px] text-ink-3">
+          Records a clock event at the time it should have happened — for a
+          forgotten in or out. It is added to the ledger, marked as entered by
+          you; nothing is erased.
+        </p>
+        <Field label="Staff member">
+          <Select value={membershipId} onChange={(e) => setMembershipId(e.target.value)}>
+            <option value="">Choose…</option>
+            {active.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.user.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Event">
+            <Select value={type} onChange={(e) => setType(e.target.value as 'CLOCK_IN' | 'CLOCK_OUT')}>
+              <option value="CLOCK_IN">Clock in</option>
+              <option value="CLOCK_OUT">Clock out</option>
+            </Select>
+          </Field>
+          <Field label="When">
+            <Input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Note (optional)">
+          <Input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            maxLength={200}
+            placeholder="e.g. forgot to clock out"
+          />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" type="button" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" disabled={!valid || busy}>
+            {busy ? 'Recording…' : 'Record correction'}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

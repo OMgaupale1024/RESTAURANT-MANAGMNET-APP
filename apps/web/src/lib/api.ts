@@ -111,7 +111,13 @@ export type LoginResponse = {
 };
 
 export type MeResponse = {
-  user: { id: string; email: string; name: string; createdAt: string };
+  user: {
+    id: string;
+    email: string;
+    name: string;
+    createdAt: string;
+    emailVerified: boolean;
+  };
   memberships: Array<{
     id: string;
     restaurant: { id: string; name: string; slug: string };
@@ -123,6 +129,44 @@ export const login = (email: string, password: string) =>
   apiFetch<LoginResponse>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
+  });
+
+/** Creates the owner's account. Same response shape as login — the refresh cookie is set the same way. */
+export const register = (email: string, password: string, name: string) =>
+  apiFetch<LoginResponse>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, name }),
+  });
+
+/**
+ * Starts a password reset. Resolves the same way whether or not the email has
+ * an account — the API never reveals which addresses are registered, so the UI
+ * must show one message regardless.
+ */
+export const forgotPassword = (email: string) =>
+  apiFetch<void>('/auth/forgot-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+
+/** Completes a password reset. Throws ApiRequestError (400) on an invalid or expired link. */
+export const resetPassword = (token: string, password: string) =>
+  apiFetch<void>('/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
+  });
+
+/** Confirms an email address. Throws ApiRequestError (400) on an invalid/expired link. */
+export const verifyEmail = (token: string) =>
+  apiFetch<void>('/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
+
+/** Resends the verification email to the logged-in user. */
+export const resendVerification = (accessToken: string, onNewToken: (t: string) => void) =>
+  authedFetch<void>('/auth/resend-verification', accessToken, onNewToken, {
+    method: 'POST',
   });
 
 export const getMe = (accessToken: string) =>
@@ -170,18 +214,145 @@ export const logout = () =>
 export const logoutAll = (accessToken: string) =>
   apiFetch<void>('/auth/logout-all', { method: 'POST', accessToken });
 
+export type RestaurantProfile = {
+  id: string;
+  name: string;
+  slug: string;
+  address: string | null;
+  phone: string | null;
+  gstin: string | null;
+  fssai: string | null;
+  receiptHeader: string | null;
+  receiptFooter: string | null;
+  createdAt: string;
+};
+
+export const getRestaurantProfile = (token: string, onNewToken: (t: string) => void) =>
+  authedFetch<RestaurantProfile>('/restaurants/current', token, onNewToken);
+
+/** Empty strings clear a field (the API turns '' into null). */
+export const updateRestaurantProfile = (
+  token: string,
+  onNewToken: (t: string) => void,
+  body: Partial<
+    Pick<
+      RestaurantProfile,
+      'name' | 'address' | 'phone' | 'gstin' | 'fssai' | 'receiptHeader' | 'receiptFooter'
+    >
+  >,
+) =>
+  authedFetch<RestaurantProfile>('/restaurants/current', token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
 export type Product = {
   id: string;
   name: string;
   priceMinor: number;
   taxRateBp: number;
   categoryId: string | null;
+  isActive: boolean;
 };
+
+/* ------------------------------------------------------------ cash drawer */
+
+export type CashMovementRow = {
+  id: string;
+  type: 'PAY_IN' | 'PAY_OUT';
+  amountMinor: number;
+  reason: string;
+  createdAt: string;
+};
+
+export type CashSettlement = {
+  openingFloatMinor: number;
+  payInMinor: number;
+  payOutMinor: number;
+  cashSalesMinor: number;
+  cashRefundsMinor: number;
+  expectedCashMinor: number;
+  grossSalesMinor: number;
+  netSalesMinor: number;
+  refundsMinor: number;
+  payByMethod: Array<{ method: string; amountMinor: number; count: number }>;
+  refundByMethod: Array<{ method: string; amountMinor: number }>;
+  countedCashMinor: number | null;
+  varianceMinor: number | null;
+};
+
+export type CashSession = {
+  id: string;
+  status: 'OPEN' | 'CLOSED';
+  openingFloatMinor: number;
+  openedAt: string;
+  closedAt: string | null;
+  closingCountedMinor: number | null;
+  expectedCashMinor: number | null;
+  varianceMinor: number | null;
+  notes: string | null;
+  movements: CashMovementRow[];
+  report: CashSettlement;
+};
+
+/** Lightweight row for the session history list (no report/movements). */
+export type CashSessionRow = {
+  id: string;
+  status: 'OPEN' | 'CLOSED';
+  openingFloatMinor: number;
+  openedAt: string;
+  closedAt: string | null;
+  closingCountedMinor: number | null;
+  expectedCashMinor: number | null;
+  varianceMinor: number | null;
+};
+
+export const getCurrentSession = (token: string, onNewToken: (t: string) => void) =>
+  authedFetch<CashSession | null>('/cash/sessions/current', token, onNewToken);
+
+export const listSessions = (token: string, onNewToken: (t: string) => void) =>
+  authedFetch<CashSessionRow[]>('/cash/sessions', token, onNewToken);
+
+export const getSession = (token: string, onNewToken: (t: string) => void, id: string) =>
+  authedFetch<CashSession>(`/cash/sessions/${id}`, token, onNewToken);
+
+export const openSession = (
+  token: string,
+  onNewToken: (t: string) => void,
+  body: { openingFloatMinor: number; notes?: string },
+) =>
+  authedFetch<CashSession>('/cash/sessions', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const recordCashMovement = (
+  token: string,
+  onNewToken: (t: string) => void,
+  id: string,
+  body: { type: 'PAY_IN' | 'PAY_OUT'; amountMinor: number; reason: string },
+) =>
+  authedFetch<CashSession>(`/cash/sessions/${id}/movements`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const closeSession = (
+  token: string,
+  onNewToken: (t: string) => void,
+  id: string,
+  body: { closingCountedMinor: number; notes?: string },
+) =>
+  authedFetch<CashSession>(`/cash/sessions/${id}/close`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 
 export type Order = {
   id: string;
   orderNumber: number;
   status: string;
+  orderType: string;
   subtotalMinor: number;
   discountMinor: number;
   taxMinor: number;
@@ -195,18 +366,27 @@ export type Order = {
     unitPriceMinor: number;
     quantity: number;
     lineTotalMinor: number;
+    taxRateBp: number;
+    taxMinor: number;
     notes: string | null;
   }>;
   payments: Array<{ id: string; method: string; status: string; amountMinor: number }>;
+  refunds: Array<{
+    id: string;
+    method: string;
+    amountMinor: number;
+    reason: string;
+    createdAt: string;
+  }>;
   customer: { id: string; name: string; phone: string } | null;
 };
 
 type Retry = (t: string) => void;
 
-export const listProducts = (token: string, onNewToken: Retry) =>
-  authedFetch<Product[]>('/products', token, onNewToken);
+export const listProducts = (token: string, onNewToken: Retry, all?: boolean) =>
+  authedFetch<Product[]>(`/products${all ? '?include=all' : ''}`, token, onNewToken);
 
-export type Category = { id: string; name: string };
+export type Category = { id: string; name: string; sortOrder: number };
 
 export const listCategories = (token: string, onNewToken: Retry) =>
   authedFetch<Category[]>('/categories', token, onNewToken);
@@ -214,21 +394,78 @@ export const listCategories = (token: string, onNewToken: Retry) =>
 export const createProduct = (
   token: string,
   onNewToken: Retry,
-  body: { name: string; priceMinor: number },
+  body: {
+    name: string;
+    priceMinor: number;
+    taxRateBp?: number;
+    categoryId?: string;
+  },
 ) =>
   authedFetch<Product>('/products', token, onNewToken, {
     method: 'POST',
     body: JSON.stringify(body),
   });
 
+export const updateProduct = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    priceMinor?: number;
+    taxRateBp?: number;
+    categoryId?: string | null;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<Product>(`/products/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const createCategory = (token: string, onNewToken: Retry, name: string) =>
+  authedFetch<Category>('/categories', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+
+export const updateCategory = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { name?: string },
+) =>
+  authedFetch<Category>(`/categories/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteCategory = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/categories/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
+/** The full display order — sortOrder becomes the index in `ids`. */
+export const reorderCategories = (token: string, onNewToken: Retry, ids: string[]) =>
+  authedFetch<Category[]>('/categories/order', token, onNewToken, {
+    method: 'PUT',
+    body: JSON.stringify({ ids }),
+  });
+
 export const createOrder = (
   token: string,
   onNewToken: Retry,
   body: {
-    items: Array<{ productId: string; quantity: number }>;
+    items: Array<{ productId: string; quantity: number; notes?: string }>;
     paymentMethod?: string;
+    orderType?: string;
+    /** Park as DRAFT: no kitchen, no stock, no payment until resumed. */
+    hold?: boolean;
     customerId?: string;
     couponCode?: string;
+    /** Ad-hoc discount in paise. Needs order.discount; excludes couponCode. */
+    manualDiscountMinor?: number;
+    discountReason?: string;
     notes?: string;
     idempotencyKey?: string;
   },
@@ -242,6 +479,7 @@ export type OrderSummary = {
   id: string;
   orderNumber: number;
   status: string;
+  orderType: string;
   totalMinor: number;
   createdAt: string;
   placedAt: string | null;
@@ -261,18 +499,61 @@ export type TimelineEvent = {
   createdAt: string;
 };
 
-export const listOrders = (token: string, onNewToken: Retry, status?: string) =>
-  authedFetch<OrderSummary[]>(
-    status ? `/orders?status=${encodeURIComponent(status)}` : '/orders',
+export const listOrders = (
+  token: string,
+  onNewToken: Retry,
+  opts: { status?: string; cursor?: string; limit?: number } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return authedFetch<OrderSummary[]>(
+    `/orders${qs ? `?${qs}` : ''}`,
     token,
     onNewToken,
   );
+};
 
 export const getOrder = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<Order>(`/orders/${id}`, token, onNewToken);
 
 export const getTimeline = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<TimelineEvent[]>(`/orders/${id}/timeline`, token, onNewToken);
+
+/** A split leg, or the payment on an order taken without one. */
+export const recordPayment = (
+  token: string,
+  onNewToken: Retry,
+  orderId: string,
+  body: {
+    method: string;
+    amountMinor: number;
+    reference?: string;
+    idempotencyKey?: string;
+  },
+) =>
+  authedFetch<Order>(`/orders/${orderId}/payments`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const recordRefund = (
+  token: string,
+  onNewToken: Retry,
+  orderId: string,
+  body: {
+    method: string;
+    amountMinor: number;
+    reason: string;
+    idempotencyKey?: string;
+  },
+) =>
+  authedFetch<Order>(`/orders/${orderId}/refunds`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 
 export const updateOrderStatus = (
   token: string,
@@ -380,11 +661,14 @@ export type IngredientRow = {
   name: string;
   unit: StockUnit;
   reorderLevel: number | null;
+  isActive: boolean;
   currentStock: number;
   isLow: boolean;
   lastMovementAt: string | null;
   /** 7-day CONSUMPTION average in base units per day. */
   avgDailyUsage: number;
+  /** Weighted-average purchase cost per base unit (paise, fractional). Null = no cost basis. */
+  avgUnitCostMinor: number | null;
 };
 
 export type IngredientDetail = Omit<IngredientRow, 'isLow'> & {
@@ -395,16 +679,92 @@ export type IngredientDetail = Omit<IngredientRow, 'isLow'> & {
     quantity: number;
     note: string | null;
     orderId: string | null;
+    totalCostMinor: number | null;
     createdAt: string;
   }>;
 };
 
-export const listIngredients = (token: string, onNewToken: Retry, lowOnly?: boolean) =>
-  authedFetch<IngredientRow[]>(
-    lowOnly ? '/ingredients?lowStock=true' : '/ingredients',
+export type Supplier = {
+  id: string;
+  name: string;
+  phone: string | null;
+  notes: string | null;
+  isActive: boolean;
+};
+
+export const listSuppliers = (token: string, onNewToken: Retry, all?: boolean) =>
+  authedFetch<Supplier[]>(
+    `/suppliers${all ? '?include=all' : ''}`,
     token,
     onNewToken,
   );
+
+export const createSupplier = (
+  token: string,
+  onNewToken: Retry,
+  body: { name: string; phone?: string; notes?: string },
+) =>
+  authedFetch<Supplier>('/suppliers', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updateSupplier = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { name?: string; phone?: string; notes?: string; isActive?: boolean },
+) =>
+  authedFetch<Supplier>(`/suppliers/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export type ProductCosting = {
+  id: string;
+  name: string;
+  priceMinor: number;
+  costed: boolean;
+  hasRecipe: boolean;
+  recipeCostMinor: number | null;
+  marginMinor: number | null;
+  foodCostPct: number | null;
+};
+
+export const getProductCosting = (token: string, onNewToken: Retry) =>
+  authedFetch<ProductCosting[]>('/products/costing', token, onNewToken);
+
+export const listIngredients = (
+  token: string,
+  onNewToken: Retry,
+  opts: { lowOnly?: boolean; all?: boolean } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.lowOnly) params.set('lowStock', 'true');
+  if (opts.all) params.set('include', 'all');
+  const qs = params.toString();
+  return authedFetch<IngredientRow[]>(
+    `/ingredients${qs ? `?${qs}` : ''}`,
+    token,
+    onNewToken,
+  );
+};
+
+export const updateIngredient = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    unit?: StockUnit;
+    reorderLevel?: number | null;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<IngredientRow>(`/ingredients/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
 
 export const getIngredient = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<IngredientDetail>(`/ingredients/${id}`, token, onNewToken);
@@ -424,7 +784,7 @@ export const recordAdjustment = (
   token: string,
   onNewToken: Retry,
   id: string,
-  body: { quantity: number; note?: string },
+  body: { quantity: number; note?: string; idempotencyKey?: string },
 ) =>
   authedFetch<unknown>(`/ingredients/${id}/adjustments`, token, onNewToken, {
     method: 'POST',
@@ -435,7 +795,15 @@ export const recordMovement = (
   token: string,
   onNewToken: Retry,
   id: string,
-  body: { type: 'PURCHASE' | 'WASTE'; quantity: number; note?: string },
+  body: {
+    type: 'PURCHASE' | 'WASTE';
+    quantity: number;
+    /** PURCHASE only. */
+    supplierId?: string;
+    totalCostMinor?: number;
+    note?: string;
+    idempotencyKey?: string;
+  },
 ) =>
   authedFetch<unknown>(`/ingredients/${id}/movements`, token, onNewToken, {
     method: 'POST',
@@ -554,6 +922,23 @@ export const clockMember = (
     body: JSON.stringify({ type }),
   });
 
+/**
+ * A backdated attendance correction for a staff member — a manager fixing a
+ * forgotten clock-out. Needs attendance.manage; `at` is an ISO instant, `note`
+ * records why. The append-only ledger keeps both the correction and when it
+ * was actually entered.
+ */
+export const correctAttendance = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { type: 'CLOCK_IN' | 'CLOCK_OUT'; at: string; note?: string },
+) =>
+  authedFetch<unknown>(`/staff/${id}/clock`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
 /** PUBLIC — no token: the invitee has no account yet. */
 export const describeInvite = (inviteToken: string) =>
   apiFetch<{
@@ -612,6 +997,102 @@ export const getSalesReport = (
     token,
     onNewToken,
   );
+
+/* --------------------------------------------------------- reports pack */
+
+const reportUrl = (kind: string, from: string, to: string) =>
+  `/reports/${kind}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+
+export type GstReport = {
+  rows: Array<{ taxRateBp: number; taxableMinor: number; taxMinor: number }>;
+  totalTaxableMinor: number;
+  totalTaxMinor: number;
+};
+export const getGstReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<GstReport>(reportUrl('gst', from, to), token, onNewToken);
+
+export type ItemSalesReport = {
+  rows: Array<{ name: string; quantity: number; revenueMinor: number }>;
+};
+export const getItemSales = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<ItemSalesReport>(reportUrl('items', from, to), token, onNewToken);
+
+export type CategorySalesReport = {
+  rows: Array<{ category: string; quantity: number; revenueMinor: number }>;
+};
+export const getCategorySales = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<CategorySalesReport>(reportUrl('categories', from, to), token, onNewToken);
+
+export type SettlementReport = {
+  rows: Array<{
+    method: string;
+    capturedMinor: number;
+    refundedMinor: number;
+    netMinor: number;
+    count: number;
+  }>;
+  totalCapturedMinor: number;
+  totalRefundedMinor: number;
+  totalNetMinor: number;
+};
+export const getSettlementReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<SettlementReport>(reportUrl('settlement', from, to), token, onNewToken);
+
+export type VoidReport = {
+  rows: Array<{
+    id: string;
+    orderNumber: number;
+    status: string;
+    totalMinor: number;
+    reason: string | null;
+    at: string;
+  }>;
+  count: number;
+  totalMinor: number;
+};
+export const getVoidReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<VoidReport>(reportUrl('voids', from, to), token, onNewToken);
+
+export type DiscountReport = {
+  rows: Array<{
+    id: string;
+    orderNumber: number;
+    subtotalMinor: number;
+    discountMinor: number;
+    totalMinor: number;
+    couponCode: string | null;
+    at: string;
+  }>;
+  count: number;
+  totalDiscountMinor: number;
+};
+export const getDiscountReport = (token: string, onNewToken: Retry, from: string, to: string) =>
+  authedFetch<DiscountReport>(reportUrl('discounts', from, to), token, onNewToken);
+
+export type AuditEntry = {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  userId: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+};
+export const getAuditLog = (
+  token: string,
+  onNewToken: Retry,
+  opts: { cursor?: string; limit?: number } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return authedFetch<AuditEntry[]>(
+    `/reports/audit${qs ? `?${qs}` : ''}`,
+    token,
+    onNewToken,
+  );
+};
 
 export type AiInsight = {
   type: string;

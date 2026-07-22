@@ -6,6 +6,21 @@ import {
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { CreateRestaurantDto } from './dto/create-restaurant.dto';
+import type { UpdateRestaurantDto } from './dto/update-restaurant.dto';
+
+/** Everything the settings screen and the receipt renderer need. */
+const PROFILE_SELECT = {
+  id: true,
+  name: true,
+  slug: true,
+  address: true,
+  phone: true,
+  gstin: true,
+  fssai: true,
+  receiptHeader: true,
+  receiptFooter: true,
+  createdAt: true,
+} as const;
 
 @Injectable()
 export class RestaurantsService {
@@ -103,6 +118,59 @@ export class RestaurantsService {
       });
 
       return { restaurant, branch, membershipId: membership.id };
+    });
+  }
+
+  /** The current tenant's profile. RLS pins this to the token's restaurant. */
+  getCurrent() {
+    return this.prisma.tx((db) =>
+      db.restaurant.findFirstOrThrow({ select: PROFILE_SELECT }),
+    );
+  }
+
+  /**
+   * Edits the current tenant's profile. The row is addressed by the JWT's
+   * restaurant id AND constrained by RLS — belt and braces, same as everywhere.
+   *
+   * slug is deliberately not editable: it is the tenant's public identity.
+   * The change lands in the audit log because GSTIN/FSSAI edits are the kind
+   * of thing a dispute asks about ("who changed the tax number, and when?").
+   */
+  async updateCurrent(dto: UpdateRestaurantDto) {
+    const ctx = this.prisma.requireContext();
+    return this.prisma.tx(async (db) => {
+      const data = {
+        ...(dto.name !== undefined ? { name: dto.name } : {}),
+        ...(dto.address !== undefined ? { address: dto.address } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+        ...(dto.gstin !== undefined ? { gstin: dto.gstin } : {}),
+        ...(dto.fssai !== undefined ? { fssai: dto.fssai } : {}),
+        ...(dto.receiptHeader !== undefined
+          ? { receiptHeader: dto.receiptHeader }
+          : {}),
+        ...(dto.receiptFooter !== undefined
+          ? { receiptFooter: dto.receiptFooter }
+          : {}),
+      };
+
+      const updated = await db.restaurant.update({
+        where: { id: ctx.restaurantId },
+        data,
+        select: PROFILE_SELECT,
+      });
+
+      await db.auditLog.create({
+        data: {
+          restaurantId: ctx.restaurantId,
+          userId: ctx.userId,
+          action: 'restaurant.updated',
+          entityType: 'restaurant',
+          entityId: ctx.restaurantId,
+          metadata: { fields: Object.keys(data) },
+        },
+      });
+
+      return updated;
     });
   }
 

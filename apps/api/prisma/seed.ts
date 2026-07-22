@@ -36,9 +36,12 @@ const PERMISSIONS: Record<string, string> = {
   'attendance.manage': 'Record attendance for other staff and view timesheets',
   'inventory.read': 'View stock levels and movements',
   'inventory.manage': 'Receive stock, record waste, edit recipes',
+  'cash.read': 'View the cash drawer and day-close reports',
+  'cash.manage': 'Open and close the till, record cash in/out',
   'order.create': 'Take an order',
   'order.read': 'View orders',
   'order.update': 'Change order contents or status',
+  'order.discount': 'Apply a manual discount to an order',
   'order.void': 'Void an order',
   'order.refund': 'Refund a payment',
   'audit.read': 'View the audit log',
@@ -68,9 +71,12 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
       'customer.manage',
       'inventory.read',
       'inventory.manage',
+      'cash.read',
+      'cash.manage',
       'order.create',
       'order.read',
       'order.update',
+      'order.discount',
       'order.void',
       'order.refund',
       'audit.read',
@@ -80,20 +86,30 @@ const ROLES: Record<string, { name: string; permissions: string[] }> = {
     name: 'Cashier',
     // Deliberately cannot void or refund: those are the theft vectors, and
     // the blueprint's threat model puts the cashier at the top of the list.
+    // restaurant.read is here because the till prints bills, and a bill
+    // carries the shop's name, address and GSTIN.
+    // cash.* because the cashier runs the drawer: opens the float, records
+    // paid-in/out, and counts down at end of shift.
     permissions: [
       'attendance.record',
+      'restaurant.read',
       'product.read',
       'customer.read',
       'customer.manage',
+      'cash.read',
+      'cash.manage',
       'order.create',
       'order.read',
       'order.update',
+      'order.discount',
     ],
   },
   KITCHEN: {
     name: 'Kitchen',
+    // restaurant.read: the KOT header names the shop.
     permissions: [
       'attendance.record',
+      'restaurant.read',
       'product.read',
       'inventory.read',
       'inventory.manage',

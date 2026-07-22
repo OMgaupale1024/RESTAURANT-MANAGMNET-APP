@@ -6,11 +6,13 @@ import { Receipt, Search, SearchX } from 'lucide-react';
 import {
   ApiRequestError,
   getOrder,
+  getRestaurantProfile,
   getTimeline,
   listOrders,
   updateOrderStatus,
   type Order,
   type OrderSummary,
+  type RestaurantProfile,
   type TimelineEvent,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -27,6 +29,7 @@ import {
   statusLabel,
   timeFull,
   timeShort,
+  TYPE_LABEL,
 } from './order-detail';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -80,6 +83,17 @@ export function OrdersClient() {
   const [detail, setDetail] = useState<{ order: Order; timeline: TimelineEvent[] } | null>(null);
   const [askDanger, setAskDanger] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+
+  // Business profile for receipts — fetched once; a failure only disables
+  // the print button, it never blocks the orders screen.
+  useEffect(() => {
+    if (!accessToken) return;
+    getRestaurantProfile(accessToken, onNewToken)
+      .then(setProfile)
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   // Fresh values for socket handlers without re-subscribing the socket.
   const tokenRef = useRef(accessToken);
@@ -95,11 +109,20 @@ export function OrdersClient() {
   // rows); ALL/ACTIVE share one unfiltered fetch, ACTIVE narrowed client-side.
   const serverStatus = filter === 'ALL' || filter === 'ACTIVE' ? undefined : filter;
 
+  const PAGE = 50;
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
   const refetch = useCallback(async () => {
     const token = tokenRef.current;
     if (!token) return;
     try {
-      setOrders(await listOrders(token, onNewToken, serverStatus));
+      const page = await listOrders(token, onNewToken, {
+        status: serverStatus,
+        limit: PAGE,
+      });
+      setOrders(page);
+      setHasMore(page.length === PAGE);
     } catch (e) {
       toast({
         title: e instanceof ApiRequestError ? e.message : 'Could not load orders',
@@ -107,6 +130,34 @@ export function OrdersClient() {
       });
     }
   }, [onNewToken, serverStatus, toast]);
+
+  /** Keyset page-down: everything older than the last row already shown. */
+  const loadMore = useCallback(async () => {
+    const token = tokenRef.current;
+    if (!token || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const last = orders?.[orders.length - 1];
+      if (!last) return;
+      const page = await listOrders(token, onNewToken, {
+        status: serverStatus,
+        cursor: last.id,
+        limit: PAGE,
+      });
+      setOrders((prev) => {
+        const seen = new Set((prev ?? []).map((o) => o.id));
+        return [...(prev ?? []), ...page.filter((o) => !seen.has(o.id))];
+      });
+      setHasMore(page.length === PAGE);
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not load more',
+        variant: 'danger',
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, orders, onNewToken, serverStatus, toast]);
 
   useEffect(() => {
     void refetch();
@@ -373,6 +424,9 @@ export function OrdersClient() {
                       <span className="ml-2 text-[12px] text-ink-3 tabular-nums">
                         {o._count.items} item{o._count.items === 1 ? '' : 's'}
                       </span>
+                      <span className="ml-2 text-[11px] text-ink-3">
+                        {TYPE_LABEL[o.orderType] ?? ''}
+                      </span>
                     </Td>
                     <Td className="hidden max-w-40 truncate md:table-cell">
                       {o.customer?.name ?? <span className="text-ink-3">Walk-in</span>}
@@ -432,10 +486,22 @@ export function OrdersClient() {
         )}
       </div>
       {!loading && rows.length > 0 && (
-        <p className="mt-2 text-[12px] text-ink-3 tabular-nums">
-          {rows.length} order{rows.length === 1 ? '' : 's'}
-          {orders !== null && orders.length >= 100 && ' · showing the 100 most recent'}
-        </p>
+        <div className="mt-2 flex items-center gap-3">
+          <p className="text-[12px] text-ink-3 tabular-nums">
+            {rows.length} order{rows.length === 1 ? '' : 's'}
+            {hasMore && ' · older orders available'}
+          </p>
+          {hasMore && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={loadingMore}
+              onClick={() => void loadMore()}
+            >
+              {loadingMore ? 'Loading…' : 'Load older'}
+            </Button>
+          )}
+        </div>
       )}
 
       <Sheet
@@ -463,9 +529,14 @@ export function OrdersClient() {
             order={detail.order}
             timeline={detail.timeline}
             moving={moving}
+            profile={profile}
             onMove={(to) =>
               DANGER_STATUSES.includes(to) ? setAskDanger(to) : void move(detail.order.id, to)
             }
+            onChanged={() => {
+              void refetch();
+              void loadDetail(detail.order.id);
+            }}
           />
         )}
       </Sheet>

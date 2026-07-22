@@ -11,6 +11,7 @@ import {
 import { RequirePermissions } from '../../common/decorators/auth.decorators';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ListOrdersQuery } from './dto/list-orders.query';
+import { RecordPaymentDto, RecordRefundDto } from './dto/payment.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { OrdersService } from './orders.service';
 import { VOID_STATUSES } from './order-status';
@@ -28,7 +29,11 @@ export class OrdersController {
   @RequirePermissions('order.read')
   @Get()
   list(@Query() query: ListOrdersQuery) {
-    return this.orders.list({ status: query.status, limit: query.limit });
+    return this.orders.list({
+      status: query.status,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
   }
 
   @RequirePermissions('order.read')
@@ -52,6 +57,26 @@ export class OrdersController {
    * A single @RequirePermissions on the route could not express that, so the
    * void check lives in the handler.
    */
+  /** Split legs and pay-later. The counter records money in; server caps it. */
+  @RequirePermissions('order.update')
+  @Post(':id/payments')
+  recordPayment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RecordPaymentDto,
+  ) {
+    return this.orders.recordPayment(id, dto);
+  }
+
+  /** Money out. Same trust tier as voiding — cashiers do not hold this. */
+  @RequirePermissions('order.refund')
+  @Post(':id/refunds')
+  recordRefund(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RecordRefundDto,
+  ) {
+    return this.orders.recordRefund(id, dto);
+  }
+
   @RequirePermissions('order.update')
   @Patch(':id/status')
   updateStatus(

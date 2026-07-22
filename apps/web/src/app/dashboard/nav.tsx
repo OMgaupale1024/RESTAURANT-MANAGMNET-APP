@@ -4,17 +4,20 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useLayoutEffect, useRef, useState } from 'react';
 import {
+  BookOpen,
   ChefHat,
   FileText,
   LayoutDashboard,
   Megaphone,
   Package,
   Receipt,
+  ScrollText,
   Sparkles,
   Store,
   TrendingUp,
   UserCog,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -33,6 +36,7 @@ export const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
       { label: 'POS', href: '/dashboard/pos', icon: Store },
       { label: 'Orders', href: '/dashboard/orders', icon: Receipt },
       { label: 'Kitchen', href: '/dashboard/kitchen', icon: ChefHat },
+      { label: 'Day Close', href: '/dashboard/cash', icon: Wallet },
     ],
   },
   {
@@ -40,6 +44,7 @@ export const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
     items: [
       { label: 'Analytics', href: '/dashboard/analytics', icon: TrendingUp },
       { label: 'Reports', href: '/dashboard/reports', icon: FileText },
+      { label: 'Audit Log', href: '/dashboard/audit', icon: ScrollText },
     ],
   },
   {
@@ -52,6 +57,7 @@ export const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
   {
     label: 'Manage',
     items: [
+      { label: 'Menu', href: '/dashboard/menu', icon: BookOpen },
       { label: 'Inventory', href: '/dashboard/inventory', icon: Package },
       { label: 'Staff', href: '/dashboard/staff', icon: UserCog },
     ],
@@ -75,6 +81,7 @@ export function allowedHrefs(roleKey: string): Set<string> | null {
       '/dashboard/pos',
       '/dashboard/orders',
       '/dashboard/kitchen',
+      '/dashboard/cash',
       '/dashboard/customers',
     ]);
   return null; // OWNER / MANAGER: everything

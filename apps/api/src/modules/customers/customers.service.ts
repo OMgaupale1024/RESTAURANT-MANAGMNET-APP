@@ -158,24 +158,26 @@ export class CustomersService {
         status: { notIn: [OrderStatus.VOIDED, OrderStatus.CANCELLED] },
       };
 
-      const [agg, firstOrder, lastOrder, recent] = await Promise.all([
-        db.order.aggregate({
+      // Serial, not Promise.all: concurrent queries share this transaction's one
+      // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+      const [agg, firstOrder, lastOrder, recent] = [
+        await db.order.aggregate({
           where: countable,
           _count: { _all: true },
           _sum: { totalMinor: true },
           _avg: { totalMinor: true },
         }),
-        db.order.findFirst({
+        await db.order.findFirst({
           where: countable,
           orderBy: { createdAt: 'asc' },
           select: { createdAt: true },
         }),
-        db.order.findFirst({
+        await db.order.findFirst({
           where: countable,
           orderBy: { createdAt: 'desc' },
           select: { createdAt: true },
         }),
-        db.order.findMany({
+        await db.order.findMany({
           where: { customerId: id },
           take: 10,
           orderBy: { createdAt: 'desc' },
@@ -187,7 +189,7 @@ export class CustomersService {
             createdAt: true,
           },
         }),
-      ]);
+      ];
 
       const visits = agg._count?._all ?? 0;
       return {

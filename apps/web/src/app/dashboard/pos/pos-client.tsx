@@ -13,47 +13,69 @@ import {
   CreditCard,
   Keyboard,
   Minus,
+  PauseCircle,
+  Pencil,
   Plus,
+  Printer,
   ScanBarcode,
   Search,
   SearchX,
   ShoppingCart,
   Smartphone,
+  Split,
   UtensilsCrossed,
   X,
 } from 'lucide-react';
+import Link from 'next/link';
 import {
   ApiRequestError,
   createOrder,
-  createProduct,
   getCustomer,
+  getOrder,
+  getRestaurantProfile,
   listCategories,
+  listOrders,
   listProducts,
+  recordPayment,
+  updateOrderStatus,
   type Category,
   type Order,
+  type OrderSummary,
   type Product,
+  type RestaurantProfile,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor, parseRupeesToMinor } from '@/lib/money';
+import { BillReceipt, usePrintArea } from '@/lib/receipt';
 import { useCountUp } from '@/lib/use-count-up';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
-import { Input } from '@/components/ui/input';
+import { Field, Input } from '@/components/ui/input';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
 import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { CustomerPicker, type PosCustomer } from './customer-picker';
 
-type CartLine = { product: Product; quantity: number };
+type CartLine = { product: Product; quantity: number; notes?: string };
 type LastAction = { label: string; productId: string; at: number };
+
+const ORDER_TYPES = [
+  { key: 'DINE_IN', label: 'Dine-in' },
+  { key: 'TAKEAWAY', label: 'Takeaway' },
+  { key: 'DELIVERY', label: 'Delivery' },
+] as const;
+type OrderTypeKey = (typeof ORDER_TYPES)[number]['key'];
 
 const METHODS = [
   { key: 'CASH', label: 'Cash', icon: Banknote },
   { key: 'UPI', label: 'UPI', icon: Smartphone },
   { key: 'CARD', label: 'Card', icon: CreditCard },
+  // SPLIT charges the order UNPAID; the success panel then records each leg
+  // against POST /orders/:id/payments until the balance is zero.
+  { key: 'SPLIT', label: 'Split', icon: Split },
 ] as const;
 type MethodKey = (typeof METHODS)[number]['key'];
 
@@ -63,12 +85,22 @@ const SHORTCUTS: Array<{ keys: string[]; does: string }> = [
   { keys: ['Esc'], does: 'Clear search / close dialogs' },
   { keys: ['Ctrl', 'Enter'], does: 'Charge the order' },
   { keys: ['Ctrl', 'Backspace'], does: 'Clear the cart' },
-  { keys: ['Alt', '1 · 2 · 3'], does: 'Cash / UPI / Card' },
+  { keys: ['Alt', '1 · 2 · 3 · 4'], does: 'Cash / UPI / Card / Split' },
   { keys: ['?'], does: 'Open this help' },
 ];
 
 /** How long a removed cart line takes to collapse before it leaves the state. */
 const LINE_OUT_MS = 160;
+
+/** Compact "3m ago" for the held-orders tray. */
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+}
 
 export function PosClient() {
   const { accessToken, setAccessToken } = useAuth();
@@ -77,7 +109,6 @@ export function PosClient() {
 
   const [products, setProducts] = useState<Product[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [reloadKey, setReloadKey] = useState(0);
 
   const [q, setQ] = useState('');
   const [cat, setCat] = useState<string>('all');
@@ -85,15 +116,45 @@ export function PosClient() {
   const [customer, setCustomerState] = useState<PosCustomer | null>(null);
   const [visits, setVisits] = useState<number | null>(null);
   const [coupon, setCoupon] = useState('');
+  const [discount, setDiscount] = useState('');
   const [note, setNote] = useState('');
   const [method, setMethod] = useState<MethodKey>('CASH');
+  const [orderType, setOrderType] = useState<OrderTypeKey>('TAKEAWAY');
   const [placing, setPlacing] = useState(false);
+  const [holding, setHolding] = useState(false);
   const [success, setSuccess] = useState<Order | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
   const [lastAction, setLastAction] = useState<LastAction | null>(null);
   const [leaving, setLeaving] = useState<string[]>([]);
   const [helpOpen, setHelpOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+  // Held (parked) orders — DRAFTs with no payment, resumed later.
+  const [held, setHeld] = useState<OrderSummary[]>([]);
+  const [heldOpen, setHeldOpen] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const { printNode, portal: printPortal } = usePrintArea();
+
+  const reloadHeld = useCallback(() => {
+    if (!accessToken) return;
+    listOrders(accessToken, onNewToken, { status: 'DRAFT', limit: 50 })
+      .then(setHeld)
+      .catch(() => undefined);
+  }, [accessToken, onNewToken]);
+
+  useEffect(() => {
+    reloadHeld();
+  }, [reloadHeld]);
+
+  // Business profile for the bill header. Loaded once; failing only greys
+  // the Print button.
+  useEffect(() => {
+    if (!accessToken) return;
+    getRestaurantProfile(accessToken, (t) => setAccessToken(t))
+      .then(setProfile)
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   const searchRef = useRef<HTMLInputElement>(null);
   // Lines mid-collapse: id → removal timer. Lets a re-add cancel the removal.
@@ -129,7 +190,7 @@ export function PosClient() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, onNewToken, reloadKey, toast]);
+  }, [accessToken, onNewToken, toast]);
 
   const setCustomer = (c: PosCustomer | null) => {
     setVisits(null);
@@ -230,13 +291,19 @@ export function PosClient() {
     );
   }
 
+  function setLineNote(id: string, notes: string) {
+    setCart((c) => c.map((l) => (l.product.id === id ? { ...l, notes } : l)));
+  }
+
   function clearCart() {
     for (const t of leavingTimers.current.values()) clearTimeout(t);
     leavingTimers.current.clear();
     setLeaving([]);
     setCart([]);
     setCoupon('');
+    setDiscount('');
     setNote('');
+    setOrderType('TAKEAWAY');
     setCustomer(null);
     setLastAction(null);
     idemKey.current = null;
@@ -248,15 +315,37 @@ export function PosClient() {
     ? cart.filter((l) => !leaving.includes(l.product.id))
     : cart;
 
+  /** The item payload shared by charge and hold — carries per-line notes. */
+  function cartItems() {
+    return activeCart.map((l) => ({
+      productId: l.product.id,
+      quantity: l.quantity,
+      ...(l.notes?.trim() ? { notes: l.notes.trim() } : {}),
+    }));
+  }
+
+  /** Discount fields shared by charge and hold. Coupon and manual are exclusive. */
+  function discountFields() {
+    const code = coupon.trim();
+    const manual = discount.trim() ? parseRupeesToMinor(discount) : null;
+    return {
+      ...(code ? { couponCode: code.toUpperCase() } : {}),
+      ...(!code && manual ? { manualDiscountMinor: manual } : {}),
+    };
+  }
+
   async function charge() {
     if (!accessToken || activeCart.length === 0 || placing) return;
     setPlacing(true);
     try {
       const order = await createOrder(accessToken, onNewToken, {
-        items: activeCart.map((l) => ({ productId: l.product.id, quantity: l.quantity })),
-        paymentMethod: method,
+        items: cartItems(),
+        // SPLIT: the order is placed unpaid; legs are recorded on the
+        // success panel one by one.
+        ...(method !== 'SPLIT' ? { paymentMethod: method } : {}),
+        orderType,
         ...(customer ? { customerId: customer.id } : {}),
-        ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
+        ...discountFields(),
         ...(note.trim() ? { notes: note.trim() } : {}),
         idempotencyKey: idemKey.current ?? crypto.randomUUID(),
       });
@@ -273,12 +362,88 @@ export function PosClient() {
     }
   }
 
-  // The confirmation stays long enough to read, then the till resets itself.
+  /** Park the cart as a DRAFT — no kitchen, no stock, no payment yet. */
+  async function hold() {
+    if (!accessToken || activeCart.length === 0 || holding) return;
+    setHolding(true);
+    try {
+      await createOrder(accessToken, onNewToken, {
+        items: cartItems(),
+        orderType,
+        hold: true,
+        ...(customer ? { customerId: customer.id } : {}),
+        ...discountFields(),
+        ...(note.trim() ? { notes: note.trim() } : {}),
+        idempotencyKey: idemKey.current ?? crypto.randomUUID(),
+      });
+      toast({ title: 'Order held', variant: 'success' });
+      clearCart();
+      reloadHeld();
+    } catch (e) {
+      toast({
+        title: 'Could not hold the order',
+        description: e instanceof ApiRequestError ? e.message : undefined,
+        variant: 'danger',
+      });
+    } finally {
+      setHolding(false);
+    }
+  }
+
+  /**
+   * Resume a held order: place it (DRAFT -> PLACED, which deplete stock and
+   * stamps placedAt server-side), then hand it to the success panel so the
+   * cashier collects payment exactly as for a fresh unpaid order.
+   */
+  async function resume(id: string) {
+    if (!accessToken || resuming) return;
+    setResuming(true);
+    try {
+      await updateOrderStatus(accessToken, onNewToken, id, 'PLACED');
+      const order = await getOrder(accessToken, onNewToken, id);
+      setHeldOpen(false);
+      setSuccess(order);
+      reloadHeld();
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not resume the order',
+        variant: 'danger',
+      });
+    } finally {
+      setResuming(false);
+    }
+  }
+
+  // The confirmation stays long enough to read, then the till resets itself —
+  // but NEVER while money is still owed (a split mid-recording must not
+  // vanish under the cashier's hands).
   useEffect(() => {
     if (!success) return;
+    const captured = success.payments
+      .filter((p) => p.status === 'CAPTURED')
+      .reduce((s, p) => s + p.amountMinor, 0);
+    if (captured < success.totalMinor) return;
     const t = setTimeout(() => setSuccess(null), 6000);
     return () => clearTimeout(t);
   }, [success]);
+
+  /** One split leg. The server caps the sum at the order total. */
+  async function recordLeg(orderId: string, m: string, amountMinor: number) {
+    if (!accessToken) return;
+    try {
+      const updated = await recordPayment(accessToken, onNewToken, orderId, {
+        method: m,
+        amountMinor,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      setSuccess(updated);
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not record payment',
+        variant: 'danger',
+      });
+    }
+  }
 
   // One document-level handler for every POS shortcut, re-bound each render
   // so it always closes over fresh state — cheaper than a ref dance and
@@ -303,7 +468,7 @@ export function PosClient() {
         return;
       }
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
-        const i = ['Digit1', 'Digit2', 'Digit3'].indexOf(e.code);
+        const i = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(e.code);
         if (i !== -1) {
           e.preventDefault();
           setMethod(METHODS[i].key);
@@ -356,16 +521,29 @@ export function PosClient() {
       tax={tax}
       coupon={coupon}
       setCoupon={setCoupon}
+      discount={discount}
+      setDiscount={setDiscount}
       note={note}
       setNote={setNote}
       method={method}
       setMethod={setMethod}
+      orderType={orderType}
+      setOrderType={setOrderType}
       placing={placing}
+      holding={holding}
+      onHold={() => void hold()}
       success={success}
       onNewOrder={() => setSuccess(null)}
+      onPrintBill={
+        profile
+          ? (o: Order) => printNode(<BillReceipt order={o} profile={profile} />)
+          : undefined
+      }
+      onRecordLeg={recordLeg}
       charge={() => void charge()}
       changeQty={changeQty}
       removeLine={removeLine}
+      setLineNote={setLineNote}
       askClear={() => setConfirmClear(true)}
       customerSlot={
         <CustomerPicker
@@ -412,6 +590,19 @@ export function PosClient() {
                 /
               </kbd>
             </div>
+            {held.length > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setHeldOpen(true)}
+                className="h-9 shrink-0"
+                title="Resume a held order"
+              >
+                <PauseCircle aria-hidden className="size-4" />
+                Held
+                <Badge className="ml-1 tabular-nums">{held.length}</Badge>
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -459,12 +650,15 @@ export function PosClient() {
               <EmptyState
                 icon={UtensilsCrossed}
                 title="No menu items yet"
-                body="Add your first item below — it appears here instantly and you can start selling."
-              />
-              <AddProduct
-                accessToken={accessToken}
-                onNewToken={onNewToken}
-                onAdded={() => setReloadKey((k) => k + 1)}
+                body="Set up your menu first — items appear here instantly and you can start selling."
+                action={
+                  <Link
+                    href="/dashboard/menu"
+                    className="inline-flex h-9 items-center rounded-lg bg-brand px-3.5 text-sm font-medium text-brand-ink"
+                  >
+                    Set up the menu →
+                  </Link>
+                }
               />
             </div>
           ) : filtered.length === 0 ? (
@@ -534,16 +728,16 @@ export function PosClient() {
                   );
                 })}
               </ul>
-              <details className="mt-6">
-                <summary className="cursor-pointer text-[13px] text-ink-3 transition-colors duration-120 hover:text-ink">
-                  Add a menu item
-                </summary>
-                <AddProduct
-                  accessToken={accessToken}
-                  onNewToken={onNewToken}
-                  onAdded={() => setReloadKey((k) => k + 1)}
-                />
-              </details>
+              <p className="mt-6 text-[13px] text-ink-3">
+                Menu changes live in{' '}
+                <Link
+                  href="/dashboard/menu"
+                  className="font-medium text-ink-2 underline-offset-4 hover:underline"
+                >
+                  Menu
+                </Link>
+                .
+              </p>
             </>
           )}
         </div>
@@ -594,6 +788,48 @@ export function PosClient() {
         confirmLabel="Clear order"
       />
 
+      <Sheet open={heldOpen} onClose={() => setHeldOpen(false)} title="Held orders">
+        {held.length === 0 ? (
+          <EmptyState
+            icon={PauseCircle}
+            title="No held orders"
+            body="Hold an order to park it here, then resume it to take payment."
+          />
+        ) : (
+          <ul className="space-y-2">
+            {held.map((o) => (
+              <li key={o.id}>
+                <button
+                  type="button"
+                  disabled={resuming}
+                  onClick={() => void resume(o.id)}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-line bg-surface px-3 py-2.5 text-left transition-colors duration-120 hover:bg-surface-2 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                >
+                  <div className="min-w-0">
+                    <p className="font-mono text-sm font-semibold tabular-nums">
+                      #{o.orderNumber}
+                    </p>
+                    <p className="truncate text-[12px] text-ink-3">
+                      {o._count.items} item{o._count.items === 1 ? '' : 's'}
+                      {o.customer ? ` · ${o.customer.name}` : ''} · held{' '}
+                      {timeAgo(o.createdAt)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-sm font-semibold tabular-nums">
+                      {formatMinor(o.totalMinor)}
+                    </span>
+                    <Badge>Resume</Badge>
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Sheet>
+
+      {printPortal}
+
       <Modal open={helpOpen} onClose={() => setHelpOpen(false)} title="Keyboard shortcuts">
         <dl className="space-y-2.5">
           {SHORTCUTS.map((s) => (
@@ -621,16 +857,25 @@ function CartPanel({
   tax,
   coupon,
   setCoupon,
+  discount,
+  setDiscount,
   note,
   setNote,
   method,
   setMethod,
+  orderType,
+  setOrderType,
   placing,
+  holding,
+  onHold,
   success,
   onNewOrder,
+  onPrintBill,
+  onRecordLeg,
   charge,
   changeQty,
   removeLine,
+  setLineNote,
   askClear,
   customerSlot,
 }: {
@@ -642,22 +887,51 @@ function CartPanel({
   tax: number;
   coupon: string;
   setCoupon: (v: string) => void;
+  discount: string;
+  setDiscount: (v: string) => void;
   note: string;
   setNote: (v: string) => void;
   method: MethodKey;
   setMethod: (m: MethodKey) => void;
+  orderType: OrderTypeKey;
+  setOrderType: (t: OrderTypeKey) => void;
   placing: boolean;
+  holding: boolean;
+  onHold: () => void;
   success: Order | null;
   onNewOrder: () => void;
+  /** Absent until the business profile has loaded. */
+  onPrintBill?: (order: Order) => void;
+  /** Records one split leg against the placed order. */
+  onRecordLeg: (orderId: string, method: string, amountMinor: number) => Promise<void>;
   charge: () => void;
   changeQty: (id: string, delta: number) => void;
   removeLine: (id: string) => void;
+  setLineNote: (id: string, notes: string) => void;
   askClear: () => void;
   customerSlot: React.ReactNode;
 }) {
-  const total = useCountUp(subtotal + tax, 300);
+  // Manual-discount preview (server recomputes and caps it authoritatively).
+  const manualMinor = discount.trim() ? (parseRupeesToMinor(discount) ?? 0) : 0;
+  const clampedDiscount = Math.min(manualMinor, subtotal);
+  const total = useCountUp(Math.max(0, subtotal + tax - clampedDiscount), 300);
 
   if (success) {
+    const captured = success.payments.filter((p) => p.status === 'CAPTURED');
+    const capturedMinor = captured.reduce((s, p) => s + p.amountMinor, 0);
+    const remaining = success.totalMinor - capturedMinor;
+
+    if (remaining > 0) {
+      return (
+        <SplitRecorder
+          key={success.id}
+          order={success}
+          remaining={remaining}
+          onRecordLeg={onRecordLeg}
+        />
+      );
+    }
+
     return (
       <div
         key={success.id}
@@ -670,7 +944,15 @@ function CartPanel({
         />
         <div>
           <p className="text-lg font-semibold">Order #{success.orderNumber} placed</p>
-          <p className="mt-1 text-[13px] text-ink-2">Paid by {success.payments[0]?.method ?? '—'}</p>
+          <p className="mt-1 text-[13px] text-ink-2">
+            {captured.length === 0
+              ? 'No payment recorded'
+              : captured.length === 1
+                ? `Paid by ${captured[0].method}`
+                : `Paid — ${captured
+                    .map((p) => `${p.method} ${formatMinor(p.amountMinor)}`)
+                    .join(' + ')}`}
+          </p>
         </div>
         {/* The server's figures — including any coupon discount it computed. */}
         <dl className="w-full max-w-60 space-y-1.5 text-[13px]">
@@ -686,9 +968,20 @@ function CartPanel({
         </dl>
         {/* The panel is rendered twice (rail + sheet); focus() on the hidden
             copy is a no-op, so autoFocus lands on the visible one. */}
-        <Button variant="primary" onClick={onNewOrder} autoFocus>
-          New order
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            disabled={!onPrintBill}
+            title={onPrintBill ? 'Print the customer bill' : 'Loading business profile…'}
+            onClick={() => onPrintBill?.(success)}
+          >
+            <Printer aria-hidden className="size-4" />
+            Print bill
+          </Button>
+          <Button variant="primary" onClick={onNewOrder} autoFocus>
+            New order
+          </Button>
+        </div>
       </div>
     );
   }
@@ -824,32 +1117,72 @@ function CartPanel({
                         <X aria-hidden className="size-3.5" />
                       </Button>
                     </div>
+                    <LineNote
+                      value={l.notes ?? ''}
+                      onChange={(v) => setLineNote(l.product.id, v)}
+                    />
                   </div>
                 </li>
               );
             })}
           </ul>
 
-          <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="mt-3 grid grid-cols-3 gap-2">
             <Input
               value={coupon}
               onChange={(e) => setCoupon(e.target.value)}
-              placeholder="Coupon code"
+              disabled={discount.trim() !== ''}
+              placeholder="Coupon"
               aria-label="Coupon code"
               className="h-8 font-mono text-[12px] uppercase placeholder:font-sans placeholder:normal-case"
+            />
+            <Input
+              inputMode="decimal"
+              value={discount}
+              onChange={(e) => setDiscount(e.target.value)}
+              disabled={coupon.trim() !== ''}
+              placeholder="₹ off"
+              aria-label="Manual discount"
+              className="h-8 text-[12px]"
             />
             <Input
               value={note}
               onChange={(e) => setNote(e.target.value)}
               maxLength={500}
-              placeholder="Order note"
+              placeholder="Note"
               aria-label="Order note"
               className="h-8 text-[12px]"
             />
           </div>
 
+          <div
+            className="mt-3 grid grid-cols-3 gap-1.5"
+            aria-label="Order type"
+          >
+            {ORDER_TYPES.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                aria-pressed={orderType === t.key}
+                onClick={() => setOrderType(t.key)}
+                className={cn(
+                  'h-8 rounded-lg border text-[12px] font-medium transition-[border-color,background-color,color] duration-120',
+                  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current',
+                  orderType === t.key
+                    ? 'border-ink bg-surface-2 text-ink'
+                    : 'border-line-2 text-ink-2 hover:bg-surface-2',
+                )}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
           <dl className="mt-3 space-y-1.5 border-t border-line pt-3 text-[13px]">
             <TotalRow label="Subtotal" value={formatMinor(subtotal)} />
+            {clampedDiscount > 0 && (
+              <TotalRow label="Discount" value={`−${formatMinor(clampedDiscount)}`} accent />
+            )}
             <TotalRow label="Tax" value={formatMinor(tax)} />
             {coupon.trim() && (
               <p className="text-[11px] text-ink-3">
@@ -863,7 +1196,7 @@ function CartPanel({
             </div>
           </dl>
 
-          <div className="mt-3 grid grid-cols-3 gap-2" aria-label="Payment method">
+          <div className="mt-3 grid grid-cols-4 gap-2" aria-label="Payment method">
             {METHODS.map((m, i) => (
               <button
                 key={m.key}
@@ -886,17 +1219,195 @@ function CartPanel({
             ))}
           </div>
 
-          <Button
-            variant="primary"
-            disabled={placing}
-            onClick={charge}
-            title="Ctrl+Enter"
-            className="mt-2 h-[52px] w-full text-[15px]"
-          >
-            {placing ? 'Charging…' : `Charge ${formatMinor(total)}`}
-          </Button>
+          {method === 'CASH' && (
+            // Keyed by cart emptiness: refilling after a clear starts fresh.
+            <CashTendered key={cart.length === 0 ? 0 : 1} totalMinor={subtotal + tax} />
+          )}
+
+          <div className="mt-2 flex gap-2">
+            <Button
+              variant="secondary"
+              disabled={holding || placing}
+              onClick={onHold}
+              title="Park this order to resume later"
+              className="h-[52px] shrink-0 px-4 text-[15px]"
+            >
+              <PauseCircle aria-hidden className="size-4" />
+              {holding ? 'Holding…' : 'Hold'}
+            </Button>
+            <Button
+              variant="primary"
+              disabled={placing || holding}
+              onClick={charge}
+              title="Ctrl+Enter"
+              className="h-[52px] flex-1 text-[15px]"
+            >
+              {placing
+                ? 'Charging…'
+                : method === 'SPLIT'
+                  ? `Charge ${formatMinor(total)} — split next`
+                  : `Charge ${formatMinor(total)}`}
+            </Button>
+          </div>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Per-line kitchen note ("no onion", "extra spicy"). Collapsed to a small
+ * affordance until used, so it never clutters a fast till — but the note the
+ * kitchen actually reads lives here, per item, not just on the whole order.
+ */
+function LineNote({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!open && !value) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-1 inline-flex items-center gap-1 text-[11px] text-ink-3 transition-colors duration-120 hover:text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+      >
+        <Pencil aria-hidden className="size-3" />
+        Add note
+      </button>
+    );
+  }
+  return (
+    <Input
+      autoFocus={open}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={() => setOpen(false)}
+      maxLength={200}
+      placeholder="e.g. no onion, extra spicy"
+      aria-label="Item note"
+      className="mt-1 h-7 text-[12px]"
+    />
+  );
+}
+
+/**
+ * Cash arithmetic for the cashier: what was handed over, what goes back.
+ * Display only — the server never sees the tendered amount.
+ */
+function CashTendered({ totalMinor }: { totalMinor: number }) {
+  const [value, onChange] = useState('');
+  const tenderedMinor = parseRupeesToMinor(value);
+  const change = tenderedMinor !== null ? tenderedMinor - totalMinor : null;
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <Input
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Cash received"
+        aria-label="Cash received"
+        className="h-9 flex-1 text-[13px]"
+      />
+      <p className="shrink-0 text-[13px] tabular-nums" aria-live="polite">
+        {change === null ? (
+          <span className="text-ink-3">Change —</span>
+        ) : change < 0 ? (
+          <span className="text-danger-text">Short {formatMinor(-change)}</span>
+        ) : (
+          <span className="font-medium">
+            Change <span className="font-semibold">{formatMinor(change)}</span>
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
+/** Records split legs until the balance hits zero. */
+function SplitRecorder({
+  order,
+  remaining,
+  onRecordLeg,
+}: {
+  order: Order;
+  remaining: number;
+  onRecordLeg: (orderId: string, method: string, amountMinor: number) => Promise<void>;
+}) {
+  const [amount, setAmount] = useState(() => (remaining / 100).toFixed(2));
+  const [busy, setBusy] = useState(false);
+  const amountMinor = parseRupeesToMinor(amount);
+  const valid = amountMinor !== null && amountMinor >= 1 && amountMinor <= remaining;
+
+  async function leg(m: string) {
+    if (!valid || busy) return;
+    setBusy(true);
+    try {
+      await onRecordLeg(order.id, m, amountMinor!);
+      // Parent state refreshes with the server's order; prefill what's left.
+      setAmount(((remaining - amountMinor!) / 100).toFixed(2));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const captured = order.payments.filter((p) => p.status === 'CAPTURED');
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col p-4">
+      <h2 className="text-[15px] font-semibold">
+        Order #{order.orderNumber} — collect payment
+      </h2>
+      <dl className="mt-3 space-y-1.5 text-[13px]">
+        <TotalRow label="Total" value={formatMinor(order.totalMinor)} />
+        {captured.map((p) => (
+          <TotalRow
+            key={p.id}
+            label={`Received — ${p.method}`}
+            value={formatMinor(p.amountMinor)}
+            accent
+          />
+        ))}
+        <div className="flex justify-between border-t border-line pt-1.5 text-[15px] font-semibold">
+          <dt>Remaining</dt>
+          <dd className="tabular-nums">{formatMinor(remaining)}</dd>
+        </div>
+      </dl>
+
+      <div className="mt-4">
+        <Field label="Amount (₹)">
+          <Input
+            inputMode="decimal"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            aria-label="Leg amount"
+          />
+        </Field>
+        {amountMinor !== null && amountMinor > remaining && (
+          <p className="mt-1.5 text-[12px] text-danger-text">
+            More than the remaining balance.
+          </p>
+        )}
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          {(['CASH', 'UPI', 'CARD'] as const).map((m) => (
+            <Button
+              key={m}
+              variant="secondary"
+              disabled={!valid || busy}
+              onClick={() => void leg(m)}
+            >
+              {m === 'CASH' ? 'Cash' : m === 'UPI' ? 'UPI' : 'Card'}
+            </Button>
+          ))}
+        </div>
+        <p className="mt-3 text-[12px] text-ink-3">
+          Record each part of the payment. The order completes when the
+          remaining balance reaches zero.
+        </p>
+      </div>
     </div>
   );
 }
@@ -929,65 +1440,3 @@ function TimeAgo({ at }: { at: number }) {
   return <>{s < 2 ? 'just now' : s < 60 ? `${s} sec ago` : `${Math.floor(s / 60)} min ago`}</>;
 }
 
-/** Minimal menu entry (existing capability). Full menu management is a later module. */
-function AddProduct({
-  accessToken,
-  onNewToken,
-  onAdded,
-}: {
-  accessToken: string | null;
-  onNewToken: (t: string) => void;
-  onAdded: () => void;
-}) {
-  const toast = useToast();
-  const [name, setName] = useState('');
-  const [price, setPrice] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const priceMinor = parseRupeesToMinor(price);
-  const valid = name.trim().length > 0 && priceMinor !== null;
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!accessToken || !valid) return;
-    setBusy(true);
-    try {
-      await createProduct(accessToken, onNewToken, {
-        name: name.trim(),
-        priceMinor: priceMinor!,
-      });
-      setName('');
-      setPrice('');
-      onAdded();
-    } catch (err) {
-      toast({
-        title: 'Could not add the item',
-        description: err instanceof ApiRequestError ? err.message : undefined,
-        variant: 'danger',
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="mt-3 flex flex-wrap items-end gap-2">
-      <label className="min-w-40 flex-1">
-        <span className="text-label mb-1.5 block">Item name</span>
-        <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
-      </label>
-      <label className="w-28">
-        <span className="text-label mb-1.5 block">Price (₹)</span>
-        <Input
-          inputMode="decimal"
-          value={price}
-          onChange={(e) => setPrice(e.target.value)}
-          placeholder="120.00"
-        />
-      </label>
-      <Button type="submit" variant="secondary" disabled={!valid || busy}>
-        Add
-      </Button>
-    </form>
-  );
-}

@@ -5,6 +5,7 @@
  * column), depletion is automatic and transactional, and a client cannot
  * manufacture a CONSUMPTION.
  */
+import { randomUUID } from 'node:crypto';
 import { ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -88,6 +89,20 @@ const getIngredient = (token: string, id: string) =>
     .get(`/api/v1/ingredients/${id}`)
     .set('Authorization', `Bearer ${token}`);
 
+/** Creates a product at a given price and returns its id. */
+async function makeProductPriced(
+  token: string,
+  name: string,
+  priceMinor: number,
+) {
+  const res = await api()
+    .post('/api/v1/products')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ name, priceMinor })
+    .expect(201);
+  return res.body.id as string;
+}
+
 describe('Inventory (e2e)', () => {
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -137,6 +152,10 @@ describe('Inventory (e2e)', () => {
       await owner.ingredient.deleteMany({
         where: { restaurantId: { in: rids } },
       });
+      await owner.supplier.deleteMany({
+        where: { restaurantId: { in: rids } },
+      });
+      await owner.product.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.order.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.customer.deleteMany({
         where: { restaurantId: { in: rids } },
@@ -304,6 +323,187 @@ describe('Inventory (e2e)', () => {
         .set('Authorization', `Bearer ${t.token}`)
         .send({ quantity: 0 })
         .expect(400);
+    });
+  });
+
+  /**
+   * A manual movement carrying an idempotency key must apply exactly once,
+   * however many times the request arrives — a double-click, a network retry, a
+   * refresh, or several identical requests racing. Same contract as an order's
+   * key: the DB unique index is the guarantee.
+   */
+  describe('manual movements are idempotent', () => {
+    const adjust = (token: string, id: string, body: Record<string, unknown>) =>
+      api()
+        .post(`/api/v1/ingredients/${id}/adjustments`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+
+    it('applies a receipt once when the same key is retried', async () => {
+      const t = await newTenant('Idem Receipt Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Rice',
+        unit: 'GRAM',
+      }).expect(201);
+      const key = randomUUID();
+
+      const first = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 5000,
+        idempotencyKey: key,
+      }).expect(201);
+      // The retry (browser sent it again) returns the original, not a new row.
+      const second = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 5000,
+        idempotencyKey: key,
+      }).expect(201);
+      expect(second.body.id).toBe(first.body.id);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(5000); // applied once, not 10000
+      expect(res.body.movements).toHaveLength(1);
+    });
+
+    it('applies an adjustment once when the same key is retried', async () => {
+      const t = await newTenant('Idem Count Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Dal',
+        unit: 'GRAM',
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+      }).expect(201);
+      const key = randomUUID();
+
+      const first = await adjust(t.token, ing.body.id, {
+        quantity: -100,
+        note: 'stock count',
+        idempotencyKey: key,
+      }).expect(201);
+      const second = await adjust(t.token, ing.body.id, {
+        quantity: -100,
+        note: 'stock count',
+        idempotencyKey: key,
+      }).expect(201);
+      expect(second.body.id).toBe(first.body.id);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(900); // 1000 - 100, applied once
+      expect(res.body.movements).toHaveLength(2); // purchase + one adjustment
+    });
+
+    it('collapses concurrent identical requests to a single movement', async () => {
+      const t = await newTenant('Idem Concurrent Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Oil',
+        unit: 'MILLILITRE',
+      }).expect(201);
+      const key = randomUUID();
+
+      // Five identical requests race — the double-click / duplicate-tab case.
+      const fire = () =>
+        move(t.token, ing.body.id, {
+          type: 'PURCHASE',
+          quantity: 2000,
+          idempotencyKey: key,
+        });
+      const results = await Promise.all([
+        fire(),
+        fire(),
+        fire(),
+        fire(),
+        fire(),
+      ]);
+
+      const ids = new Set(
+        results.map((r) => {
+          expect(r.status).toBe(201); // every caller gets a success, none a 500
+          return r.body.id as string;
+        }),
+      );
+      expect(ids.size).toBe(1); // one movement, five callers
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(2000); // applied exactly once
+      expect(res.body.movements).toHaveLength(1);
+    });
+
+    it('a retry after a client timeout returns the original movement, not a second', async () => {
+      const t = await newTenant('Idem Timeout Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Salt',
+        unit: 'GRAM',
+      }).expect(201);
+      const key = randomUUID();
+
+      // The write committed but the client never saw the response. It retries
+      // the identical request and must receive the same movement back.
+      const original = await move(t.token, ing.body.id, {
+        type: 'WASTE',
+        quantity: 300,
+        idempotencyKey: key,
+      }).expect(201);
+      const retry = await move(t.token, ing.body.id, {
+        type: 'WASTE',
+        quantity: 300,
+        idempotencyKey: key,
+      }).expect(201);
+
+      expect(retry.body).toEqual(original.body); // identical, not a new row
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(-300); // one WASTE, not two
+      expect(res.body.movements).toHaveLength(1);
+    });
+
+    it('records distinct movements for distinct keys (a real second receipt is not swallowed)', async () => {
+      const t = await newTenant('Idem Distinct Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Flour',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // After a refresh the client mints a fresh key, so a genuinely new
+      // receipt of the same amount must still be recorded — idempotency must
+      // not collapse two real actions into one.
+      const a = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        idempotencyKey: randomUUID(),
+      }).expect(201);
+      const b = await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        idempotencyKey: randomUUID(),
+      }).expect(201);
+      expect(b.body.id).not.toBe(a.body.id);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(2000); // both applied
+      expect(res.body.movements).toHaveLength(2);
+    });
+
+    it('a movement sent without a key still records (idempotency is opt-in)', async () => {
+      const t = await newTenant('Idem Optional Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Sugar',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // No key: two identical sends are two movements. NULL keys never collide.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 500,
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 500,
+      }).expect(201);
+
+      const res = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(res.body.currentStock).toBe(1000);
+      expect(res.body.movements).toHaveLength(2);
     });
   });
 
@@ -687,6 +887,261 @@ describe('Inventory (e2e)', () => {
         .set('Authorization', `Bearer ${b.token}`)
         .send({ items: [{ ingredientId: ing.body.id, quantity: 10 }] })
         .expect(400); // "Unknown ingredient" — existence is not confirmed
+    });
+  });
+
+  describe('ingredient edit', () => {
+    it('updates name and reorder level; null clears tracking', async () => {
+      const t = await newTenant('Edit Ing');
+      const ing = await addIngredient(t.token, {
+        name: 'Panner',
+        unit: 'GRAM',
+        reorderLevel: 500,
+      }).expect(201);
+
+      const upd = await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Paneer', reorderLevel: 1000 })
+        .expect(200);
+      expect(upd.body).toMatchObject({ name: 'Paneer', reorderLevel: 1000 });
+
+      const cleared = await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ reorderLevel: null })
+        .expect(200);
+      expect(cleared.body.reorderLevel).toBeNull();
+    });
+
+    it('changes unit only while the ledger is empty', async () => {
+      const t = await newTenant('Unit Ing');
+      const ing = await addIngredient(t.token, {
+        name: 'Oil',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // No movements yet: the unit was simply wrong, fix it.
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ unit: 'MILLILITRE' })
+        .expect(200);
+
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+      }).expect(201);
+
+      // The ledger now holds 1000 ml; relabelling it would falsify history.
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ unit: 'PIECE' })
+        .expect(409);
+    });
+
+    it('deactivation hides it from the default list; include=all keeps it', async () => {
+      const t = await newTenant('Hide Ing');
+      const ing = await addIngredient(t.token, {
+        name: 'Seasonal Herb',
+        unit: 'GRAM',
+      }).expect(201);
+
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ isActive: false })
+        .expect(200);
+
+      const active = await api()
+        .get('/api/v1/ingredients')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(active.body).toHaveLength(0);
+
+      const all = await api()
+        .get('/api/v1/ingredients?include=all')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(all.body).toHaveLength(1);
+      expect(all.body[0].isActive).toBe(false);
+    });
+
+    it('rejects a rename onto an existing ingredient name', async () => {
+      const t = await newTenant('Conflict Ing');
+      await addIngredient(t.token, { name: 'Flour', unit: 'GRAM' }).expect(201);
+      const ing2 = await addIngredient(t.token, {
+        name: 'Maida',
+        unit: 'GRAM',
+      }).expect(201);
+
+      await api()
+        .patch(`/api/v1/ingredients/${ing2.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Flour' })
+        .expect(409);
+    });
+
+    it("cannot edit another tenant's ingredient", async () => {
+      const a = await newTenant('Edit Victim');
+      const b = await newTenant('Edit Attacker');
+      const ing = await addIngredient(a.token, {
+        name: 'Secret Spice',
+        unit: 'GRAM',
+      }).expect(201);
+
+      await api()
+        .patch(`/api/v1/ingredients/${ing.body.id}`)
+        .set('Authorization', `Bearer ${b.token}`)
+        .send({ name: 'Stolen' })
+        .expect(404);
+    });
+  });
+
+  describe('suppliers and purchase cost', () => {
+    const addSupplier = (token: string, name: string) =>
+      api()
+        .post('/api/v1/suppliers')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name });
+
+    it('creates and lists a supplier', async () => {
+      const t = await newTenant('Supplier Cafe');
+      await addSupplier(t.token, 'FreshFarm Dairy').expect(201);
+      const list = await api()
+        .get('/api/v1/suppliers')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(list.body).toHaveLength(1);
+      expect(list.body[0].name).toBe('FreshFarm Dairy');
+    });
+
+    it('records a purchase with supplier + cost and derives weighted-average unit cost', async () => {
+      const t = await newTenant('Cost Cafe');
+      const supplier = await addSupplier(t.token, 'Mandi').expect(201);
+      const ing = await addIngredient(t.token, {
+        name: 'Paneer',
+        unit: 'GRAM',
+      }).expect(201);
+
+      // Buy 1000g for ₹200 (20000 paise) → 20 paise/g.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        supplierId: supplier.body.id,
+        totalCostMinor: 20000,
+      }).expect(201);
+      // Buy 1000g for ₹300 → running total 500 paise over 2000g = 25 paise/g.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 30000,
+      }).expect(201);
+
+      const detail = await getIngredient(t.token, ing.body.id).expect(200);
+      // (20000 + 30000) / 2000 = 25 paise per gram.
+      expect(detail.body.avgUnitCostMinor).toBe(25);
+    });
+
+    it('a WASTE carries no cost even if one is sent', async () => {
+      const t = await newTenant('Waste Cost Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Oil',
+        unit: 'MILLILITRE',
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 10000, // 10 paise/ml
+      }).expect(201);
+      // Waste with a stray cost — the server must ignore it for the average.
+      await api()
+        .post(`/api/v1/ingredients/${ing.body.id}/movements`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ type: 'WASTE', quantity: 100, totalCostMinor: 99999 })
+        .expect(201);
+      const detail = await getIngredient(t.token, ing.body.id).expect(200);
+      expect(detail.body.avgUnitCostMinor).toBe(10);
+    });
+
+    it('rejects a supplier from another tenant on a purchase', async () => {
+      const a = await newTenant('Buy A');
+      const b = await newTenant('Buy B');
+      const supplierB = await addSupplier(b.token, 'B Supplier').expect(201);
+      const ing = await addIngredient(a.token, {
+        name: 'Flour',
+        unit: 'GRAM',
+      }).expect(201);
+      await move(a.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 100,
+        supplierId: supplierB.body.id,
+      }).expect(400);
+    });
+
+    it('computes product food cost, margin and food-cost %', async () => {
+      const t = await newTenant('Costing Cafe');
+      // Product priced at 100.00.
+      const product = await makeProductPriced(t.token, 'Paneer Momo', 10000);
+      const ing = await addIngredient(t.token, {
+        name: 'Paneer',
+        unit: 'GRAM',
+      }).expect(201);
+      // 40 paise/g.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 40000,
+      }).expect(201);
+      // Recipe: 50g paneer per momo → recipe cost 50 × 40 = 2000 paise (₹20).
+      await api()
+        .put(`/api/v1/products/${product}/recipe`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ ingredientId: ing.body.id, quantity: 50 }] })
+        .expect(200);
+
+      const costing = await api()
+        .get('/api/v1/products/costing')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      const row = costing.body.find(
+        (r: { name: string }) => r.name === 'Paneer Momo',
+      );
+      expect(row.costed).toBe(true);
+      expect(row.recipeCostMinor).toBe(2000);
+      expect(row.marginMinor).toBe(8000); // 10000 − 2000
+      expect(row.foodCostPct).toBe(20); // 2000/10000
+    });
+
+    it('reports a product uncosted when an ingredient has no cost basis', async () => {
+      const t = await newTenant('Uncosted Cafe');
+      const product = await makeProductPriced(t.token, 'Mystery Dish', 5000);
+      const ing = await addIngredient(t.token, {
+        name: 'Unpriced Herb',
+        unit: 'GRAM',
+      }).expect(201);
+      // Stock arrives but with no cost recorded.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 100,
+      }).expect(201);
+      await api()
+        .put(`/api/v1/products/${product}/recipe`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ items: [{ ingredientId: ing.body.id, quantity: 10 }] })
+        .expect(200);
+
+      const costing = await api()
+        .get('/api/v1/products/costing')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      const row = costing.body.find(
+        (r: { name: string }) => r.name === 'Mystery Dish',
+      );
+      expect(row.costed).toBe(false);
+      expect(row.recipeCostMinor).toBeNull();
+      expect(row.marginMinor).toBeNull();
     });
   });
 });

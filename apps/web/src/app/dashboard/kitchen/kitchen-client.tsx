@@ -1,19 +1,31 @@
 'use client';
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { BellRing, CheckCircle2, ChefHat, Receipt, UserRound, type LucideIcon } from 'lucide-react';
+import {
+  BellRing,
+  CheckCircle2,
+  ChefHat,
+  Receipt,
+  UserRound,
+  Volume2,
+  VolumeX,
+  type LucideIcon,
+} from 'lucide-react';
 import {
   ApiRequestError,
   getOrder,
+  getRestaurantProfile,
   getTimeline,
   listActiveOrders,
   updateOrderStatus,
   type Order,
   type OrderSummary,
+  type RestaurantProfile,
   type TimelineEvent,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
+import { chime, primeSound } from '@/lib/kitchen-sound';
 import { connectSocket } from '@/lib/socket';
 import {
   DANGER_STATUSES,
@@ -21,6 +33,7 @@ import {
   QUICK,
   StatusBadge,
   timeShort,
+  TYPE_LABEL,
 } from '../orders/order-detail';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -59,6 +72,7 @@ function toSummary(o: Order): OrderSummary {
     id: o.id,
     orderNumber: o.orderNumber,
     status: o.status,
+    orderType: o.orderType,
     totalMinor: o.totalMinor,
     createdAt: o.createdAt,
     placedAt: o.placedAt,
@@ -90,6 +104,40 @@ export function KitchenClient() {
   const [detail, setDetail] = useState<{ order: Order; timeline: TimelineEvent[] } | null>(null);
   const [askDanger, setAskDanger] = useState<string | null>(null);
   const [moving, setMoving] = useState(false);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+
+  // Sound alert on new tickets. Persisted; default on (a kitchen wants to hear
+  // orders). A ref so the socket handler reads the live value without
+  // re-subscribing.
+  const [soundOn, setSoundOn] = useState(true);
+  const soundRef = useRef(true);
+  useEffect(() => {
+    // One-time read of the persisted preference after mount (localStorage is
+    // client-only, so it cannot be a render-time initializer without a
+    // hydration mismatch). Default stays on when nothing is saved.
+    const on = localStorage.getItem('kds-sound') !== 'off';
+    soundRef.current = on;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!on) setSoundOn(false);
+  }, []);
+  const toggleSound = useCallback(() => {
+    primeSound(); // this click is the gesture that unlocks audio
+    setSoundOn((on) => {
+      const next = !on;
+      soundRef.current = next;
+      localStorage.setItem('kds-sound', next ? 'on' : 'off');
+      return next;
+    });
+  }, []);
+
+  // For the KOT header; a failure only means the ticket prints without it.
+  useEffect(() => {
+    if (!accessToken) return;
+    getRestaurantProfile(accessToken, onNewToken)
+      .then(setProfile)
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   const tokenRef = useRef(accessToken);
   useEffect(() => {
@@ -171,7 +219,10 @@ export function KitchenClient() {
       void refetchAll();
     });
     socket.on('disconnect', () => setLive(false));
-    socket.on('order.created', (p: { id: string }) => fetchAndUpsert(p.id));
+    socket.on('order.created', (p: { id: string }) => {
+      if (soundRef.current) chime();
+      fetchAndUpsert(p.id);
+    });
     socket.on('order.status_changed', (p: { id: string; status: string }) => {
       setOrders((prev) => {
         if (prev === null) return prev;
@@ -249,6 +300,20 @@ export function KitchenClient() {
           />
           {live ? 'Live' : 'Connecting…'}
         </span>
+        <button
+          type="button"
+          onClick={toggleSound}
+          aria-pressed={soundOn}
+          title={soundOn ? 'New-order sound is on' : 'New-order sound is off'}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-[12px] text-ink-2 transition-colors duration-120 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+        >
+          {soundOn ? (
+            <Volume2 aria-hidden className="size-4" />
+          ) : (
+            <VolumeX aria-hidden className="size-4 text-ink-3" />
+          )}
+          {soundOn ? 'Sound on' : 'Muted'}
+        </button>
       </div>
 
       {orders === null ? (
@@ -360,11 +425,13 @@ export function KitchenClient() {
             order={detail.order}
             timeline={detail.timeline}
             moving={moving}
+            profile={profile}
             onMove={(to) =>
               DANGER_STATUSES.includes(to)
                 ? setAskDanger(to)
                 : void advance(detail.order.id, to)
             }
+            onChanged={() => void loadDetail(detail.order.id)}
           />
         )}
       </Sheet>
@@ -439,7 +506,14 @@ const Ticket = memo(function Ticket({
           >
             #{order.orderNumber}
           </button>
-          <Elapsed since={since} />
+          <span className="flex items-center gap-1.5">
+            {order.orderType !== 'TAKEAWAY' && (
+              <Badge variant={order.orderType === 'DELIVERY' ? 'info' : 'warning'}>
+                {TYPE_LABEL[order.orderType] ?? order.orderType}
+              </Badge>
+            )}
+            <Elapsed since={since} />
+          </span>
         </div>
 
         {order.customer && (

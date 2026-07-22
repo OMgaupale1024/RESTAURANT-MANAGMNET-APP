@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search, SearchX, UserRoundPlus, UsersRound } from 'lucide-react';
+import { Download, Search, SearchX, UserRoundPlus, UsersRound } from 'lucide-react';
 import {
   ApiRequestError,
   createCustomer,
@@ -13,8 +13,27 @@ import {
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
+import { downloadCsv, minorToCsv, toCsv } from '@/lib/csv';
 import { formatMinor } from '@/lib/money';
 import { StatusBadge, timeShort } from '../orders/order-detail';
+
+/** Customer list → CSV. Names go through toCsv's injection-safe escaping. */
+function exportCustomersCsv(list: CustomerSummary[]) {
+  const csv = toCsv(
+    ['Name', 'Phone', 'Email', 'Visits', 'Total spend (INR)', 'Avg bill (INR)', 'Last visit', 'Segment'],
+    list.map((c) => [
+      c.name,
+      c.phone,
+      c.email ?? '',
+      c.stats.visits,
+      minorToCsv(c.stats.totalSpentMinor),
+      minorToCsv(c.stats.averageBillMinor),
+      c.stats.lastVisit ? c.stats.lastVisit.slice(0, 10) : '',
+      c.segment?.label ?? '',
+    ]),
+  );
+  downloadCsv(`customers-${new Date().toISOString().slice(0, 10)}.csv`, csv);
+}
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -140,10 +159,20 @@ export function CustomersClient() {
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight">Customers</h1>
-        <Button variant="primary" onClick={() => setAdding(true)}>
-          <UserRoundPlus aria-hidden className="size-4" />
-          New customer
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            disabled={list.length === 0}
+            onClick={() => exportCustomersCsv(list)}
+          >
+            <Download aria-hidden className="size-4" />
+            Export CSV
+          </Button>
+          <Button variant="primary" onClick={() => setAdding(true)}>
+            <UserRoundPlus aria-hidden className="size-4" />
+            New customer
+          </Button>
+        </div>
       </div>
 
       {!loading && list.length > 0 && !q && (

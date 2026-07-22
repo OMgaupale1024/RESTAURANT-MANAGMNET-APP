@@ -61,7 +61,7 @@ export default function LandingPage() {
 
           <div className="mt-10 flex flex-wrap justify-center gap-4">
             <Link
-              href="/setup"
+              href="/register"
               className="rounded-md bg-brand px-6 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
             >
               Get started

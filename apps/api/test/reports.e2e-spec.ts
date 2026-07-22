@@ -31,6 +31,8 @@ function api() {
   return {
     post: (url: string) => request(server).post(url).set('X-Forwarded-For', ip),
     get: (url: string) => request(server).get(url).set('X-Forwarded-For', ip),
+    patch: (url: string) =>
+      request(server).patch(url).set('X-Forwarded-For', ip),
   };
 }
 
@@ -232,6 +234,127 @@ describe('Reports (e2e)', () => {
       await api()
         .get(`/api/v1/reports/sales?from=${monthAgo}&to=${today}`)
         .expect(401);
+    });
+  });
+
+  describe('reports pack', () => {
+    const report = (token: string, kind: string) =>
+      api()
+        .get(`/api/v1/reports/${kind}?from=${monthAgo}&to=${today}`)
+        .set('Authorization', `Bearer ${token}`);
+
+    it('GST report sums tax by rate from the line snapshots', async () => {
+      const t = await newTenant('GST Cafe');
+      // Veg Momo is 10000 @ 500bp default → tax 500 per unit; buy 2 → 1000.
+      await placeOrder(t.token, t.p1, 2).expect(201);
+      const res = await report(t.token, 'gst').expect(200);
+      const row = res.body.rows.find(
+        (r: { taxRateBp: number }) => r.taxRateBp === 500,
+      );
+      expect(row.taxableMinor).toBe(20000);
+      expect(row.taxMinor).toBe(1000);
+      expect(res.body.totalTaxMinor).toBe(1000);
+    });
+
+    it('item sales lists each item by its sold name', async () => {
+      const t = await newTenant('Item Cafe');
+      await placeOrder(t.token, t.p1, 3).expect(201);
+      const res = await report(t.token, 'items').expect(200);
+      const item = res.body.rows.find(
+        (r: { name: string }) => r.name === 'Veg Momo',
+      );
+      expect(item.quantity).toBe(3);
+      expect(item.revenueMinor).toBe(30000);
+    });
+
+    it('category sales groups by the product category', async () => {
+      const t = await newTenant('Cat Sales Cafe');
+      const cat = await api()
+        .post('/api/v1/categories')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Momos' })
+        .expect(201);
+      await api()
+        .patch(`/api/v1/products/${t.p1}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ categoryId: cat.body.id })
+        .expect(200);
+      await placeOrder(t.token, t.p1, 1).expect(201);
+      const res = await report(t.token, 'categories').expect(200);
+      const row = res.body.rows.find(
+        (r: { category: string }) => r.category === 'Momos',
+      );
+      expect(row.revenueMinor).toBe(10000);
+    });
+
+    it('settlement breaks down captured payments by method', async () => {
+      const t = await newTenant('Settle Cafe');
+      await api()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({
+          items: [{ productId: t.p1, quantity: 1 }],
+          paymentMethod: 'UPI',
+        })
+        .expect(201);
+      const res = await report(t.token, 'settlement').expect(200);
+      const upi = res.body.rows.find(
+        (r: { method: string }) => r.method === 'UPI',
+      );
+      expect(upi.capturedMinor).toBe(10500); // 10000 + 5%
+      expect(upi.netMinor).toBe(10500);
+    });
+
+    it('void report lists reversed orders with their reason', async () => {
+      const t = await newTenant('Void Cafe');
+      const o = await placeOrder(t.token, t.p1, 1).expect(201);
+      await api()
+        .patch(`/api/v1/orders/${o.body.id}/status`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ status: 'VOIDED', reason: 'wrong table' })
+        .expect(200);
+      const res = await report(t.token, 'voids').expect(200);
+      expect(res.body.count).toBe(1);
+      expect(res.body.rows[0].reason).toBe('wrong table');
+
+      // …and the void hit the audit log.
+      const audit = await api()
+        .get('/api/v1/reports/audit')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(
+        audit.body.some((e: { action: string }) => e.action === 'order.voided'),
+      ).toBe(true);
+    });
+
+    it('discount report shows the coupon and amount off', async () => {
+      const t = await newTenant('Discount Cafe');
+      await api()
+        .post('/api/v1/marketing/coupons')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ code: 'SAVE10', type: 'PERCENT', percentBp: 1000 })
+        .expect(201);
+      await api()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({
+          items: [{ productId: t.p1, quantity: 1 }],
+          couponCode: 'SAVE10',
+        })
+        .expect(201);
+      const res = await report(t.token, 'discounts').expect(200);
+      expect(res.body.count).toBe(1);
+      expect(res.body.rows[0].couponCode).toBe('SAVE10');
+      expect(res.body.rows[0].discountMinor).toBe(1000); // 10% of 10000
+    });
+
+    it('a CASHIER cannot read the audit log', async () => {
+      const t = await newTenant('Audit Cashier Cafe');
+      const cashier = await becomeRole(t, 'CASHIER');
+      await api()
+        .get('/api/v1/reports/audit')
+        .set('Authorization', `Bearer ${cashier}`)
+        .expect(403);
     });
   });
 });

@@ -56,8 +56,35 @@ const envSchema = z
     LOG_LEVEL: z
       .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
       .default('info'),
+
+    // Email (Resend). Optional: with neither set, MailService falls back to a
+    // dev transport that logs instead of sending, so local work and tests need
+    // no provider. If a key is present a from-address is required — see below.
+    RESEND_API_KEY: z.string().min(1).optional(),
+    // The verified sender, e.g. "OraOS <noreply@oraos.app>" or a bare address.
+    MAIL_FROM: z.string().optional(),
   })
   .superRefine((env, ctx) => {
+    // Email config is validated in every environment (not just production): a
+    // key with no from-address, or a malformed from-address, is a mistake that
+    // should surface at boot, wherever it happens.
+    if (env.RESEND_API_KEY && !env.MAIL_FROM) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_FROM'],
+        message: 'is required when RESEND_API_KEY is set',
+      });
+    }
+    // Accept a bare address or the "Name <addr>" form; reject anything without
+    // a plausible address, so a stray name or URL cannot reach the provider.
+    if (env.MAIL_FROM && !/<?[^\s@]+@[^\s@]+\.[^\s@]+>?$/.test(env.MAIL_FROM)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_FROM'],
+        message: 'must be an email address or "Name <email>"',
+      });
+    }
+
     // The one misconfiguration that silently destroys tenant isolation:
     // pointing runtime traffic at the owner role. It would work perfectly and
     // leak every tenant's data to every other tenant. Refuse to boot.

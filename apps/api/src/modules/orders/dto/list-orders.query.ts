@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsUUID, Max, Min } from 'class-validator';
 import { OrderStatus } from '../../../generated/prisma/enums';
 
 export class ListOrdersQuery {
@@ -14,4 +14,13 @@ export class ListOrdersQuery {
   @Min(1)
   @Max(100)
   limit?: number;
+
+  /**
+   * Keyset cursor: the id of the last row already shown. UUIDv7 ids are
+   * time-ordered, so "id < cursor" IS "older than the last row" — stable
+   * under concurrent inserts, unlike OFFSET.
+   */
+  @IsOptional()
+  @IsUUID()
+  cursor?: string;
 }

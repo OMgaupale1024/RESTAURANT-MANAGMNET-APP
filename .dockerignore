@@ -1,0 +1,25 @@
+# Keep the build context small and never ship local artifacts or secrets.
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+
+.git
+.gitignore
+.github
+
+# Secrets — only .env.example is ever tracked, and it is not needed in an image.
+**/.env
+**/.env.*
+
+# Python service (not part of the Node images)
+apps/ai
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db

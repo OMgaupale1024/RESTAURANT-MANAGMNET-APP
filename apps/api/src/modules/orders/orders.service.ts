@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type { CreateOrderDto } from './dto/create-order.dto';
+import type { RecordPaymentDto, RecordRefundDto } from './dto/payment.dto';
 import type { OrderStatus } from '../../generated/prisma/enums';
 import {
   REVERSING_STATUSES,
@@ -36,6 +37,30 @@ export class OrdersService {
   async create(dto: CreateOrderDto) {
     const ctx = this.prisma.requireContext();
 
+    // A held order takes no money: payment happens at placement, where the
+    // split recorder already lives. Refusing here beats a payment row on an
+    // order the kitchen has never heard of.
+    if (dto.hold && dto.paymentMethod) {
+      throw new BadRequestException(
+        'A held order cannot take a payment — collect it when placing',
+      );
+    }
+
+    // A manual discount is a client-supplied amount off, so it is gated
+    // exactly where a coupon is not: one discount source only, and the
+    // permission that a plain order-taker may not hold.
+    if (dto.manualDiscountMinor && dto.couponCode) {
+      throw new BadRequestException(
+        'Use either a coupon or a manual discount, not both',
+      );
+    }
+    if (
+      dto.manualDiscountMinor &&
+      !ctx.permissions.includes('order.discount')
+    ) {
+      throw new ForbiddenException('Missing permission: order.discount');
+    }
+
     // An idempotent replay must return the original order, not a second one.
     if (dto.idempotencyKey) {
       const existing = await this.findByIdempotencyKey(dto.idempotencyKey);
@@ -48,12 +73,15 @@ export class OrdersService {
         const order = await this.insert(ctx.restaurantId, ctx.userId, dto);
         // Emit AFTER commit: an event fired inside the transaction would
         // announce an order to the kitchen that a rollback then erased. Scoped
-        // to this tenant's room only.
-        this.realtime.emitToTenant(ctx.restaurantId, 'order.created', {
-          id: order.id,
-          orderNumber: order.orderNumber,
-          status: order.status,
-        });
+        // to this tenant's room only. A DRAFT is deliberately silent — the
+        // kitchen hears about it when it is placed.
+        if (order.status !== 'DRAFT') {
+          this.realtime.emitToTenant(ctx.restaurantId, 'order.created', {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+          });
+        }
         return order;
       } catch (e) {
         if (isUniqueViolation(e, 'order_number')) continue;
@@ -154,6 +182,15 @@ export class OrdersService {
           couponId: result.couponId,
           discountMinor: result.discountMinor,
         };
+      } else if (dto.manualDiscountMinor) {
+        // Capped at the subtotal — the DB CHECK enforces this too, but a clear
+        // 400 beats a constraint violation. Permission was checked in create().
+        if (dto.manualDiscountMinor > subtotal) {
+          throw new BadRequestException(
+            'Discount cannot exceed the order subtotal',
+          );
+        }
+        discount = dto.manualDiscountMinor;
       }
 
       // total = subtotal - discount + tax. The DB CHECK enforces this exact
@@ -167,14 +204,19 @@ export class OrdersService {
       const last = await db.order.aggregate({ _max: { orderNumber: true } });
       const orderNumber = (last._max.orderNumber ?? 0) + 1;
 
+      // A hold parks the order as DRAFT: numbered and priced (the customer
+      // was quoted this total), but unplaced — no kitchen, no stock, no money.
+      const held = dto.hold === true;
+
       const order = await db.order.create({
         data: {
           restaurantId,
           branchId: branch.id,
           customerId: dto.customerId ?? null,
           orderNumber,
-          status: 'PLACED',
-          placedAt: new Date(),
+          status: held ? 'DRAFT' : 'PLACED',
+          orderType: dto.orderType ?? 'TAKEAWAY',
+          placedAt: held ? null : new Date(),
           subtotalMinor: subtotal,
           discountMinor: discount,
           taxMinor: tax,
@@ -200,6 +242,25 @@ export class OrdersService {
         );
       }
 
+      // A manual discount is money moved off a sale by a person — it lands in
+      // the audit log next to voids and refunds, with the reason.
+      if (dto.manualDiscountMinor) {
+        await db.auditLog.create({
+          data: {
+            restaurantId,
+            userId,
+            action: 'order.discounted',
+            entityType: 'order',
+            entityId: order.id,
+            metadata: {
+              orderNumber: order.orderNumber,
+              discountMinor: discount,
+              reason: dto.discountReason ?? null,
+            },
+          },
+        });
+      }
+
       if (dto.paymentMethod) {
         await db.payment.create({
           data: {
@@ -219,17 +280,22 @@ export class OrdersService {
       // commit or neither does. A sale that succeeded while its stock movement
       // failed would silently corrupt food cost.
       //
+      // A DRAFT depletes nothing — the food has not been cooked. Depletion
+      // happens at placement (updateStatus DRAFT -> PLACED).
+      //
       // This does NOT block on insufficient stock — see depleteForOrder.
-      await this.inventory.depleteForOrder(
-        db,
-        restaurantId,
-        userId,
-        order.id,
-        dto.items.map((i) => ({
-          productId: i.productId,
-          quantity: i.quantity,
-        })),
-      );
+      if (!held) {
+        await this.inventory.depleteForOrder(
+          db,
+          restaurantId,
+          userId,
+          order.id,
+          dto.items.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+          })),
+        );
+      }
 
       // Append-only trail. This is what the order timeline reads.
       await db.orderEvent.create({
@@ -237,7 +303,7 @@ export class OrdersService {
           restaurantId,
           orderId: order.id,
           type: 'CREATED',
-          toStatus: 'PLACED',
+          toStatus: held ? 'DRAFT' : 'PLACED',
           actorUserId: userId,
           metadata: { itemCount: lines.length, totalMinor: total },
         },
@@ -247,20 +313,28 @@ export class OrdersService {
     });
   }
 
-  /** Recent orders, newest first, optionally filtered by status. */
-  list(opts: { limit?: number; status?: OrderStatus } = {}) {
+  /**
+   * Recent orders, newest first, optionally filtered by status, keyset-
+   * paginated by id (UUIDv7 is time-ordered, so id order IS creation order —
+   * and unlike OFFSET it cannot skip or duplicate rows while new orders land).
+   */
+  list(opts: { limit?: number; status?: OrderStatus; cursor?: string } = {}) {
     const take = Math.min(opts.limit ?? 50, 100);
     return this.prisma.tx((db) =>
       db.order.findMany({
         take,
         // RLS scopes this to the tenant; there is deliberately no
         // `where: { restaurantId }` that could be forgotten.
-        where: opts.status ? { status: opts.status } : undefined,
-        orderBy: { createdAt: 'desc' },
+        where: {
+          ...(opts.status ? { status: opts.status } : {}),
+          ...(opts.cursor ? { id: { lt: opts.cursor } } : {}),
+        },
+        orderBy: { id: 'desc' },
         select: {
           id: true,
           orderNumber: true,
           status: true,
+          orderType: true,
           totalMinor: true,
           createdAt: true,
           placedAt: true,
@@ -365,12 +439,36 @@ export class OrdersService {
         );
       }
 
+      // Resuming a held order IS the moment of sale: stamp placedAt and
+      // deplete stock now, in this same transaction — exactly what creation
+      // does for a non-held order.
+      const resuming = from === 'DRAFT' && to === 'PLACED';
+
       await db.order.update({
         where: { id: orderId },
-        // Only status. The money columns are frozen by trigger anyway, but not
-        // touching them is the honest expression of intent.
-        data: { status: to },
+        // Only status (plus placedAt on resume). The money columns are frozen
+        // by trigger anyway, but not touching them is the honest expression
+        // of intent.
+        data: { status: to, ...(resuming ? { placedAt: new Date() } : {}) },
       });
+
+      if (resuming) {
+        const items = await db.orderItem.findMany({
+          where: { orderId },
+          select: { productId: true, quantity: true },
+        });
+        await this.inventory.depleteForOrder(
+          db,
+          ctx.restaurantId,
+          ctx.userId,
+          orderId,
+          items.flatMap((i) =>
+            i.productId
+              ? [{ productId: i.productId, quantity: i.quantity }]
+              : [],
+          ),
+        );
+      }
 
       await db.orderEvent.create({
         data: {
@@ -429,6 +527,210 @@ export class OrdersService {
     return result;
   }
 
+  /**
+   * Records a payment against an existing order — the split-payment leg, and
+   * the "pay later" resolution that used to be a dead end.
+   *
+   * The ceiling is the rule that matters: captured payments never exceed the
+   * order total. Checked inside the transaction; the idempotency unique index
+   * is what makes a retried leg safe.
+   */
+  // ponytail: check-then-insert inside the tx; two concurrent legs on ONE
+  // order could race past the ceiling. A single till per order makes that
+  // contention unreal today; take a row lock on the order if it ever isn't.
+  async recordPayment(orderId: string, dto: RecordPaymentDto) {
+    const ctx = this.prisma.requireContext();
+
+    const replay = async () =>
+      dto.idempotencyKey
+        ? this.prisma.tx(async (db) => {
+            const p = await db.payment.findFirst({
+              where: { idempotencyKey: dto.idempotencyKey },
+              select: { orderId: true },
+            });
+            return p ? this.load(db, p.orderId) : null;
+          })
+        : null;
+
+    const existing = await replay();
+    if (existing) return existing;
+
+    try {
+      return await this.prisma.tx(async (db) => {
+        const order = await db.order.findFirst({
+          where: { id: orderId },
+          select: { id: true, status: true, totalMinor: true },
+        });
+        if (!order) throw new NotFoundException('Order not found');
+
+        // A reversed sale takes no money. (Refunds are the other direction.)
+        if (order.status === 'VOIDED' || order.status === 'CANCELLED') {
+          throw new ConflictException(
+            'Cannot record a payment on a reversed order',
+          );
+        }
+
+        const captured = await db.payment.aggregate({
+          where: { orderId, status: 'CAPTURED' },
+          _sum: { amountMinor: true },
+        });
+        const outstanding =
+          order.totalMinor - (captured._sum?.amountMinor ?? 0);
+        if (dto.amountMinor > outstanding) {
+          throw new BadRequestException(
+            `Payment exceeds the outstanding balance (${outstanding} paise left)`,
+          );
+        }
+
+        await db.payment.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            method: dto.method,
+            status: 'CAPTURED',
+            amountMinor: dto.amountMinor,
+            reference: dto.reference ?? null,
+            idempotencyKey: dto.idempotencyKey ?? null,
+          },
+        });
+
+        await db.orderEvent.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            type: 'PAYMENT_RECORDED',
+            actorUserId: ctx.userId,
+            metadata: { method: dto.method, amountMinor: dto.amountMinor },
+          },
+        });
+
+        return this.load(db, orderId);
+      });
+    } catch (e) {
+      // A concurrent identical leg won the unique index — its result is ours.
+      if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
+        const won = await replay();
+        if (won) return won;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Records money handed back. Permission is order.refund (owner/manager —
+   * the same trust level as voiding), checked at the controller.
+   *
+   * Rules: only against a finished or reversed order, and never more than
+   * was actually captured. The refund is a new append-only row plus an audit
+   * entry — the payment it reverses is never edited.
+   */
+  async recordRefund(orderId: string, dto: RecordRefundDto) {
+    const ctx = this.prisma.requireContext();
+
+    const replay = async () =>
+      dto.idempotencyKey
+        ? this.prisma.tx(async (db) => {
+            const r = await db.refund.findFirst({
+              where: { idempotencyKey: dto.idempotencyKey },
+              select: { orderId: true },
+            });
+            return r ? this.load(db, r.orderId) : null;
+          })
+        : null;
+
+    const existing = await replay();
+    if (existing) return existing;
+
+    try {
+      return await this.prisma.tx(async (db) => {
+        const order = await db.order.findFirst({
+          where: { id: orderId },
+          select: { id: true, status: true, orderNumber: true },
+        });
+        if (!order) throw new NotFoundException('Order not found');
+
+        // An order still being cooked is corrected by voiding it, not by
+        // handing cash back while it stays live.
+        if (!['COMPLETED', 'VOIDED', 'CANCELLED'].includes(order.status)) {
+          throw new ConflictException(
+            'Refunds apply to completed or reversed orders — void or complete it first',
+          );
+        }
+
+        // Serial, not Promise.all: concurrent queries share this transaction's
+        // one pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+        const [captured, refunded] = [
+          await db.payment.aggregate({
+            where: { orderId, status: 'CAPTURED' },
+            _sum: { amountMinor: true },
+          }),
+          await db.refund.aggregate({
+            where: { orderId },
+            _sum: { amountMinor: true },
+          }),
+        ];
+        const refundable =
+          (captured._sum?.amountMinor ?? 0) - (refunded._sum?.amountMinor ?? 0);
+        if (dto.amountMinor > refundable) {
+          throw new BadRequestException(
+            `Refund exceeds captured payments (${refundable} paise refundable)`,
+          );
+        }
+
+        await db.refund.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            method: dto.method,
+            amountMinor: dto.amountMinor,
+            reason: dto.reason,
+            actorUserId: ctx.userId,
+            idempotencyKey: dto.idempotencyKey ?? null,
+          },
+        });
+
+        await db.orderEvent.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            orderId,
+            type: 'REFUND_RECORDED',
+            actorUserId: ctx.userId,
+            metadata: {
+              method: dto.method,
+              amountMinor: dto.amountMinor,
+              reason: dto.reason,
+            },
+          },
+        });
+
+        // Refunds sit next to voids in the owner's review — money went out.
+        await db.auditLog.create({
+          data: {
+            restaurantId: ctx.restaurantId,
+            userId: ctx.userId,
+            action: 'order.refunded',
+            entityType: 'order',
+            entityId: orderId,
+            metadata: {
+              orderNumber: order.orderNumber,
+              method: dto.method,
+              amountMinor: dto.amountMinor,
+              reason: dto.reason,
+            },
+          },
+        });
+
+        return this.load(db, orderId);
+      });
+    } catch (e) {
+      if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
+        const won = await replay();
+        if (won) return won;
+      }
+      throw e;
+    }
+  }
+
   async getById(id: string) {
     try {
       return await this.prisma.tx((db) => this.load(db, id));
@@ -471,6 +773,7 @@ export class OrdersService {
         id: true,
         orderNumber: true,
         status: true,
+        orderType: true,
         subtotalMinor: true,
         discountMinor: true,
         taxMinor: true,
@@ -486,12 +789,23 @@ export class OrdersService {
             unitPriceMinor: true,
             quantity: true,
             lineTotalMinor: true,
+            taxRateBp: true,
             taxMinor: true,
             notes: true,
           },
         },
         payments: {
           select: { id: true, method: true, status: true, amountMinor: true },
+        },
+        refunds: {
+          select: {
+            id: true,
+            method: true,
+            amountMinor: true,
+            reason: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: 'asc' },
         },
         customer: { select: { id: true, name: true, phone: true } },
       },

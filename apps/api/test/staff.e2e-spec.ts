@@ -335,6 +335,38 @@ describe('Staff (e2e)', () => {
       // Kitchen must never get customer PII.
       expect(c.perms).not.toContain('customer.read');
     });
+
+    it('puts the refresh token in an httpOnly cookie, never in the body', async () => {
+      const t = await newTenant('Cookie Cafe');
+      const email = `s-cookie-${Date.now()}@example.com`;
+      const inv = await invite(t.token, { email, role: 'CASHIER' }).expect(201);
+
+      const accepted = await api()
+        .post(`/api/v1/join/${tokenOf(inv.body.inviteUrl)}`)
+        .send({ name: 'Cookie Member', password })
+        .expect(201);
+
+      // Access token in the body for the client to hold in memory.
+      expect(accepted.body.accessToken).toBeDefined();
+      // The refresh token must NOT leak into JSON — same contract as login.
+      expect(accepted.body.refreshToken).toBeUndefined();
+
+      // It lives in an httpOnly, scoped cookie the browser sends to /auth.
+      const raw = accepted.headers['set-cookie'] as unknown;
+      const list = Array.isArray(raw) ? (raw as string[]) : [raw as string];
+      const rt = list.find((c) => c?.startsWith('oraos_rt='));
+      expect(rt).toBeDefined();
+      expect(rt!.toLowerCase()).toContain('httponly');
+      expect(rt).toContain('Path=/api/v1/auth');
+
+      // The cookie is a working session: it refreshes without the access token.
+      const refreshed = await api()
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', rt!.split(';')[0])
+        .expect(200);
+      expect(refreshed.body.accessToken).toBeDefined();
+      expect(claims(refreshed.body.accessToken).rid).toBe(t.restaurantId);
+    });
   });
 
   describe('managing members', () => {

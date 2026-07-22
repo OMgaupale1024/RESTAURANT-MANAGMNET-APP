@@ -1,8 +1,12 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { CurrentUser } from '../../common/decorators/auth.decorators';
+import {
+  CurrentUser,
+  RequirePermissions,
+} from '../../common/decorators/auth.decorators';
 import type { TenantContext } from '../../common/context/tenant-context';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
+import { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 import { RestaurantsService } from './restaurants.service';
 
 @Controller('restaurants')
@@ -30,5 +34,22 @@ export class RestaurantsController {
   @Get()
   async list(@CurrentUser() ctx: TenantContext) {
     return this.restaurants.listForUser(ctx.userId);
+  }
+
+  /**
+   * The CURRENT restaurant, from the verified JWT — never an :id parameter.
+   * A path id would be a standing invitation to try someone else's.
+   */
+  @RequirePermissions('restaurant.read')
+  @Get('current')
+  getCurrent() {
+    return this.restaurants.getCurrent();
+  }
+
+  /** OWNER-only in the seeded roles: managers read, owners edit. */
+  @RequirePermissions('restaurant.update')
+  @Patch('current')
+  updateCurrent(@Body() dto: UpdateRestaurantDto) {
+    return this.restaurants.updateCurrent(dto);
   }
 }

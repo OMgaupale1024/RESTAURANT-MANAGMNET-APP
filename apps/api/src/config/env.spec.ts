@@ -69,4 +69,35 @@ describe('validateEnv', () => {
   it('rejects a short JWT secret', () => {
     expect(() => validateEnv(prod({ JWT_SECRET: 'tooshort' }))).toThrow();
   });
+
+  describe('email config', () => {
+    it('accepts no email config at all (dev transport)', () => {
+      expect(() => validateEnv(prod())).not.toThrow();
+    });
+
+    it('requires MAIL_FROM when a Resend key is set', () => {
+      expect(() => validateEnv(prod({ RESEND_API_KEY: 're_123' }))).toThrow(
+        /MAIL_FROM/,
+      );
+    });
+
+    it('rejects a MAIL_FROM without a real address', () => {
+      expect(() =>
+        validateEnv(
+          prod({ RESEND_API_KEY: 're_123', MAIL_FROM: 'just a name' }),
+        ),
+      ).toThrow(/MAIL_FROM/);
+    });
+
+    it('accepts a valid key + from-address', () => {
+      expect(() =>
+        validateEnv(
+          prod({
+            RESEND_API_KEY: 're_123',
+            MAIL_FROM: 'OraOS <noreply@oraos.app>',
+          }),
+        ),
+      ).not.toThrow();
+    });
+  });
 });
