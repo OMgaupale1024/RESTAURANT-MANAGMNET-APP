@@ -5,6 +5,9 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ApiRequestError, getMe, login } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { FormError } from '@/components/ui/form-error';
 
 /**
  * The access token is held in component state — in memory, never in
@@ -59,21 +62,13 @@ export function LoginForm() {
 
   return (
     <form onSubmit={onSubmit} noValidate className="flex flex-col">
-      {error && (
-        <p
-          role="alert"
-          className="animate-fade-up mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
-          style={{ animationDelay: '0ms' }}
-        >
-          {error}
-        </p>
-      )}
+      {error && <FormError>{error}</FormError>}
 
       <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
         <label htmlFor="email" className="block text-sm font-medium">
           Email
         </label>
-        <input
+        <Input
           id="email"
           name="email"
           type="email"
@@ -81,7 +76,7 @@ export function LoginForm() {
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-4"
         />
       </div>
 
@@ -89,7 +84,7 @@ export function LoginForm() {
         <label htmlFor="password" className="block text-sm font-medium">
           Password
         </label>
-        <input
+        <Input
           id="password"
           name="password"
           type="password"
@@ -97,25 +92,27 @@ export function LoginForm() {
           required
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mt-1 mb-6 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-6"
         />
       </div>
 
       <div className="animate-fade-up" style={{ animationDelay: '120ms' }}>
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="lg"
           disabled={pending}
-          className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="w-full"
         >
           {pending ? 'Signing in…' : 'Sign in'}
-        </button>
+        </Button>
       </div>
 
       <p
         className="animate-fade-up mt-4 text-center text-sm text-ink-3"
         style={{ animationDelay: '160ms' }}
       >
-        <Link href="/forgot-password" className="underline hover:text-ink-1">
+        <Link href="/forgot-password" className="underline hover:text-ink">
           Forgot your password?
         </Link>
       </p>
@@ -124,7 +121,7 @@ export function LoginForm() {
         style={{ animationDelay: '180ms' }}
       >
         New restaurant?{' '}
-        <Link href="/register" className="underline hover:text-ink-1">
+        <Link href="/register" className="underline hover:text-ink">
           Create an account
         </Link>
       </p>

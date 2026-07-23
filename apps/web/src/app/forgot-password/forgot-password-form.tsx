@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { forgotPassword } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 /**
  * The success message is deliberately vague and shown regardless of whether the
@@ -45,7 +47,7 @@ export function ForgotPasswordForm() {
       <label htmlFor="email" className="block text-sm font-medium">
         Email
       </label>
-      <input
+      <Input
         id="email"
         name="email"
         type="email"
@@ -53,15 +55,17 @@ export function ForgotPasswordForm() {
         required
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        className="mt-1 mb-6 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+        className="mt-1 mb-6"
       />
-      <button
+      <Button
         type="submit"
+        variant="primary"
+        size="lg"
         disabled={pending || email.trim().length === 0}
-        className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+        className="w-full"
       >
         {pending ? 'Sending…' : 'Send reset link'}
-      </button>
+      </Button>
     </form>
   );
 }
