@@ -185,7 +185,7 @@ export function AnalyticsClient() {
       {!view ? (
         !error &&
         !rangeError && (
-          <div>
+          <div role="status" aria-busy="true" aria-label="Loading analytics">
             <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
               {Array.from({ length: 4 }, (_, i) => (
                 <Skeleton key={i} className="h-36" />

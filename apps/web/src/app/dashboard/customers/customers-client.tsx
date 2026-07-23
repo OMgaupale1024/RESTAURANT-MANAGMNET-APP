@@ -202,7 +202,7 @@ export function CustomersClient() {
 
       <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
         {loading ? (
-          <div className="space-y-2 p-4" aria-label="Loading customers">
+          <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading customers">
             {Array.from({ length: 6 }, (_, i) => (
               <Skeleton key={i} className="h-9" />
             ))}
@@ -294,7 +294,7 @@ export function CustomersClient() {
         title={detail ? detail.name : 'Customer'}
       >
         {!detail ? (
-          <div className="space-y-3" aria-label="Loading customer">
+          <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading customer">
             <Skeleton className="h-8 w-40" />
             <Skeleton className="h-24" />
             <Skeleton className="h-40" />

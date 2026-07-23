@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { FormError } from '@/components/ui/form-error';
+import { Skeleton } from '@/components/ui/skeleton';
 
 /**
  * Invite acceptance.
@@ -76,8 +77,20 @@ export function JoinClient({ token }: { token: string }) {
 
   if (loading) {
     return (
-      <Card className="p-6 text-center">
-        <p className="text-sm text-ink-2">Loading…</p>
+      <Card
+        className="p-6"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading invitation"
+      >
+        <Skeleton className="h-7 w-48" />
+        <Skeleton className="mt-3 h-4 w-32" />
+        <div className="mt-6 space-y-4">
+          <Skeleton className="h-9" />
+          <Skeleton className="h-9" />
+          <Skeleton className="h-9" />
+        </div>
+        <Skeleton className="mt-6 h-11" />
       </Card>
     );
   }

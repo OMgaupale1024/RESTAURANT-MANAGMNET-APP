@@ -161,7 +161,12 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   if (status === 'loading' || !me) {
     return (
-      <div className="flex min-h-dvh">
+      <div
+        className="flex min-h-dvh"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading"
+      >
         <div className="hidden w-60 shrink-0 border-r border-line p-4 md:block">
           <Skeleton className="h-6 w-28" />
           <div className="mt-8 space-y-2">

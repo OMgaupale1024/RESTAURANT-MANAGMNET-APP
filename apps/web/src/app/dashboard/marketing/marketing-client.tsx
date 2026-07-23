@@ -146,7 +146,7 @@ export function MarketingClient() {
 
           <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
             {loadingCoupons ? (
-              <div className="space-y-2 p-4" aria-label="Loading coupons">
+              <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading coupons">
                 {Array.from({ length: 4 }, (_, i) => (
                   <Skeleton key={i} className="h-9" />
                 ))}
@@ -272,7 +272,7 @@ function SegmentsTab({
 }) {
   if (!segments) {
     return (
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4" aria-label="Loading segments">
+      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4" role="status" aria-busy="true" aria-label="Loading segments">
         {Array.from({ length: 4 }, (_, i) => (
           <Skeleton key={i} className="h-28" />
         ))}
@@ -378,7 +378,7 @@ function SegmentSheet({ segment, onClose }: { segment: Segment | null; onClose: 
     >
       {segment && <p className="mb-4 text-[12px] text-ink-3">{segment.rule}</p>}
       {customers === null ? (
-        <div className="space-y-2" aria-label="Loading customers">
+        <div className="space-y-2" role="status" aria-busy="true" aria-label="Loading customers">
           {Array.from({ length: 5 }, (_, i) => (
             <Skeleton key={i} className="h-12" />
           ))}

@@ -195,7 +195,7 @@ export function DashboardClient() {
 
   if (!today || !week) {
     return (
-      <div>
+      <div role="status" aria-busy="true" aria-label="Loading dashboard">
         <Skeleton className="h-7 w-64" />
         <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
           {Array.from({ length: 4 }, (_, i) => (

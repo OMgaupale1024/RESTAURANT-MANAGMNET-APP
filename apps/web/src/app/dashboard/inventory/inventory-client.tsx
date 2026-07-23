@@ -192,7 +192,7 @@ export function InventoryClient() {
 
       <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
         {loading ? (
-          <div className="space-y-2 p-4" aria-label="Loading stock">
+          <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading stock">
             {Array.from({ length: 6 }, (_, i) => (
               <Skeleton key={i} className="h-9" />
             ))}
@@ -340,7 +340,7 @@ export function InventoryClient() {
         title={detail ? detail.name : 'Ingredient'}
       >
         {!detail ? (
-          <div className="space-y-3" aria-label="Loading ingredient">
+          <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading ingredient">
             <Skeleton className="h-8 w-40" />
             <Skeleton className="h-24" />
             <Skeleton className="h-40" />

@@ -640,7 +640,12 @@ export function PosClient() {
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
           {!products ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+            <div
+              className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
+              role="status"
+              aria-busy="true"
+              aria-label="Loading menu"
+            >
               {Array.from({ length: 10 }, (_, i) => (
                 <Skeleton key={i} className="h-24" />
               ))}

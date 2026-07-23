@@ -317,7 +317,7 @@ export function KitchenClient() {
       </div>
 
       {orders === null ? (
-        <div className="mt-4 grid flex-1 gap-4 md:grid-cols-3" aria-label="Loading kitchen board">
+        <div className="mt-4 grid flex-1 gap-4 md:grid-cols-3" role="status" aria-busy="true" aria-label="Loading kitchen board">
           {COLUMNS.map((c) => (
             <div key={c.status} className="space-y-3">
               <Skeleton className="h-7 w-28" />
@@ -415,7 +415,7 @@ export function KitchenClient() {
         }
       >
         {!detail ? (
-          <div className="space-y-3" aria-label="Loading order">
+          <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading order">
             <Skeleton className="h-8 w-40" />
             <Skeleton className="h-24" />
             <Skeleton className="h-40" />

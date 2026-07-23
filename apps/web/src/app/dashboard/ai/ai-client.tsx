@@ -77,7 +77,7 @@ export function AiClient() {
       )}
 
       {insights === null ? (
-        <div className="mt-6 space-y-3" aria-label="Loading insights">
+        <div className="mt-6 space-y-3" role="status" aria-busy="true" aria-label="Loading insights">
           {Array.from({ length: 4 }, (_, i) => (
             <Skeleton key={i} className="h-24" />
           ))}

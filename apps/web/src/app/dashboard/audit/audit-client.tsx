@@ -112,7 +112,7 @@ export function AuditClient() {
 
       <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
         {rows === null ? (
-          <div className="space-y-2 p-4" aria-label="Loading audit log">
+          <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading audit log">
             {Array.from({ length: 8 }, (_, i) => (
               <Skeleton key={i} className="h-9" />
             ))}
