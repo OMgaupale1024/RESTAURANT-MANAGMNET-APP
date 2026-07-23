@@ -104,6 +104,9 @@ export function OrdersClient() {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+  // Synchronous in-flight guard so a double-click can't fire two transitions
+  // before `moving` disables the buttons on re-render.
+  const movingRef = useRef(false);
 
   // Terminal statuses use the server filter (reaches past the 100 most recent
   // rows); ALL/ACTIVE share one unfiltered fetch, ACTIVE narrowed client-side.
@@ -237,21 +240,37 @@ export function OrdersClient() {
   }, [accessToken]);
 
   async function move(id: string, to: string, reason?: string) {
-    if (!accessToken) return;
+    if (!accessToken || movingRef.current) return;
+    movingRef.current = true;
     setMoving(true);
+    // Optimistic: reflect the new status immediately. On success reconcile with
+    // the server; on failure roll back only this order (preserving concurrent
+    // socket updates to other rows).
+    const prevStatus = orders?.find((o) => o.id === id)?.status;
+    setOrders((prev) =>
+      prev === null ? prev : prev.map((o) => (o.id === id ? { ...o, status: to } : o)),
+    );
+    setFlash((f) => ({ ...f, [id]: Date.now() }));
     try {
       await updateOrderStatus(accessToken, onNewToken, id, to, reason);
-      setFlash((f) => ({ ...f, [id]: Date.now() }));
       toast({ title: `Order moved to ${statusLabel(to)}`, variant: 'success' });
       await Promise.all([refetch(), selectedIdRef.current === id ? loadDetail(id) : null]);
     } catch (e) {
       // A 403 here is the server refusing a void to someone without
       // order.void — surfaced verbatim rather than hidden.
+      if (prevStatus !== undefined) {
+        setOrders((prev) =>
+          prev === null
+            ? prev
+            : prev.map((o) => (o.id === id ? { ...o, status: prevStatus } : o)),
+        );
+      }
       toast({
         title: e instanceof ApiRequestError ? e.message : 'Could not update order',
         variant: 'danger',
       });
     } finally {
+      movingRef.current = false;
       setMoving(false);
     }
   }

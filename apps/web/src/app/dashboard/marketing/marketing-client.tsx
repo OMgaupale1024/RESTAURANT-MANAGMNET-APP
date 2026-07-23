@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Lightbulb, TicketPercent, Users } from 'lucide-react';
 import {
   ApiRequestError,
@@ -76,6 +76,8 @@ export function MarketingClient() {
   const [confirmOff, setConfirmOff] = useState<Coupon | null>(null);
   const [openSegment, setOpenSegment] = useState<Segment | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // Per-coupon in-flight guard: blocks a double-toggle on the same coupon.
+  const pendingRef = useRef<Set<string>>(new Set());
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
   useEffect(() => {
@@ -101,16 +103,25 @@ export function MarketingClient() {
   }, [accessToken, onNewToken, reloadKey, toast]);
 
   async function setActive(c: Coupon, isActive: boolean) {
-    if (!accessToken) return;
+    if (!accessToken || pendingRef.current.has(c.id)) return;
+    pendingRef.current.add(c.id);
+    // Optimistic: flip the badge now. Coupons don't stream, so on failure a
+    // whole-list snapshot restore is safe — nothing concurrent to clobber.
+    const snapshot = coupons;
+    setCoupons((prev) =>
+      prev === null ? prev : prev.map((x) => (x.id === c.id ? { ...x, isActive } : x)),
+    );
     try {
       await setCouponActive(accessToken, onNewToken, c.id, isActive);
       toast({ title: isActive ? 'Coupon enabled' : 'Coupon disabled', variant: 'success' });
-      reload();
     } catch (e) {
+      setCoupons(snapshot); // rollback
       toast({
         title: e instanceof ApiRequestError ? e.message : 'Could not update coupon',
         variant: 'danger',
       });
+    } finally {
+      pendingRef.current.delete(c.id);
     }
   }
 

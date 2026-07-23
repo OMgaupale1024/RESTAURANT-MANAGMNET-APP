@@ -147,6 +147,13 @@ export function KitchenClient() {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+  // Latest board snapshot + a synchronous in-flight guard for the optimistic
+  // advance() below — neither is readable from its stale useCallback closure.
+  const ordersRef = useRef(orders);
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+  const busyRef = useRef<string | null>(null);
 
   const refetchAll = useCallback(async () => {
     const token = tokenRef.current;
@@ -247,24 +254,37 @@ export function KitchenClient() {
   const advance = useCallback(
     async (id: string, to: string, reason?: string) => {
       const token = tokenRef.current;
-      if (!token) return;
+      // Synchronous guard: a second tap before the button disables on re-render
+      // must not fire a duplicate transition.
+      if (!token || busyRef.current === id) return;
+      busyRef.current = id;
       setBusy(id);
       setMoving(true);
+      // Optimistic: move the ticket now so the tap feels instant (the socket
+      // echo lands on the same status). On failure, roll back only this
+      // ticket's status — preserving socket updates to other tickets meanwhile.
+      const prevStatus = ordersRef.current?.find((x) => x.id === id)?.status;
+      setOrders((prev) =>
+        prev === null ? prev : prev.map((x) => (x.id === id ? { ...x, status: to } : x)),
+      );
+      setArrivals((a) => ({ ...a, [id]: Date.now() }));
       try {
         await updateOrderStatus(token, onNewToken, id, to, reason);
-        // The socket echo patches the board too; patching now makes the tap
-        // feel instant even if the round trip lags.
-        setOrders((prev) =>
-          prev === null ? prev : prev.map((x) => (x.id === id ? { ...x, status: to } : x)),
-        );
-        setArrivals((a) => ({ ...a, [id]: Date.now() }));
         if (selectedIdRef.current === id) void loadDetail(id);
       } catch (e) {
+        if (prevStatus !== undefined) {
+          setOrders((prev) =>
+            prev === null
+              ? prev
+              : prev.map((x) => (x.id === id ? { ...x, status: prevStatus } : x)),
+          );
+        }
         toast({
           title: e instanceof ApiRequestError ? e.message : 'Could not update order',
           variant: 'danger',
         });
       } finally {
+        busyRef.current = null;
         setBusy(null);
         setMoving(false);
       }
