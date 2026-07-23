@@ -293,11 +293,13 @@ export function DashboardClient() {
           <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-[15px] font-semibold">Revenue</h2>
-              <p className="mt-0.5 text-[12px] text-ink-2">
-                {heroData
-                  ? `${formatMinor(heroTotal)} · past ${RANGES.find((r) => r.key === range)!.label}`
-                  : 'Loading…'}
-              </p>
+              {heroData ? (
+                <p className="mt-0.5 text-[12px] text-ink-2">
+                  {`${formatMinor(heroTotal)} · past ${RANGES.find((r) => r.key === range)!.label}`}
+                </p>
+              ) : (
+                <Skeleton className="mt-1 h-3.5 w-40" />
+              )}
             </div>
             <Segmented
               options={RANGES}
@@ -322,7 +324,9 @@ export function DashboardClient() {
           ) : heroData ? (
             <AreaLine key={range} data={heroData.revenueSeries} height={280} />
           ) : (
-            <Skeleton className="h-[280px]" />
+            <div role="status" aria-busy="true" aria-label="Loading revenue">
+              <Skeleton className="h-[280px]" />
+            </div>
           )}
         </Card>
 
