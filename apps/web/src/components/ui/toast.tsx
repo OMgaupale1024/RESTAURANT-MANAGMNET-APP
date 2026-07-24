@@ -46,10 +46,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={push}>
       {children}
-      <div
-        aria-live="polite"
-        className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-full max-w-[360px] flex-col gap-2"
-      >
+      {/* Positioning-only wrapper. Each toast carries its own live-region role
+          (below) so an error can interrupt (assertive) while success/info stay
+          polite — one container can only hold a single politeness. */}
+      <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-full max-w-[360px] flex-col gap-2">
         {toasts.map((t) => (
           <ToastItem key={t.id} toast={t} onDone={() => dismiss(t.id)} />
         ))}
@@ -79,10 +79,14 @@ function ToastItem({ toast, onDone }: { toast: Toast; onDone: () => void }) {
   }, [paused, onDone]);
 
   const { Icon, cls } = ICONS[toast.variant];
+  // Errors are time-sensitive — interrupt (assertive/alert). Everything else
+  // waits its turn (polite/status).
+  const assertive = toast.variant === 'danger';
 
   return (
     <div
-      role="status"
+      role={assertive ? 'alert' : 'status'}
+      aria-live={assertive ? 'assertive' : 'polite'}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       className="pointer-events-auto relative animate-slide-up overflow-hidden rounded-xl border border-line bg-surface shadow-[0_4px_16px_rgb(0_0_0/0.08)]"
