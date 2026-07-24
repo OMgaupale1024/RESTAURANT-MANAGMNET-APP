@@ -11,8 +11,11 @@
   --surface: #ffffff;
   --surface-2: #f5f5f4;
   --ink: #171717;
-  --ink-2: rgb(23 23 23 / 0.6);
-  --ink-3: rgb(23 23 23 / 0.45);
+  /* ink-2/ink-3 raised so the tertiary tier clears WCAG 1.4.3 AA (4.5:1) as
+     body text — 0.45 was ~2.9:1. Both tiers moved together to keep the ramp
+     distinct: on #fff ink-2 ≈6.6:1, ink-3 ≈5.0:1. */
+  --ink-2: rgb(23 23 23 / 0.7);
+  --ink-3: rgb(23 23 23 / 0.62);
   --line: rgb(0 0 0 / 0.08);
   --line-2: rgb(0 0 0 / 0.14);
 
@@ -54,8 +57,8 @@
     --surface: #161615;
     --surface-2: #1f1f1e;
     --ink: #ededed;
-    --ink-2: rgb(237 237 237 / 0.62);
-    --ink-3: rgb(237 237 237 / 0.45);
+    --ink-2: rgb(237 237 237 / 0.7);
+    --ink-3: rgb(237 237 237 / 0.58);
     --line: rgb(255 255 255 / 0.1);
     --line-2: rgb(255 255 255 / 0.16);
 
@@ -86,8 +89,8 @@
   --surface: #161615;
   --surface-2: #1f1f1e;
   --ink: #ededed;
-  --ink-2: rgb(237 237 237 / 0.62);
-  --ink-3: rgb(237 237 237 / 0.45);
+  --ink-2: rgb(237 237 237 / 0.7);
+  --ink-3: rgb(237 237 237 / 0.58);
   --line: rgb(255 255 255 / 0.1);
   --line-2: rgb(255 255 255 / 0.16);
 

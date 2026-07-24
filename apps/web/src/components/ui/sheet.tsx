@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -24,6 +24,7 @@ export function Sheet({
   side?: 'right' | 'left';
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const d = ref.current;
@@ -35,6 +36,7 @@ export function Sheet({
   return (
     <dialog
       ref={ref}
+      aria-labelledby={title ? titleId : undefined}
       onClose={onClose}
       onClick={(e) => {
         if (e.target === ref.current) onClose();
@@ -55,7 +57,7 @@ export function Sheet({
       )}
     >
       <div className="mb-5 flex items-start justify-between gap-4">
-        {title && <div className="min-w-0 text-[15px] font-semibold">{title}</div>}
+        {title && <div id={titleId} className="min-w-0 text-[15px] font-semibold">{title}</div>}
         <button
           type="button"
           aria-label="Close"

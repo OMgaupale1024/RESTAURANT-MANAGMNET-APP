@@ -384,6 +384,14 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   return (
     <ToastProvider>
+      {/* Bypass Blocks (WCAG 2.4.1): first focusable element, jumps a
+          keyboard user past the whole sidebar to the page content. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-lg focus:border focus:border-line focus:bg-surface focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-ink focus:shadow-[0_4px_16px_rgb(0_0_0/0.12)] focus:outline-2 focus:outline-offset-2 focus:outline-current"
+      >
+        Skip to content
+      </a>
       <div className="flex min-h-dvh">
         {/* Desktop sidebar */}
         <aside
@@ -429,8 +437,10 @@ export function DashboardShell({ children }: { children: ReactNode }) {
         </Sheet>
 
         <main
+          id="main-content"
+          tabIndex={-1}
           className={cn(
-            'min-w-0 flex-1 pt-14 transition-transform duration-240 ease-(--ease-out-quart) md:pt-0',
+            'min-w-0 flex-1 pt-14 transition-transform duration-240 ease-(--ease-out-quart) md:pt-0 focus:outline-none',
             fullBleed ? '' : 'px-4 py-6 md:px-8',
             mobileNavOpen && 'scale-[0.985]',
           )}
