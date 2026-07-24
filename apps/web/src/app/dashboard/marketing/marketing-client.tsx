@@ -105,9 +105,11 @@ export function MarketingClient() {
   async function setActive(c: Coupon, isActive: boolean) {
     if (!accessToken || pendingRef.current.has(c.id)) return;
     pendingRef.current.add(c.id);
-    // Optimistic: flip the badge now. Coupons don't stream, so on failure a
-    // whole-list snapshot restore is safe — nothing concurrent to clobber.
-    const snapshot = coupons;
+    // Optimistic: flip the badge now. On failure roll back ONLY this coupon's
+    // flag (targeted, like orders/kitchen) — a whole-list snapshot restore would
+    // clobber a concurrent toggle of a different coupon, and with no socket to
+    // resync coupons that inconsistency would stick until reload.
+    const prevActive = c.isActive;
     setCoupons((prev) =>
       prev === null ? prev : prev.map((x) => (x.id === c.id ? { ...x, isActive } : x)),
     );
@@ -115,7 +117,9 @@ export function MarketingClient() {
       await setCouponActive(accessToken, onNewToken, c.id, isActive);
       toast({ title: isActive ? 'Coupon enabled' : 'Coupon disabled', variant: 'success' });
     } catch (e) {
-      setCoupons(snapshot); // rollback
+      setCoupons((prev) =>
+        prev === null ? prev : prev.map((x) => (x.id === c.id ? { ...x, isActive: prevActive } : x)),
+      );
       toast({
         title: e instanceof ApiRequestError ? e.message : 'Could not update coupon',
         variant: 'danger',
