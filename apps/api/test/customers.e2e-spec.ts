@@ -167,6 +167,23 @@ describe('Customers (e2e)', () => {
       expect(res.body.phone).toBe('9876543210');
     });
 
+    it('records a customer.created event (EventsService)', async () => {
+      const t = await newTenant('Event Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Logged Person',
+        phone: '9000012345',
+      }).expect(201);
+
+      // Read via the owner client (BYPASSRLS): the tenant audit trail must
+      // carry the create, tagged to this restaurant, with no PII in metadata.
+      const event = await owner.auditLog.findFirst({
+        where: { entityType: 'customer', entityId: c.body.id },
+      });
+      expect(event?.action).toBe('customer.created');
+      expect(event?.restaurantId).toBe(t.restaurantId);
+      expect(event?.metadata).toBeNull();
+    });
+
     it('normalises every Indian phone format to the same national number', async () => {
       // Regression: an earlier version stripped non-digits only, so
       // "+91 98765-43210" stored as 919876543210 while "9876543210" stored as

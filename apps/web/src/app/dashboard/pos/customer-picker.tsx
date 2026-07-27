@@ -1,63 +1,47 @@
 'use client';
 
 import { useState } from 'react';
-import { UserRound, X } from 'lucide-react';
-import { ApiRequestError, findCustomerByPhone } from '@/lib/api';
-import { Badge } from '@/components/ui/badge';
+import { UserRound, UserRoundPlus, X } from 'lucide-react';
+import type { CustomerSegment } from '@/lib/api';
+import { formatMinor } from '@/lib/money';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-
-export type PosCustomer = { id: string; name: string; phone: string };
+import { SegmentChip } from '@/components/ui/segment-chip';
+import { CustomerDialog } from './customer-dialog';
 
 /**
- * Optional customer lookup by phone, at the till.
- *
- * Deliberately lookup-only: creating a customer mid-sale is a distraction at a
- * busy counter, and the Customers screen already does it properly. An unknown
- * number is not an error — the order simply stays anonymous, which is the
- * honest default for a restaurant.
+ * A customer attached to the order in progress. Carries the preview signals
+ * (segment, visits, spend) captured at the moment of attach, so the cart chip
+ * shows them without a second request. There is no loyalty tier/points — no
+ * such program exists yet.
+ */
+export type PosCustomer = {
+  id: string;
+  name: string;
+  phone: string;
+  segment: CustomerSegment | null;
+  visits: number;
+  totalSpentMinor: number;
+};
+
+/**
+ * The optional customer affordance in the cart: a chip when one is attached, an
+ * "Add customer" button (opening the lookup dialog) when none is. Guest
+ * checkout needs no interaction at all — this is never in the way of a sale.
  */
 export function CustomerPicker({
   accessToken,
   onNewToken,
   customer,
-  visits,
   setCustomer,
   setError,
 }: {
   accessToken: string | null;
   onNewToken: (t: string) => void;
   customer: PosCustomer | null;
-  visits: number | null;
   setCustomer: (c: PosCustomer | null) => void;
   setError: (m: string | null) => void;
 }) {
-  const [phone, setPhone] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [missed, setMissed] = useState(false);
-
-  async function lookup() {
-    if (!accessToken) return;
-    const digits = phone.replace(/\D/g, '');
-    if (digits.length < 7) return;
-
-    setBusy(true);
-    setMissed(false);
-    setError(null);
-    try {
-      const found = await findCustomerByPhone(accessToken, onNewToken, digits);
-      if (found && 'id' in found) {
-        setCustomer({ id: found.id, name: found.name, phone: found.phone });
-        setPhone('');
-      } else {
-        setMissed(true);
-      }
-    } catch (e) {
-      setError(e instanceof ApiRequestError ? e.message : 'Lookup failed');
-    } finally {
-      setBusy(false);
-    }
-  }
+  const [open, setOpen] = useState(false);
 
   if (customer) {
     return (
@@ -65,14 +49,15 @@ export function CustomerPicker({
         <UserRound aria-hidden className="size-4 shrink-0 text-ink-3" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <span className="min-w-0 truncate text-[13px] font-medium">{customer.name}</span>
-            {/* ponytail: "loyalty" = 3+ recorded visits; there is no loyalty
-                program in the API yet — upgrade when one exists. */}
-            {visits !== null && visits >= 3 && <Badge variant="brand">Regular</Badge>}
+            <span className="min-w-0 truncate text-[13px] font-medium">
+              {customer.name}
+            </span>
+            {customer.segment && <SegmentChip segment={customer.segment} />}
           </div>
           <p className="truncate text-[11px] text-ink-3 tabular-nums">
             {customer.phone}
-            {visits !== null && ` · ${visits} visit${visits === 1 ? '' : 's'}`}
+            {customer.visits > 0 &&
+              ` · ${customer.visits} visit${customer.visits === 1 ? '' : 's'} · ${formatMinor(customer.totalSpentMinor)}`}
           </p>
         </div>
         <Button
@@ -90,31 +75,26 @@ export function CustomerPicker({
 
   return (
     <div className="mt-3">
-      <div className="flex gap-2">
-        <Input
-          inputMode="tel"
-          value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter would submit nothing here; make it do the useful thing.
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              void lookup();
-            }
-          }}
-          placeholder="Customer phone (optional)"
-          aria-label="Customer phone"
-          className="h-8 min-w-0 flex-1 text-[12px]"
-        />
-        <Button variant="secondary" size="sm" onClick={() => void lookup()} disabled={busy} className="h-8">
-          Find
-        </Button>
-      </div>
-      {missed && (
-        <p className="mt-1 text-[11px] text-ink-3">
-          Not found — the order will be anonymous.
-        </p>
-      )}
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => setOpen(true)}
+        className="h-8 w-full justify-center text-[12px]"
+      >
+        <UserRoundPlus aria-hidden className="size-4" />
+        Add customer (optional)
+      </Button>
+      <CustomerDialog
+        open={open}
+        onClose={() => setOpen(false)}
+        accessToken={accessToken}
+        onNewToken={onNewToken}
+        onAttach={(c) => {
+          setCustomer(c);
+          setOpen(false);
+        }}
+        onError={(m) => setError(m)}
+      />
     </div>
   );
 }

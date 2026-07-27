@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EventsService } from '../../events/events.service';
 import type { Prisma } from '../../generated/prisma/client';
 import { OrderStatus } from '../../generated/prisma/enums';
 import { normalizePhone } from './phone';
@@ -16,7 +17,10 @@ import type {
 
 @Injectable()
 export class CustomersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventsService,
+  ) {}
 
   /**
    * Search by name or phone.
@@ -218,8 +222,8 @@ export class CustomersService {
   async create(dto: CreateCustomerDto) {
     const ctx = this.prisma.requireContext();
     try {
-      return await this.prisma.tx((db) =>
-        db.customer.create({
+      return await this.prisma.tx(async (db) => {
+        const customer = await db.customer.create({
           data: {
             restaurantId: ctx.restaurantId,
             name: dto.name,
@@ -229,8 +233,17 @@ export class CustomersService {
             notes: dto.notes ?? null,
           },
           select: { id: true, name: true, phone: true, email: true },
-        }),
-      );
+        });
+        // First consumer of the M0 event writer: a new customer is a tenant
+        // action worth remembering (Timeline/Customer History will read it).
+        // entityId only — no PII (name/phone) copied into the audit metadata.
+        await this.events.record(db, {
+          action: 'customer.created',
+          entityType: 'customer',
+          entityId: customer.id,
+        });
+        return customer;
+      });
     } catch (e) {
       if (isUniqueViolation(e)) {
         // Safe to say: the conflict is within THIS tenant, which the caller can

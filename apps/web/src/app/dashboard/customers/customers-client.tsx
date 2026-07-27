@@ -15,6 +15,7 @@ import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { downloadCsv, minorToCsv, toCsv } from '@/lib/csv';
 import { formatMinor } from '@/lib/money';
+import { validPhone } from '@/lib/phone';
 import { StatusBadge, timeShort } from '../orders/order-detail';
 
 /** Customer list → CSV. Names go through toCsv's injection-safe escaping. */
@@ -34,11 +35,11 @@ function exportCustomersCsv(list: CustomerSummary[]) {
   );
   downloadCsv(`customers-${new Date().toISOString().slice(0, 10)}.csv`, csv);
 }
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Field, Input, Textarea } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
+import { SegmentChip } from '@/components/ui/segment-chip';
 import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatCard } from '@/components/ui/stat-card';
@@ -57,28 +58,6 @@ function dayShort(iso: string | null): string {
     month: 'short',
     year: 'numeric',
   });
-}
-
-/** Mirrors the server rule (7-15 digits). The server re-validates regardless. */
-const validPhone = (raw: string) => {
-  const digits = raw.replace(/\D/g, '');
-  return digits.length >= 7 && digits.length <= 15 ? digits : null;
-};
-
-/**
- * Segment colour identity — presentation only. The segment itself is classified
- * server-side (one shared classifier) and arrives on the customer payload; this
- * page never reclassifies anyone.
- */
-const SEGMENT_VARIANT: Record<string, 'brand' | 'info' | 'success' | 'warning' | 'neutral'> = {
-  VIP: 'brand',
-  REGULAR: 'info',
-  NEW: 'success',
-  LAPSED: 'warning',
-};
-
-function SegmentChip({ segment }: { segment: { key: string; label: string } }) {
-  return <Badge variant={SEGMENT_VARIANT[segment.key] ?? 'neutral'}>{segment.label}</Badge>;
 }
 
 export function CustomersClient() {

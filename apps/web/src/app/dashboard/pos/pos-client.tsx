@@ -30,7 +30,6 @@ import Link from 'next/link';
 import {
   ApiRequestError,
   createOrder,
-  getCustomer,
   getOrder,
   getRestaurantProfile,
   listCategories,
@@ -113,8 +112,7 @@ export function PosClient() {
   const [q, setQ] = useState('');
   const [cat, setCat] = useState<string>('all');
   const [cart, setCart] = useState<CartLine[]>([]);
-  const [customer, setCustomerState] = useState<PosCustomer | null>(null);
-  const [visits, setVisits] = useState<number | null>(null);
+  const [customer, setCustomer] = useState<PosCustomer | null>(null);
   const [coupon, setCoupon] = useState('');
   const [discount, setDiscount] = useState('');
   const [note, setNote] = useState('');
@@ -191,26 +189,6 @@ export function PosClient() {
       cancelled = true;
     };
   }, [accessToken, onNewToken, toast]);
-
-  const setCustomer = (c: PosCustomer | null) => {
-    setVisits(null);
-    setCustomerState(c);
-  };
-
-  // Loyalty is read from the existing customer stats — there is no loyalty
-  // program in the API; a failed lookup just means no badge.
-  useEffect(() => {
-    if (!accessToken || !customer) return;
-    let cancelled = false;
-    getCustomer(accessToken, onNewToken, customer.id)
-      .then((d) => {
-        if (!cancelled) setVisits(d.stats.visits);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken, onNewToken, customer]);
 
   const catName = useMemo(
     () => new Map(categories.map((c) => [c.id, c.name])),
@@ -550,7 +528,6 @@ export function PosClient() {
           accessToken={accessToken}
           onNewToken={onNewToken}
           customer={customer}
-          visits={visits}
           setCustomer={setCustomer}
           setError={(m) => m && toast({ title: m, variant: 'danger' })}
         />
