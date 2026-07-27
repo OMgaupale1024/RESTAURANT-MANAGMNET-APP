@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EventsService } from '../../events/events.service';
 import type { CreateRestaurantDto } from './dto/create-restaurant.dto';
 import type { UpdateRestaurantDto } from './dto/update-restaurant.dto';
 
@@ -24,7 +25,10 @@ const PROFILE_SELECT = {
 
 @Injectable()
 export class RestaurantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventsService,
+  ) {}
 
   /**
    * Creates a restaurant, its first branch, and an OWNER membership for the
@@ -106,6 +110,13 @@ export class RestaurantsService {
       });
 
       // First entry in this tenant's audit trail. Append-only by trigger.
+      //
+      // Bootstrap write — deliberately NOT via EventsService.record(). This
+      // runs in txAs() with a client-generated tenant id that does not yet
+      // exist in the request context (the creator has no membership here until
+      // the line above). record() derives restaurant_id/user_id from that
+      // context by design, so it cannot serve this one path; the row is written
+      // directly. See docs/architecture/events.md § Bootstrap writes.
       await db.auditLog.create({
         data: {
           restaurantId,
@@ -159,15 +170,11 @@ export class RestaurantsService {
         select: PROFILE_SELECT,
       });
 
-      await db.auditLog.create({
-        data: {
-          restaurantId: ctx.restaurantId,
-          userId: ctx.userId,
-          action: 'restaurant.updated',
-          entityType: 'restaurant',
-          entityId: ctx.restaurantId,
-          metadata: { fields: Object.keys(data) },
-        },
+      await this.events.record(db, {
+        action: 'restaurant.updated',
+        entityType: 'restaurant',
+        entityId: ctx.restaurantId,
+        metadata: { fields: Object.keys(data) },
       });
 
       return updated;
