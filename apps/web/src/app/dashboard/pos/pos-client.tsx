@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   CreditCard,
   Keyboard,
+  MessageCircle,
   Minus,
   PauseCircle,
   Pencil,
@@ -46,7 +47,7 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor, parseRupeesToMinor } from '@/lib/money';
-import { BillReceipt, usePrintArea } from '@/lib/receipt';
+import { BillReceipt, buildShareText, usePrintArea, waShareUrl } from '@/lib/receipt';
 import { useCountUp } from '@/lib/use-count-up';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -85,6 +86,7 @@ const SHORTCUTS: Array<{ keys: string[]; does: string }> = [
   { keys: ['Ctrl', 'Enter'], does: 'Charge the order' },
   { keys: ['Ctrl', 'Backspace'], does: 'Clear the cart' },
   { keys: ['Alt', '1 · 2 · 3 · 4'], does: 'Cash / UPI / Card / Split' },
+  { keys: ['P'], does: 'Print the bill (success screen)' },
   { keys: ['?'], does: 'Open this help' },
 ];
 
@@ -157,10 +159,17 @@ export function PosClient() {
   const searchRef = useRef<HTMLInputElement>(null);
   // Lines mid-collapse: id → removal timer. Lets a re-add cancel the removal.
   const leavingTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  // One idempotency key per order attempt, minted when the cart starts. A
-  // double-tapped Charge (or a retried request) then returns the original
-  // order instead of ringing the customer up twice.
+  // One idempotency key per order attempt: minted on the first Charge/Hold and
+  // reused for every retry, so a double-tapped Charge (or a request the client
+  // refreshed and resent) returns the original order instead of ringing the
+  // customer up twice. clearCart() resets it for the next order.
   const idemKey = useRef<string | null>(null);
+  const orderKey = () => (idemKey.current ??= crypto.randomUUID());
+  // Stable key for the split leg being recorded: minted per (order, attempt),
+  // reused across retries of the same leg, dropped once a leg lands, and
+  // re-minted when a different order takes the panel — so a retried or
+  // double-tapped leg can never ring up twice.
+  const legKey = useRef<{ orderId: string; key: string } | null>(null);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -225,7 +234,6 @@ export function PosClient() {
     unleave(product.id);
     setLastAction({ label: `Added ${product.name}`, productId: product.id, at: Date.now() });
     setCart((c) => {
-      if (c.length === 0) idemKey.current = crypto.randomUUID();
       const found = c.find((l) => l.product.id === product.id);
       return found
         ? c.map((l) =>
@@ -325,7 +333,7 @@ export function PosClient() {
         ...(customer ? { customerId: customer.id } : {}),
         ...discountFields(),
         ...(note.trim() ? { notes: note.trim() } : {}),
-        idempotencyKey: idemKey.current ?? crypto.randomUUID(),
+        idempotencyKey: orderKey(),
       });
       setSuccess(order);
       clearCart();
@@ -352,7 +360,7 @@ export function PosClient() {
         ...(customer ? { customerId: customer.id } : {}),
         ...discountFields(),
         ...(note.trim() ? { notes: note.trim() } : {}),
-        idempotencyKey: idemKey.current ?? crypto.randomUUID(),
+        idempotencyKey: orderKey(),
       });
       toast({ title: 'Order held', variant: 'success' });
       clearCart();
@@ -408,12 +416,16 @@ export function PosClient() {
   /** One split leg. The server caps the sum at the order total. */
   async function recordLeg(orderId: string, m: string, amountMinor: number) {
     if (!accessToken) return;
+    if (legKey.current?.orderId !== orderId) {
+      legKey.current = { orderId, key: crypto.randomUUID() };
+    }
     try {
       const updated = await recordPayment(accessToken, onNewToken, orderId, {
         method: m,
         amountMinor,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: legKey.current.key,
       });
+      legKey.current = null; // leg landed — the next leg mints a fresh key
       setSuccess(updated);
     } catch (e) {
       toast({
@@ -464,6 +476,19 @@ export function PosClient() {
         return;
       }
       if (field) return;
+      if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // The keyboard twin of the success panel's Print button — which only
+        // exists once the order is fully paid, so gate on the same condition.
+        const paid =
+          success?.payments
+            .filter((p) => p.status === 'CAPTURED')
+            .reduce((s, p) => s + p.amountMinor, 0) ?? 0;
+        if (success && profile && paid >= success.totalMinor) {
+          e.preventDefault();
+          printNode(<BillReceipt order={success} profile={profile} />);
+        }
+        return;
+      }
       if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         searchRef.current?.focus();
@@ -515,6 +540,16 @@ export function PosClient() {
       onPrintBill={
         profile
           ? (o: Order) => printNode(<BillReceipt order={o} profile={profile} />)
+          : undefined
+      }
+      onShareBill={
+        profile
+          ? (o: Order) =>
+              window.open(
+                waShareUrl(buildShareText(o, profile), o.customer?.phone),
+                '_blank',
+                'noopener,noreferrer',
+              )
           : undefined
       }
       onRecordLeg={recordLeg}
@@ -853,6 +888,7 @@ function CartPanel({
   success,
   onNewOrder,
   onPrintBill,
+  onShareBill,
   onRecordLeg,
   charge,
   changeQty,
@@ -884,6 +920,8 @@ function CartPanel({
   onNewOrder: () => void;
   /** Absent until the business profile has loaded. */
   onPrintBill?: (order: Order) => void;
+  /** Absent until the business profile has loaded — shares the bill on WhatsApp. */
+  onShareBill?: (order: Order) => void;
   /** Records one split leg against the placed order. */
   onRecordLeg: (orderId: string, method: string, amountMinor: number) => Promise<void>;
   charge: () => void;
@@ -950,7 +988,7 @@ function CartPanel({
         </dl>
         {/* The panel is rendered twice (rail + sheet); focus() on the hidden
             copy is a no-op, so autoFocus lands on the visible one. */}
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-center gap-2">
           <Button
             variant="secondary"
             disabled={!onPrintBill}
@@ -959,6 +997,15 @@ function CartPanel({
           >
             <Printer aria-hidden className="size-4" />
             Print bill
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={!onShareBill}
+            title={onShareBill ? 'Share the bill on WhatsApp' : 'Loading business profile…'}
+            onClick={() => onShareBill?.(success)}
+          >
+            <MessageCircle aria-hidden className="size-4" />
+            WhatsApp
           </Button>
           <Button variant="primary" onClick={onNewOrder} autoFocus>
             New order
