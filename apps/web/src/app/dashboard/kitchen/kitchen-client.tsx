@@ -66,6 +66,26 @@ const DONE_SHOWN = 10;
 /** State cap so a screen left open for days cannot grow without bound. */
 const MAX_ORDERS = 150;
 
+/**
+ * Kitchen action verbs, mapped to the shared state machine (order-detail QUICK).
+ * The vocabulary is the line cook's — Start → Ready → Deliver — where the admin
+ * Orders screen says "Complete"; the underlying transition (→ COMPLETED) is the
+ * same one, so this only relabels, it never changes the flow.
+ */
+const ACTION_LABEL: Record<string, string> = {
+  PLACED: 'Start',
+  PREPARING: 'Ready',
+  READY: 'Deliver',
+};
+
+/** Order-type badge tone: the exceptions (dine-in, delivery) stand out; takeaway
+ *  — the counter default — stays quiet but is still shown. */
+const TYPE_VARIANT: Record<string, 'info' | 'warning' | 'neutral'> = {
+  DELIVERY: 'info',
+  DINE_IN: 'warning',
+  TAKEAWAY: 'neutral',
+};
+
 /** The board stores list-shaped rows; live inserts arrive detail-shaped. */
 function toSummary(o: Order): OrderSummary {
   return {
@@ -396,7 +416,7 @@ export function KitchenClient() {
           <summary className="cursor-pointer list-none px-3 py-2.5 text-[13px] font-semibold tracking-wide uppercase select-none [&::-webkit-details-marker]:hidden">
             <span className="inline-flex items-center gap-2">
               <CheckCircle2 aria-hidden className="size-4 text-success-text" />
-              Completed
+              Delivered
               <Badge className="tabular-nums">{done.length}</Badge>
               <span className="text-[11px] font-normal text-ink-3 normal-case">tap to expand</span>
             </span>
@@ -497,6 +517,9 @@ const Ticket = memo(function Ticket({
 }) {
   const quick = QUICK[order.status];
   const since = order.placedAt ?? order.createdAt;
+  // "If relevant" per the spec: a pay-later ticket the counter must collect on.
+  // Fully-paid orders (the POS default) stay unmarked — no money noise.
+  const unpaid = !order.payments.some((p) => p.status === 'CAPTURED');
   return (
     <li
       className={cn('list-none', liveArrival ? 'animate-slide-in-left' : 'animate-fade-up')}
@@ -526,12 +549,11 @@ const Ticket = memo(function Ticket({
           >
             #{order.orderNumber}
           </button>
-          <span className="flex items-center gap-1.5">
-            {order.orderType !== 'TAKEAWAY' && (
-              <Badge variant={order.orderType === 'DELIVERY' ? 'info' : 'warning'}>
-                {TYPE_LABEL[order.orderType] ?? order.orderType}
-              </Badge>
-            )}
+          <span className="flex flex-wrap items-center justify-end gap-1.5">
+            {unpaid && <Badge variant="danger">Unpaid</Badge>}
+            <Badge variant={TYPE_VARIANT[order.orderType] ?? 'neutral'}>
+              {TYPE_LABEL[order.orderType] ?? order.orderType}
+            </Badge>
             <Elapsed since={since} />
           </span>
         </div>
@@ -571,7 +593,7 @@ const Ticket = memo(function Ticket({
             }}
             className="mt-3 w-full"
           >
-            {busy ? '…' : quick.label}
+            {busy ? '…' : (ACTION_LABEL[order.status] ?? quick.label)}
           </Button>
         )}
       </div>
