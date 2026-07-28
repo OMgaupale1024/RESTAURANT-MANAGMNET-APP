@@ -615,6 +615,20 @@ export const listCustomers = (token: string, onNewToken: Retry, q?: string) =>
 export const getCustomer = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<CustomerDetail>(`/customers/${id}`, token, onNewToken);
 
+/** A customer's loyalty standing (Milestone 2). Shape mirrors the API's summary. */
+export type LoyaltySummary = {
+  customerId: string;
+  balancePoints: number;
+  lifetimeEarnedPoints: number;
+  redeemedPoints: number;
+  tier: { key: string; label: string; minPoints: number };
+  nextTier: { key: string; label: string; minPoints: number; pointsToGo: number } | null;
+};
+
+/** Needs loyalty.read; callers treat a failure as "no loyalty" and omit it. */
+export const getLoyaltySummary = (token: string, onNewToken: Retry, customerId: string) =>
+  authedFetch<LoyaltySummary>(`/customers/${customerId}/loyalty`, token, onNewToken);
+
 export const findCustomerByPhone = (
   token: string,
   onNewToken: Retry,

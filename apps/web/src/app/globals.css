@@ -491,3 +491,25 @@ select {
 .rc-kot-note {
   font-weight: 700;
 }
+
+/* Loyalty block — text-only, so it prints on an 80mm thermal head and A4 alike. */
+.rc-loyalty-tier {
+  font-weight: 700;
+  font-size: 12px;
+  margin-top: 2px;
+}
+.rc-loyalty-next {
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+/* On-screen receipt: the very same print receipt, shown as a paper card in the
+   modal. White paper on a themed backdrop — a receipt looks like paper in dark
+   mode too. Screen only; the print path never sees this wrapper. */
+.rc-paper {
+  height: fit-content;
+  background: #fff;
+  padding: 12px 10px;
+  border-radius: 6px;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.12);
+}

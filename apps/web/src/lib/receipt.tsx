@@ -2,8 +2,14 @@
 
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import type { Order, RestaurantProfile } from '@/lib/api';
+import { MessageCircle, Printer } from 'lucide-react';
+import type { LoyaltySummary, Order, RestaurantProfile } from '@/lib/api';
 import { formatMinor } from '@/lib/money';
+import { Button } from '@/components/ui/button';
+import { Modal } from '@/components/ui/modal';
+
+/** Whole points with Indian grouping — 1,200. Never money; that's formatMinor. */
+const pts = (n: number) => n.toLocaleString('en-IN');
 
 const TYPE_LABEL: Record<string, string> = {
   DINE_IN: 'Dine-in',
@@ -124,9 +130,13 @@ function taxGroups(order: Order) {
 export function BillReceipt({
   order,
   profile,
+  loyalty,
 }: {
   order: Order;
   profile: RestaurantProfile;
+  /** Rendered only when present — a guest, or a customer with no loyalty read,
+   *  simply omits the block. Never fabricated. */
+  loyalty?: LoyaltySummary | null;
 }) {
   const groups = taxGroups(order);
   const paid = order.payments.filter((p) => p.status === 'CAPTURED');
@@ -195,12 +205,54 @@ export function BillReceipt({
           ))}
         </tbody>
       </table>
+      {loyalty && <LoyaltyBlock loyalty={loyalty} name={order.customer?.name} />}
       <div className="rc-rule" />
       <footer className="rc-center">
-        {profile.receiptFooter && <p>{profile.receiptFooter}</p>}
+        {/* The custom footer IS the thank-you when set; otherwise a warm default,
+            so every receipt closes kindly. Neither is customer/business data. */}
+        <p>{profile.receiptFooter ?? 'Thank you! Please visit again.'}</p>
         <p>Order #{order.orderNumber}</p>
       </footer>
     </div>
+  );
+}
+
+/**
+ * The loyalty engagement block. Text-only on purpose: it prints identically on
+ * an 80mm thermal head and on A4, where a graphical bar or QR would not. Shows
+ * only what Milestone 2 actually knows — tier, balance, lifetime earned, and
+ * the gap to the next tier. "Points earned on this order" arrives when Smart
+ * Checkout wires earning into payment; until then it is not shown, not faked.
+ */
+function LoyaltyBlock({
+  loyalty,
+  name,
+}: {
+  loyalty: LoyaltySummary;
+  name?: string;
+}) {
+  return (
+    <>
+      <div className="rc-rule" />
+      <p className="rc-center rc-loyalty-tier">★ {loyalty.tier.label} member</p>
+      <table className="rc-totals">
+        <tbody>
+          <tr>
+            <td>Points balance</td>
+            <td className="rc-amt">{pts(loyalty.balancePoints)}</td>
+          </tr>
+          <tr>
+            <td>Lifetime earned</td>
+            <td className="rc-amt">{pts(loyalty.lifetimeEarnedPoints)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="rc-center rc-loyalty-next">
+        {loyalty.nextTier
+          ? `${pts(loyalty.nextTier.pointsToGo)} points to ${loyalty.nextTier.label}`
+          : `Top tier${name ? `, ${name}` : ''} — thank you!`}
+      </p>
+    </>
   );
 }
 
@@ -242,8 +294,15 @@ export function KotTicket({
 
 /* ----------------------------------------------------------------- share */
 
-/** Plain-text bill for WhatsApp — the way small restaurants actually share. */
-export function buildShareText(order: Order, profile: RestaurantProfile): string {
+/**
+ * Plain-text bill for WhatsApp — the way small restaurants actually share.
+ * Optional loyalty adds one engagement line; omitted for guests, never faked.
+ */
+export function buildShareText(
+  order: Order,
+  profile: RestaurantProfile,
+  loyalty?: LoyaltySummary | null,
+): string {
   const lines: string[] = [
     profile.receiptHeader ?? profile.name,
     `Bill #${order.orderNumber} — ${when(order)}`,
@@ -261,6 +320,12 @@ export function buildShareText(order: Order, profile: RestaurantProfile): string
   lines.push(`Total: ${formatMinor(order.totalMinor)}`);
   const paid = order.payments.find((p) => p.status === 'CAPTURED');
   if (paid) lines.push(`Paid by ${paid.method}`);
+  if (loyalty) {
+    const next = loyalty.nextTier
+      ? ` · ${pts(loyalty.nextTier.pointsToGo)} to ${loyalty.nextTier.label}`
+      : '';
+    lines.push('', `⭐ ${loyalty.tier.label} · ${pts(loyalty.balancePoints)} points${next}`);
+  }
   if (profile.gstin) lines.push(`GSTIN: ${profile.gstin}`);
   if (profile.receiptFooter) lines.push('', profile.receiptFooter);
   return lines.join('\n');
@@ -270,4 +335,66 @@ export function buildShareText(order: Order, profile: RestaurantProfile): string
 export function waShareUrl(text: string, phone?: string | null): string {
   const target = phone ? phone.replace(/[^0-9]/g, '') : '';
   return `https://wa.me/${target}?text=${encodeURIComponent(text)}`;
+}
+
+/* ------------------------------------------------------------------- view */
+
+/**
+ * The on-screen receipt: the SAME `BillReceipt` that prints, shown as a paper
+ * card in a modal, with Print and WhatsApp. One template, three surfaces
+ * (screen, thermal, A4) — no second implementation to drift. Mobile-friendly:
+ * the 72mm receipt fits any phone, and the card scrolls inside the dialog.
+ */
+export function ReceiptView({
+  open,
+  onClose,
+  order,
+  profile,
+  loyalty,
+}: {
+  open: boolean;
+  onClose: () => void;
+  order: Order;
+  profile: RestaurantProfile;
+  loyalty?: LoyaltySummary | null;
+}) {
+  const { printNode, portal } = usePrintArea();
+  const receipt = <BillReceipt order={order} profile={profile} loyalty={loyalty} />;
+
+  return (
+    <Modal open={open} onClose={onClose} title="Receipt" className="max-w-[380px]">
+      <div className="flex max-h-[60vh] justify-center overflow-y-auto rounded-xl bg-surface-2 p-3">
+        <div className="rc-paper">{receipt}</div>
+      </div>
+      <div className="mt-4 flex flex-wrap justify-center gap-2">
+        <Button
+          variant="secondary"
+          title="Print the receipt (80mm thermal or A4)"
+          onClick={() => printNode(receipt)}
+        >
+          <Printer aria-hidden className="size-4" />
+          Print
+        </Button>
+        <Button
+          variant="secondary"
+          title={
+            order.customer
+              ? `Send the receipt to ${order.customer.name} on WhatsApp`
+              : 'Share the receipt on WhatsApp'
+          }
+          onClick={() =>
+            window.open(
+              waShareUrl(buildShareText(order, profile, loyalty), order.customer?.phone),
+              '_blank',
+              'noopener,noreferrer',
+            )
+          }
+        >
+          <MessageCircle aria-hidden className="size-4" />
+          WhatsApp
+        </Button>
+      </div>
+      {portal}
+    </Modal>
+  );
 }

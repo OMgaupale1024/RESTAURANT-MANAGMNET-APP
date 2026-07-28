@@ -7,8 +7,6 @@ import {
   CheckCircle2,
   ChefHat,
   FileText,
-  MessageCircle,
-  Printer,
   Receipt,
   Undo2,
   XCircle,
@@ -16,8 +14,10 @@ import {
 } from 'lucide-react';
 import {
   ApiRequestError,
+  getLoyaltySummary,
   recordPayment,
   recordRefund,
+  type LoyaltySummary,
   type Order,
   type RestaurantProfile,
   type TimelineEvent,
@@ -26,13 +26,7 @@ import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor, parseRupeesToMinor } from '@/lib/money';
 import { nextStatuses } from '@/lib/order-status';
-import {
-  BillReceipt,
-  KotTicket,
-  buildShareText,
-  usePrintArea,
-  waShareUrl,
-} from '@/lib/receipt';
+import { KotTicket, ReceiptView, usePrintArea } from '@/lib/receipt';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Select } from '@/components/ui/input';
@@ -141,6 +135,25 @@ export function OrderDetail({
   const danger = next.filter((s) => DANGER_STATUSES.includes(s));
   const { printNode, portal } = usePrintArea();
 
+  const { accessToken, setAccessToken } = useAuth();
+  const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [loyalty, setLoyalty] = useState<LoyaltySummary | null>(null);
+  const customerId = order.customer?.id;
+
+  // Loyalty is fetched lazily when the receipt opens (best-effort): a viewer
+  // without loyalty.read — or a guest order — simply gets a receipt with no
+  // loyalty block. One call, reused until the customer changes.
+  function openReceipt() {
+    setReceiptOpen(true);
+    if (accessToken && customerId && loyalty?.customerId !== customerId) {
+      getLoyaltySummary(accessToken, onNewToken, customerId)
+        .then(setLoyalty)
+        .catch(() => undefined);
+    }
+  }
+  const shownLoyalty = loyalty?.customerId === customerId ? loyalty : null;
+
   return (
     <div className="space-y-6">
       <div>
@@ -173,13 +186,11 @@ export function OrderDetail({
           variant="secondary"
           size="sm"
           disabled={!profile}
-          title={profile ? 'Print the customer bill' : 'Loading business profile…'}
-          onClick={() =>
-            profile && printNode(<BillReceipt order={order} profile={profile} />)
-          }
+          title={profile ? 'View, print or share the receipt' : 'Loading business profile…'}
+          onClick={openReceipt}
         >
-          <Printer aria-hidden className="size-3.5" />
-          Print bill
+          <Receipt aria-hidden className="size-3.5" />
+          Receipt
         </Button>
         <Button
           variant="secondary"
@@ -189,29 +200,17 @@ export function OrderDetail({
           <ChefHat aria-hidden className="size-3.5" />
           Print KOT
         </Button>
-        {profile && (
-          <Button
-            variant="secondary"
-            size="sm"
-            title={
-              order.customer
-                ? `Send the bill to ${order.customer.name} on WhatsApp`
-                : 'Share the bill on WhatsApp'
-            }
-            onClick={() =>
-              window.open(
-                waShareUrl(buildShareText(order, profile), order.customer?.phone),
-                '_blank',
-                'noopener,noreferrer',
-              )
-            }
-          >
-            <MessageCircle aria-hidden className="size-3.5" />
-            Share
-          </Button>
-        )}
       </div>
       {portal}
+      {profile && (
+        <ReceiptView
+          open={receiptOpen}
+          onClose={() => setReceiptOpen(false)}
+          order={order}
+          profile={profile}
+          loyalty={shownLoyalty}
+        />
+      )}
 
       <Section label="Timeline">
         <Timeline events={timeline} />
