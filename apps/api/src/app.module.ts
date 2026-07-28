@@ -28,6 +28,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { MarketingModule } from './modules/marketing/marketing.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { CashModule } from './modules/cash/cash.module';
+import { LoyaltyModule } from './modules/loyalty/loyalty.module';
 
 @Module({
   imports: [
@@ -113,6 +114,7 @@ import { CashModule } from './modules/cash/cash.module';
     MarketingModule,
     ReportsModule,
     CashModule,
+    LoyaltyModule,
   ],
   controllers: [HealthController],
   providers: [
