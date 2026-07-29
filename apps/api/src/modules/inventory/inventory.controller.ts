@@ -26,6 +26,14 @@ import { InventoryService } from './inventory.service';
 export class InventoryController {
   constructor(private readonly inventory: InventoryService) {}
 
+  // Inventory intelligence — value, stock health, today's flow, wastage. Same
+  // gate as the list; it aggregates the same ledger.
+  @RequirePermissions('inventory.read')
+  @Get('inventory/summary')
+  summary() {
+    return this.inventory.summary();
+  }
+
   @RequirePermissions('inventory.read')
   @Get('ingredients')
   list(@Query() query: ListIngredientsQuery) {

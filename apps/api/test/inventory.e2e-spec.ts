@@ -1144,4 +1144,105 @@ describe('Inventory (e2e)', () => {
       expect(row.marginMinor).toBeNull();
     });
   });
+
+  // The intelligence roll-up: value, the health partition, today's flow, and
+  // wastage — all aggregated from the same ledger the list reads.
+  describe('inventory summary', () => {
+    const summary = (token: string) =>
+      api()
+        .get('/api/v1/inventory/summary')
+        .set('Authorization', `Bearer ${token}`);
+
+    it('values stock at weighted-average cost and reports today’s purchases', async () => {
+      const t = await newTenant('Summary Value Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Paneer',
+        unit: 'GRAM',
+      }).expect(201);
+      // 1000g for ₹200 (20000 paise) → 20 paise/g, value = 1000 × 20 = 20000.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 20000,
+      }).expect(201);
+
+      const res = await summary(t.token).expect(200);
+      expect(res.body.valueMinor).toBe(20000);
+      expect(res.body.today.purchaseCount).toBe(1);
+      expect(res.body.today.purchasesMinor).toBe(20000);
+    });
+
+    it('partitions stock health into low and out', async () => {
+      const t = await newTenant('Summary Health Cafe');
+      const low = await addIngredient(t.token, {
+        name: 'Low',
+        unit: 'GRAM',
+        reorderLevel: 1000,
+      }).expect(201);
+      const out = await addIngredient(t.token, {
+        name: 'Out',
+        unit: 'GRAM',
+        reorderLevel: 100,
+      }).expect(201);
+      // Low sits below its reorder level; Out is bought then fully wasted → 0.
+      await move(t.token, low.body.id, {
+        type: 'PURCHASE',
+        quantity: 500,
+      }).expect(201);
+      await move(t.token, out.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+      }).expect(201);
+      await move(t.token, out.body.id, {
+        type: 'WASTE',
+        quantity: 1000,
+      }).expect(201);
+
+      const res = await summary(t.token).expect(200);
+      expect(res.body.counts.low).toBe(1);
+      expect(res.body.counts.out).toBe(1);
+      expect(res.body.counts.negative).toBe(0);
+    });
+
+    it('values 30-day wastage at cost', async () => {
+      const t = await newTenant('Summary Waste Cafe');
+      const ing = await addIngredient(t.token, {
+        name: 'Oil',
+        unit: 'MILLILITRE',
+      }).expect(201);
+      // 1000ml for ₹100 (10000 paise) → 10 paise/ml.
+      await move(t.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 10000,
+      }).expect(201);
+      await move(t.token, ing.body.id, {
+        type: 'WASTE',
+        quantity: 200,
+      }).expect(201);
+
+      const res = await summary(t.token).expect(200);
+      expect(res.body.wasteMonthMinor).toBe(2000); // 200 × 10
+      expect(res.body.today.wasteCount).toBe(1);
+    });
+
+    it('is tenant-scoped', async () => {
+      const a = await newTenant('Summary Iso A');
+      const b = await newTenant('Summary Iso B');
+      const ing = await addIngredient(a.token, {
+        name: 'Cheese',
+        unit: 'GRAM',
+      }).expect(201);
+      await move(a.token, ing.body.id, {
+        type: 'PURCHASE',
+        quantity: 1000,
+        totalCostMinor: 50000,
+      }).expect(201);
+
+      const bView = await summary(b.token).expect(200);
+      expect(bView.body.valueMinor).toBe(0);
+      expect(bView.body.ingredientCount).toBe(0);
+      expect(bView.body.today.purchaseCount).toBe(0);
+    });
+  });
 });

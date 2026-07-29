@@ -764,6 +764,30 @@ export const listIngredients = (
   );
 };
 
+/** Inventory intelligence: value, stock-health partition, today's flow, wastage. */
+export type InventorySummary = {
+  valueMinor: number;
+  ingredientCount: number;
+  counts: {
+    healthy: number;
+    low: number;
+    critical: number;
+    out: number;
+    negative: number;
+    tracked: number;
+  };
+  today: {
+    purchasesMinor: number;
+    purchaseCount: number;
+    consumptionCount: number;
+    wasteCount: number;
+    adjustmentCount: number;
+  };
+  wasteMonthMinor: number;
+};
+export const getInventorySummary = (token: string, onNewToken: Retry) =>
+  authedFetch<InventorySummary>('/inventory/summary', token, onNewToken);
+
 export const updateIngredient = (
   token: string,
   onNewToken: Retry,
