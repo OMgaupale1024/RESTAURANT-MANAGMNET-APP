@@ -1089,17 +1089,31 @@ export type AuditEntry = {
   entityType: string;
   entityId: string | null;
   userId: string | null;
+  /** The staff member who did it, resolved to a name (null for system/bootstrap
+   *  actions or a user no longer a member). */
+  actor: { name: string | null } | null;
   metadata: Record<string, unknown> | null;
   createdAt: string;
 };
 export const getAuditLog = (
   token: string,
   onNewToken: Retry,
-  opts: { cursor?: string; limit?: number } = {},
+  opts: {
+    cursor?: string;
+    limit?: number;
+    category?: string;
+    from?: string;
+    to?: string;
+    q?: string;
+  } = {},
 ) => {
   const params = new URLSearchParams();
   if (opts.cursor) params.set('cursor', opts.cursor);
   if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.category) params.set('category', opts.category);
+  if (opts.from) params.set('from', opts.from);
+  if (opts.to) params.set('to', opts.to);
+  if (opts.q) params.set('q', opts.q);
   const qs = params.toString();
   return authedFetch<AuditEntry[]>(
     `/reports/audit${qs ? `?${qs}` : ''}`,

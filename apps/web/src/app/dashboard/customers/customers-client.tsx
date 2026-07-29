@@ -121,6 +121,16 @@ export function CustomersClient() {
     [onNewToken, toast],
   );
 
+  // ?id= deep link — once, when a token exists to fetch with. Lets the Timeline
+  // (and command palette) open a customer profile straight from a link.
+  const deepLinked = useRef(false);
+  useEffect(() => {
+    if (!accessToken || deepLinked.current) return;
+    deepLinked.current = true;
+    const id = new URLSearchParams(window.location.search).get('id');
+    if (id) open(id);
+  }, [accessToken, open]);
+
   function close() {
     setSelectedId(null);
     setDetail(null);
