@@ -12,6 +12,7 @@ import {
   Megaphone,
   Package,
   Receipt,
+  ShoppingCart,
   Sparkles,
   Store,
   TrendingUp,
@@ -59,6 +60,7 @@ export const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
     items: [
       { label: 'Menu', href: '/dashboard/menu', icon: BookOpen },
       { label: 'Inventory', href: '/dashboard/inventory', icon: Package },
+      { label: 'Procurement', href: '/dashboard/procurement', icon: ShoppingCart },
       { label: 'Staff', href: '/dashboard/staff', icon: UserCog },
     ],
   },

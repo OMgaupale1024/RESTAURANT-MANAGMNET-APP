@@ -704,6 +704,7 @@ export type Supplier = {
   phone: string | null;
   notes: string | null;
   isActive: boolean;
+  preferred: boolean;
 };
 
 export const listSuppliers = (token: string, onNewToken: Retry, all?: boolean) =>
@@ -727,11 +728,110 @@ export const updateSupplier = (
   token: string,
   onNewToken: Retry,
   id: string,
-  body: { name?: string; phone?: string; notes?: string; isActive?: boolean },
+  body: {
+    name?: string;
+    phone?: string;
+    notes?: string;
+    isActive?: boolean;
+    preferred?: boolean;
+  },
 ) =>
   authedFetch<Supplier>(`/suppliers/${id}`, token, onNewToken, {
     method: 'PATCH',
     body: JSON.stringify(body),
+  });
+
+// -- Procurement: supplier insights, reorder suggestions, purchase orders ----
+
+export type SupplierInsight = {
+  id: string;
+  name: string;
+  phone: string | null;
+  preferred: boolean;
+  totalSpentMinor: number;
+  purchaseCount: number;
+  lastPurchaseAt: string | null;
+  avgIntervalDays: number | null;
+  topIngredient: { name: string; quantity: number } | null;
+};
+export const getSupplierInsights = (token: string, onNewToken: Retry) =>
+  authedFetch<SupplierInsight[]>('/suppliers/insights', token, onNewToken);
+
+export type ReorderSuggestion = {
+  ingredientId: string;
+  name: string;
+  unit: StockUnit;
+  currentStock: number;
+  reorderLevel: number | null;
+  avgDailyUsage: number;
+  suggestedQuantity: number;
+  lastSupplier: { id: string; name: string; preferred: boolean } | null;
+};
+export const getReorderSuggestions = (token: string, onNewToken: Retry) =>
+  authedFetch<ReorderSuggestion[]>(
+    '/inventory/reorder-suggestions',
+    token,
+    onNewToken,
+  );
+
+export type PurchaseOrderStatus = 'DRAFT' | 'ORDERED' | 'RECEIVED' | 'CANCELLED';
+export type PurchaseOrder = {
+  id: string;
+  status: PurchaseOrderStatus;
+  note: string | null;
+  orderedAt: string | null;
+  receivedAt: string | null;
+  createdAt: string;
+  supplier: { id: string; name: string };
+  items: Array<{
+    id: string;
+    quantity: number;
+    totalCostMinor: number | null;
+    ingredient: { id: string; name: string; unit: StockUnit };
+  }>;
+};
+/** The list shape: items collapsed to their cost/quantity for a total + count. */
+export type PurchaseOrderRow = Omit<PurchaseOrder, 'items'> & {
+  items: Array<{ quantity: number; totalCostMinor: number | null }>;
+};
+
+export const listPurchaseOrders = (
+  token: string,
+  onNewToken: Retry,
+  status?: PurchaseOrderStatus,
+) =>
+  authedFetch<PurchaseOrderRow[]>(
+    `/purchase-orders${status ? `?status=${status}` : ''}`,
+    token,
+    onNewToken,
+  );
+
+export const getPurchaseOrder = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<PurchaseOrder>(`/purchase-orders/${id}`, token, onNewToken);
+
+export const createPurchaseOrder = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    supplierId: string;
+    items: Array<{ ingredientId: string; quantity: number; totalCostMinor?: number }>;
+    note?: string;
+  },
+) =>
+  authedFetch<PurchaseOrder>('/purchase-orders', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const transitionPurchaseOrder = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  status: 'ORDERED' | 'RECEIVED' | 'CANCELLED',
+) =>
+  authedFetch<PurchaseOrder>(`/purchase-orders/${id}/status`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
   });
 
 export type ProductCosting = {

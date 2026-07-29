@@ -8,6 +8,7 @@ import {
   RotateCcw,
   ScrollText,
   Search,
+  ShoppingCart,
   Sparkles,
   Store,
   UserCog,
@@ -43,6 +44,7 @@ type Cat =
   | 'loyalty'
   | 'staff'
   | 'settings'
+  | 'procurement'
   | 'other';
 type Variant = 'neutral' | 'success' | 'warning' | 'danger' | 'info';
 
@@ -75,6 +77,7 @@ function categoryOf(action: string): Cat {
   if (action.startsWith('customer.')) return 'customers';
   if (action.startsWith('loyalty.')) return 'loyalty';
   if (action.startsWith('staff.')) return 'staff';
+  if (action.startsWith('po.')) return 'procurement';
   if (action.startsWith('restaurant.')) return 'settings';
   return 'other';
 }
@@ -86,6 +89,7 @@ const CAT_ICON: Record<Cat, LucideIcon> = {
   loyalty: Sparkles,
   staff: UserCog,
   settings: Store,
+  procurement: ShoppingCart,
   other: ScrollText,
 };
 
@@ -105,6 +109,10 @@ const ACTION_LABEL: Record<string, string> = {
   'staff.joined': 'Staff joined',
   'staff.updated': 'Staff updated',
   'staff.deactivated': 'Staff deactivated',
+  'po.created': 'Purchase order drafted',
+  'po.ordered': 'Purchase order placed',
+  'po.received': 'Stock received',
+  'po.cancelled': 'Purchase order cancelled',
 };
 
 /** Severity tone. Money-out and access-removal are the loud ones; the icon +
@@ -122,6 +130,9 @@ const ACTION_VARIANT: Record<string, Variant> = {
   'loyalty.refund_reversed': 'info',
   'restaurant.updated': 'info',
   'staff.invited': 'info',
+  'po.received': 'success',
+  'po.ordered': 'info',
+  'po.cancelled': 'danger',
 };
 
 /** Icon-chip tint per tone — the same tokens the Badge primitive uses. */

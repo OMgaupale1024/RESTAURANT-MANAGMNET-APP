@@ -732,6 +732,7 @@ export class InventoryService {
           phone: true,
           notes: true,
           isActive: true,
+          preferred: true,
         },
         orderBy: { name: 'asc' },
       }),
@@ -755,6 +756,7 @@ export class InventoryService {
             phone: true,
             notes: true,
             isActive: true,
+            preferred: true,
           },
         }),
       );
@@ -781,6 +783,9 @@ export class InventoryService {
             ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
             ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
             ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+            ...(dto.preferred !== undefined
+              ? { preferred: dto.preferred }
+              : {}),
           },
           select: {
             id: true,
@@ -788,6 +793,7 @@ export class InventoryService {
             phone: true,
             notes: true,
             isActive: true,
+            preferred: true,
           },
         });
       } catch (e) {

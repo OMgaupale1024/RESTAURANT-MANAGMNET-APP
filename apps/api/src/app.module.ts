@@ -21,6 +21,7 @@ import { CatalogueModule } from './modules/catalogue/catalogue.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { ProcurementModule } from './modules/procurement/procurement.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -107,6 +108,7 @@ import { LoyaltyModule } from './modules/loyalty/loyalty.module';
     OrdersModule,
     CustomersModule,
     InventoryModule,
+    ProcurementModule,
     StaffModule,
     RealtimeModule,
     AnalyticsModule,

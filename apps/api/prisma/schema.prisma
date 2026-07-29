@@ -552,8 +552,13 @@ model Supplier {
   phone        String?
   notes        String?
   isActive     Boolean  @default(true) @map("is_active")
+  /// The owner's go-to for this kind of stock. A hint for reorder suggestions,
+  /// never a constraint — any active supplier can still be chosen.
+  preferred    Boolean  @default(false) @map("is_preferred")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
+
+  purchaseOrders PurchaseOrder[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -571,8 +576,9 @@ model Ingredient {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  movements   StockMovement[]
-  recipeItems RecipeItem[]
+  movements          StockMovement[]
+  recipeItems        RecipeItem[]
+  purchaseOrderItems PurchaseOrderItem[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -648,6 +654,67 @@ model RecipeItem {
   @@unique([productId, ingredientId])
   @@index([restaurantId])
   @@map("recipe_items")
+}
+
+enum PurchaseOrderStatus {
+  /// Being assembled — items can still be added, changed, removed.
+  DRAFT
+  /// Sent to the supplier, awaiting delivery.
+  ORDERED
+  /// Delivered. Receiving writes the PURCHASE stock movements; terminal.
+  RECEIVED
+  /// Abandoned before receipt; terminal. Never wrote any stock.
+  CANCELLED
+
+  @@map("purchase_order_status")
+}
+
+/// A planned purchase from a supplier — the procurement wrapper around the
+/// existing stock ledger. Deliberately NOT a second purchase history: receiving
+/// a PO writes ordinary PURCHASE `stock_movements` (the single source of what
+/// stock arrived and what it cost), and the PO just records the plan and its
+/// status. Mutable while DRAFT/ORDERED; RECEIVED and CANCELLED are terminal.
+model PurchaseOrder {
+  id           String              @id @default(uuid(7)) @db.Uuid
+  restaurantId String              @map("restaurant_id") @db.Uuid
+  supplierId   String              @map("supplier_id") @db.Uuid
+  status       PurchaseOrderStatus @default(DRAFT)
+  note         String?
+  actorUserId  String?             @map("actor_user_id") @db.Uuid
+  orderedAt    DateTime?           @map("ordered_at")
+  receivedAt   DateTime?           @map("received_at")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  supplier Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  items    PurchaseOrderItem[]
+
+  @@index([restaurantId, status])
+  @@index([restaurantId, supplierId])
+  @@map("purchase_orders")
+}
+
+/// One line of a purchase order: how much of an ingredient, and the agreed cost
+/// for that line. On receipt this becomes a PURCHASE movement carrying the same
+/// quantity, supplier and cost — so nothing about the arriving stock is stored
+/// twice.
+model PurchaseOrderItem {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  restaurantId    String   @map("restaurant_id") @db.Uuid
+  purchaseOrderId String   @map("purchase_order_id") @db.Uuid
+  ingredientId    String   @map("ingredient_id") @db.Uuid
+  /// Ordered quantity, in the ingredient's base unit.
+  quantity        Int
+  /// Agreed TOTAL cost for this line (paise). Null = price not yet known.
+  totalCostMinor  Int?     @map("total_cost_minor")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  ingredient    Ingredient    @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([purchaseOrderId, ingredientId])
+  @@index([restaurantId])
+  @@map("purchase_order_items")
 }
 
 // ---------------------------------------------------------------------------

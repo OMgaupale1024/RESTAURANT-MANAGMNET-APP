@@ -132,6 +132,11 @@ export class UpdateSupplierDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  /** The owner's go-to supplier — a hint for reorder suggestions. */
+  @IsOptional()
+  @IsBoolean()
+  preferred?: boolean;
 }
 
 /** ADJUSTMENT is signed — a stock count can go either way. */
