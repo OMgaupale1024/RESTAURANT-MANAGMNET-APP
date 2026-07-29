@@ -357,4 +357,97 @@ describe('Reports (e2e)', () => {
         .expect(403);
     });
   });
+
+  // The Timeline is the same /reports/audit endpoint, now with actor names and
+  // category / date / search filters — all over the one append-only table.
+  describe('timeline', () => {
+    const audit = (token: string, qs = '') =>
+      api()
+        .get(`/api/v1/reports/audit${qs}`)
+        .set('Authorization', `Bearer ${token}`);
+
+    const voidAnOrder = async (t: { token: string; p1: string }) => {
+      const o = await placeOrder(t.token, t.p1, 1).expect(201);
+      await api()
+        .patch(`/api/v1/orders/${o.body.id}/status`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ status: 'VOIDED', reason: 'wrong table' })
+        .expect(200);
+    };
+
+    it('names the actor who did it', async () => {
+      const t = await newTenant('Timeline Actor Cafe');
+      await voidAnOrder(t);
+      const res = await audit(t.token, '?category=orders').expect(200);
+      const voided = res.body.find(
+        (e: { action: string }) => e.action === 'order.voided',
+      );
+      expect(voided).toBeDefined();
+      // newTenant registers the owner as 'A Report Owner'.
+      expect(voided.actor.name).toBe('A Report Owner');
+    });
+
+    it('filters by category without crossing streams', async () => {
+      const t = await newTenant('Timeline Cat Cafe');
+      await voidAnOrder(t);
+      await api()
+        .post('/api/v1/customers')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Asha', phone: `9${Date.now().toString().slice(-9)}` })
+        .expect(201);
+
+      const customers = await audit(t.token, '?category=customers').expect(200);
+      expect(customers.body.length).toBeGreaterThan(0);
+      expect(
+        customers.body.every((e: { action: string }) =>
+          e.action.startsWith('customer.'),
+        ),
+      ).toBe(true);
+
+      const orders = await audit(t.token, '?category=orders').expect(200);
+      expect(
+        orders.body.every((e: { action: string }) =>
+          e.action.startsWith('order.'),
+        ),
+      ).toBe(true);
+      expect(
+        orders.body.some(
+          (e: { action: string }) => e.action === 'order.voided',
+        ),
+      ).toBe(true);
+    });
+
+    it('searches action text, case-insensitively', async () => {
+      const t = await newTenant('Timeline Search Cafe');
+      await voidAnOrder(t);
+      const hit = await audit(t.token, '?q=Void').expect(200);
+      expect(
+        hit.body.some((e: { action: string }) => e.action === 'order.voided'),
+      ).toBe(true);
+      const miss = await audit(t.token, '?q=zzznope').expect(200);
+      expect(miss.body.length).toBe(0);
+    });
+
+    it('filters by IST day range and rejects an impossible date', async () => {
+      const t = await newTenant('Timeline Date Cafe');
+      await voidAnOrder(t);
+      const inWindow = await audit(
+        t.token,
+        `?from=${today}&to=${today}`,
+      ).expect(200);
+      expect(
+        inWindow.body.some(
+          (e: { action: string }) => e.action === 'order.voided',
+        ),
+      ).toBe(true);
+      const past = await audit(
+        t.token,
+        `?from=${twoYearsAgo}&to=${twoYearsAgo}`,
+      ).expect(200);
+      expect(
+        past.body.some((e: { action: string }) => e.action === 'order.voided'),
+      ).toBe(false);
+      await audit(t.token, '?from=2026-13-40&to=2026-13-40').expect(400);
+    });
+  });
 });

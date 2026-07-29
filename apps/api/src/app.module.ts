@@ -21,6 +21,7 @@ import { CatalogueModule } from './modules/catalogue/catalogue.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { ProcurementModule } from './modules/procurement/procurement.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -28,6 +29,7 @@ import { AiModule } from './modules/ai/ai.module';
 import { MarketingModule } from './modules/marketing/marketing.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { CashModule } from './modules/cash/cash.module';
+import { LoyaltyModule } from './modules/loyalty/loyalty.module';
 
 @Module({
   imports: [
@@ -106,6 +108,7 @@ import { CashModule } from './modules/cash/cash.module';
     OrdersModule,
     CustomersModule,
     InventoryModule,
+    ProcurementModule,
     StaffModule,
     RealtimeModule,
     AnalyticsModule,
@@ -113,6 +116,7 @@ import { CashModule } from './modules/cash/cash.module';
     MarketingModule,
     ReportsModule,
     CashModule,
+    LoyaltyModule,
   ],
   controllers: [HealthController],
   providers: [

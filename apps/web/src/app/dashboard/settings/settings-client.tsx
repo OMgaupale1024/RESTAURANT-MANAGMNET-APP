@@ -79,7 +79,12 @@ export function SettingsClient() {
     return (
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <div className="mt-6 max-w-xl space-y-4">
+        <div
+          className="mt-6 max-w-xl space-y-4"
+          role="status"
+          aria-busy="true"
+          aria-label="Loading settings"
+        >
           <Skeleton className="h-32" />
           <Skeleton className="h-64" />
         </div>

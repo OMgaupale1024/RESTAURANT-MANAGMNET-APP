@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { AuditClient } from './audit-client';
 
 export const metadata: Metadata = {
-  title: 'Audit Log — OraOS',
+  title: 'Timeline — OraOS',
   robots: { index: false, follow: false },
 };
 

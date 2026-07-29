@@ -12,7 +12,7 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-dvh">
       {/* Left 45% Brand Panel */}
-      <div className="hidden w-[45%] flex-col justify-between overflow-hidden bg-[#0a0a0a] p-12 text-[#ededed] lg:flex relative">
+      <div className="theme-dark bg-page text-ink hidden w-[45%] flex-col justify-between overflow-hidden p-12 lg:flex relative">
         <div className="relative z-10">
           <Link href="/" className="text-xl font-semibold tracking-tight">
             OraOS

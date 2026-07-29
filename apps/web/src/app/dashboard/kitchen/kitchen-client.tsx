@@ -66,6 +66,26 @@ const DONE_SHOWN = 10;
 /** State cap so a screen left open for days cannot grow without bound. */
 const MAX_ORDERS = 150;
 
+/**
+ * Kitchen action verbs, mapped to the shared state machine (order-detail QUICK).
+ * The vocabulary is the line cook's — Start → Ready → Deliver — where the admin
+ * Orders screen says "Complete"; the underlying transition (→ COMPLETED) is the
+ * same one, so this only relabels, it never changes the flow.
+ */
+const ACTION_LABEL: Record<string, string> = {
+  PLACED: 'Start',
+  PREPARING: 'Ready',
+  READY: 'Deliver',
+};
+
+/** Order-type badge tone: the exceptions (dine-in, delivery) stand out; takeaway
+ *  — the counter default — stays quiet but is still shown. */
+const TYPE_VARIANT: Record<string, 'info' | 'warning' | 'neutral'> = {
+  DELIVERY: 'info',
+  DINE_IN: 'warning',
+  TAKEAWAY: 'neutral',
+};
+
 /** The board stores list-shaped rows; live inserts arrive detail-shaped. */
 function toSummary(o: Order): OrderSummary {
   return {
@@ -147,6 +167,13 @@ export function KitchenClient() {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+  // Latest board snapshot + a synchronous in-flight guard for the optimistic
+  // advance() below — neither is readable from its stale useCallback closure.
+  const ordersRef = useRef(orders);
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
+  const busyRef = useRef<string | null>(null);
 
   const refetchAll = useCallback(async () => {
     const token = tokenRef.current;
@@ -247,24 +274,37 @@ export function KitchenClient() {
   const advance = useCallback(
     async (id: string, to: string, reason?: string) => {
       const token = tokenRef.current;
-      if (!token) return;
+      // Synchronous guard: a second tap before the button disables on re-render
+      // must not fire a duplicate transition.
+      if (!token || busyRef.current === id) return;
+      busyRef.current = id;
       setBusy(id);
       setMoving(true);
+      // Optimistic: move the ticket now so the tap feels instant (the socket
+      // echo lands on the same status). On failure, roll back only this
+      // ticket's status — preserving socket updates to other tickets meanwhile.
+      const prevStatus = ordersRef.current?.find((x) => x.id === id)?.status;
+      setOrders((prev) =>
+        prev === null ? prev : prev.map((x) => (x.id === id ? { ...x, status: to } : x)),
+      );
+      setArrivals((a) => ({ ...a, [id]: Date.now() }));
       try {
         await updateOrderStatus(token, onNewToken, id, to, reason);
-        // The socket echo patches the board too; patching now makes the tap
-        // feel instant even if the round trip lags.
-        setOrders((prev) =>
-          prev === null ? prev : prev.map((x) => (x.id === id ? { ...x, status: to } : x)),
-        );
-        setArrivals((a) => ({ ...a, [id]: Date.now() }));
         if (selectedIdRef.current === id) void loadDetail(id);
       } catch (e) {
+        if (prevStatus !== undefined) {
+          setOrders((prev) =>
+            prev === null
+              ? prev
+              : prev.map((x) => (x.id === id ? { ...x, status: prevStatus } : x)),
+          );
+        }
         toast({
           title: e instanceof ApiRequestError ? e.message : 'Could not update order',
           variant: 'danger',
         });
       } finally {
+        busyRef.current = null;
         setBusy(null);
         setMoving(false);
       }
@@ -317,7 +357,7 @@ export function KitchenClient() {
       </div>
 
       {orders === null ? (
-        <div className="mt-4 grid flex-1 gap-4 md:grid-cols-3" aria-label="Loading kitchen board">
+        <div className="mt-4 grid flex-1 gap-4 md:grid-cols-3" role="status" aria-busy="true" aria-label="Loading kitchen board">
           {COLUMNS.map((c) => (
             <div key={c.status} className="space-y-3">
               <Skeleton className="h-7 w-28" />
@@ -376,7 +416,7 @@ export function KitchenClient() {
           <summary className="cursor-pointer list-none px-3 py-2.5 text-[13px] font-semibold tracking-wide uppercase select-none [&::-webkit-details-marker]:hidden">
             <span className="inline-flex items-center gap-2">
               <CheckCircle2 aria-hidden className="size-4 text-success-text" />
-              Completed
+              Delivered
               <Badge className="tabular-nums">{done.length}</Badge>
               <span className="text-[11px] font-normal text-ink-3 normal-case">tap to expand</span>
             </span>
@@ -415,7 +455,7 @@ export function KitchenClient() {
         }
       >
         {!detail ? (
-          <div className="space-y-3" aria-label="Loading order">
+          <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading order">
             <Skeleton className="h-8 w-40" />
             <Skeleton className="h-24" />
             <Skeleton className="h-40" />
@@ -477,6 +517,9 @@ const Ticket = memo(function Ticket({
 }) {
   const quick = QUICK[order.status];
   const since = order.placedAt ?? order.createdAt;
+  // "If relevant" per the spec: a pay-later ticket the counter must collect on.
+  // Fully-paid orders (the POS default) stay unmarked — no money noise.
+  const unpaid = !order.payments.some((p) => p.status === 'CAPTURED');
   return (
     <li
       className={cn('list-none', liveArrival ? 'animate-slide-in-left' : 'animate-fade-up')}
@@ -506,12 +549,11 @@ const Ticket = memo(function Ticket({
           >
             #{order.orderNumber}
           </button>
-          <span className="flex items-center gap-1.5">
-            {order.orderType !== 'TAKEAWAY' && (
-              <Badge variant={order.orderType === 'DELIVERY' ? 'info' : 'warning'}>
-                {TYPE_LABEL[order.orderType] ?? order.orderType}
-              </Badge>
-            )}
+          <span className="flex flex-wrap items-center justify-end gap-1.5">
+            {unpaid && <Badge variant="danger">Unpaid</Badge>}
+            <Badge variant={TYPE_VARIANT[order.orderType] ?? 'neutral'}>
+              {TYPE_LABEL[order.orderType] ?? order.orderType}
+            </Badge>
             <Elapsed since={since} />
           </span>
         </div>
@@ -551,7 +593,7 @@ const Ticket = memo(function Ticket({
             }}
             className="mt-3 w-full"
           >
-            {busy ? '…' : quick.label}
+            {busy ? '…' : (ACTION_LABEL[order.status] ?? quick.label)}
           </Button>
         )}
       </div>

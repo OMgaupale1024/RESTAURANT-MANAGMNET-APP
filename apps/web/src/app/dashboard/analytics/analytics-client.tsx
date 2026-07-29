@@ -1,12 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { BarChart3, Clock, Download, TrendingDown, TrendingUp } from 'lucide-react';
 import {
   ApiRequestError,
   getAnalytics,
+  getAnalyticsInsights,
   getSalesReport,
+  type AnalyticsInsights,
   type SalesReport,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
@@ -32,6 +34,7 @@ import { StatCard } from '@/components/ui/stat-card';
 
 const RANGES = [
   { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
   { key: '7d', label: '7 days' },
   { key: '30d', label: '30 days' },
   { key: '90d', label: '90 days' },
@@ -43,12 +46,43 @@ type RangeKey = (typeof RANGES)[number]['key'];
 type Loaded = {
   key: string;
   data: SalesReport;
+  /** Business insights for the same window; null if that call failed (the sales
+   *  view still renders). */
+  insights: AnalyticsInsights | null;
   /** Server summary of the same-length window immediately before; null = no comparison. */
   prev: SalesReport['summary'] | null;
   fromDay: string;
   toDay: string;
   days: number;
 };
+
+const num = (n: number) => n.toLocaleString('en-IN');
+
+/** Seconds → a short "8m 20s" / "45s" duration; em dash when not measured. */
+function dur(secs: number | null): string {
+  if (secs == null) return '—';
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return m > 0 ? (s ? `${m}m ${s}s` : `${m}m`) : `${s}s`;
+}
+
+/**
+ * The window each half of the page loads. Presets are server-resolved to IST
+ * bounds; Yesterday and Custom resolve to explicit from/to dates here — exactly
+ * as the sales side already routes Custom through Reports. One model, both halves.
+ */
+function windowFor(
+  range: RangeKey,
+  from: string,
+  to: string,
+): { range?: string; from?: string; to?: string } {
+  if (range === 'custom') return { from, to };
+  if (range === 'yesterday') {
+    const y = isoDate(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    return { from: y, to: y };
+  }
+  return { range };
+}
 
 function dayLabel(date: string): string {
   return new Date(`${date}T00:00:00`).toLocaleDateString('en-IN', {
@@ -83,14 +117,22 @@ export function AnalyticsClient() {
     void (async () => {
       try {
         setError(null);
-        const raw =
-          range === 'custom'
-            ? await getSalesReport(accessToken, onNewToken, customFrom, customTo)
-            : await getAnalytics(accessToken, onNewToken, range);
+        const w = windowFor(range, customFrom, customTo);
+        const raw = w.range
+          ? await getAnalytics(accessToken, onNewToken, w.range)
+          : await getSalesReport(accessToken, onNewToken, w.from!, w.to!);
         const data = fillSeries(raw);
         const fromDay = istDay(data.from);
         const toDay = istDay(data.to);
         const days = daysBetween(fromDay, toDay);
+        // Business insights for the same window — best-effort: a failure here
+        // hides the extra sections, it never blocks the sales view.
+        let insights: AnalyticsInsights | null = null;
+        try {
+          insights = await getAnalyticsInsights(accessToken, onNewToken, w);
+        } catch {
+          insights = null;
+        }
         // Previous same-length window, aggregated by the same server code. If
         // it fails, show no comparison rather than a wrong one.
         let prev: SalesReport['summary'] | null = null;
@@ -106,7 +148,15 @@ export function AnalyticsClient() {
           prev = null;
         }
         if (!cancelled) {
-          setLoaded({ key: range === 'custom' ? `custom:${customFrom}_${customTo}` : range, data, prev, fromDay, toDay, days });
+          setLoaded({
+            key: range === 'custom' ? `custom:${customFrom}_${customTo}` : range,
+            data,
+            insights,
+            prev,
+            fromDay,
+            toDay,
+            days,
+          });
         }
       } catch (e) {
         if (!cancelled) {
@@ -185,7 +235,7 @@ export function AnalyticsClient() {
       {!view ? (
         !error &&
         !rangeError && (
-          <div>
+          <div role="status" aria-busy="true" aria-label="Loading analytics">
             <div className="mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
               {Array.from({ length: 4 }, (_, i) => (
                 <Skeleton key={i} className="h-36" />
@@ -211,7 +261,13 @@ function AnalyticsBody({ view, rangeKey }: { view: Loaded; rangeKey: RangeKey })
   // under ₹0.00 reads as decoration, not data.
   const trend = series.length >= 2 && data.summary.orders > 0;
   const compare =
-    prev === null ? undefined : rangeKey === 'today' ? 'vs yesterday' : `vs previous ${days} days`;
+    prev === null
+      ? undefined
+      : rangeKey === 'today'
+        ? 'vs yesterday'
+        : days === 1
+          ? 'vs previous day'
+          : `vs previous ${days} days`;
   const avgOf = (p: { revenueMinor: number; orders: number }) =>
     p.orders > 0 ? p.revenueMinor / p.orders : 0;
   const topSeller = data.topProducts[0];
@@ -314,7 +370,98 @@ function AnalyticsBody({ view, rangeKey }: { view: Loaded; rangeKey: RangeKey })
           </div>
         </>
       )}
+
+      <InsightsSections insights={view.insights} />
     </div>
+  );
+}
+
+/**
+ * Business-insights beyond core sales — refunds, customers, loyalty, kitchen.
+ * Number-forward by design (no charts): each is a single figure that answers a
+ * plain question. Renders nothing until the insights call has landed, and never
+ * fabricates — an unmeasured prep time reads "—", not a zero.
+ */
+function InsightsSections({ insights }: { insights: AnalyticsInsights | null }) {
+  if (!insights) return null;
+  const { refunds, cancelledOrders, customers, loyalty, kitchen } = insights;
+  const retRate =
+    customers.active > 0
+      ? `${Math.round((customers.returning / customers.active) * 100)}% of active`
+      : undefined;
+  const prepSub =
+    kitchen.prepSamples > 0
+      ? `across ${kitchen.prepSamples} order${kitchen.prepSamples === 1 ? '' : 's'}`
+      : 'no kitchen orders yet';
+
+  return (
+    <div className="mt-8 space-y-6">
+      <Section title="Refunds & cancellations" cols={4}>
+        <Metric label="Refunded" value={formatMinor(refunds.amountMinor)} />
+        <Metric
+          label="Refund rate"
+          value={`${(refunds.rateBp / 100).toFixed(1)}%`}
+          sub="of gross revenue"
+        />
+        <Metric label="Refunds" value={String(refunds.count)} />
+        <Metric label="Cancelled orders" value={String(cancelledOrders)} />
+      </Section>
+
+      <Section title="Customers" cols={3}>
+        <Metric label="New customers" value={String(customers.new)} />
+        <Metric
+          label="Active"
+          value={String(customers.active)}
+          sub="ordered in this window"
+        />
+        <Metric label="Returning" value={String(customers.returning)} sub={retRate} />
+      </Section>
+
+      <Section title="Loyalty" cols={3}>
+        <Metric label="Members" value={num(loyalty.members)} sub="lifetime" />
+        <Metric label="Points issued" value={num(loyalty.pointsIssued)} />
+        <Metric label="Points redeemed" value={num(loyalty.pointsRedeemed)} />
+      </Section>
+
+      <Section title="Kitchen" cols={3}>
+        <Metric label="Orders completed" value={String(kitchen.completed)} />
+        <Metric label="Avg prep time" value={dur(kitchen.avgPrepSecs)} sub={prepSub} />
+        <Metric label="Longest prep" value={dur(kitchen.longestPrepSecs)} />
+      </Section>
+    </div>
+  );
+}
+
+function Section({
+  title,
+  cols,
+  children,
+}: {
+  title: string;
+  cols: 3 | 4;
+  children: ReactNode;
+}) {
+  return (
+    <section>
+      <h2 className="text-sm font-semibold tracking-tight text-ink">{title}</h2>
+      <div
+        className={`mt-3 grid grid-cols-2 gap-4 ${cols === 3 ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}
+      >
+        {children}
+      </div>
+    </section>
+  );
+}
+
+function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <Card className="min-w-0">
+      <p className="text-label">{label}</p>
+      <p className="mt-1.5 text-[22px] leading-tight font-semibold tracking-tight tabular-nums">
+        {value}
+      </p>
+      {sub && <p className="mt-1 text-[12px] text-ink-3">{sub}</p>}
+    </Card>
   );
 }
 

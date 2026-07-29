@@ -4,9 +4,10 @@ import { OrdersService } from './orders.service';
 import { InventoryModule } from '../inventory/inventory.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { MarketingModule } from '../marketing/marketing.module';
+import { EventsModule } from '../../events/events.module';
 
 @Module({
-  imports: [InventoryModule, RealtimeModule, MarketingModule],
+  imports: [InventoryModule, RealtimeModule, MarketingModule, EventsModule],
   controllers: [OrdersController],
   providers: [OrdersService],
 })

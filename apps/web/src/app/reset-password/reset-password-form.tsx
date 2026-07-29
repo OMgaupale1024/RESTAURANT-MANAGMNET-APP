@@ -3,6 +3,9 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { ApiRequestError, resetPassword } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { FormError } from '@/components/ui/form-error';
 
 /**
  * Sets a new password from a reset link. On success we do NOT sign the user in —
@@ -49,7 +52,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
           This reset link is missing or malformed. Request a new one.
         </p>
         <p className="mt-4 text-sm">
-          <Link href="/forgot-password" className="underline hover:text-ink-1">
+          <Link href="/forgot-password" className="underline hover:text-ink">
             Request a new link
           </Link>
         </p>
@@ -70,7 +73,7 @@ export function ResetPasswordForm({ token }: { token: string }) {
         <p className="mt-6">
           <Link
             href="/login"
-            className="inline-block w-full rounded-md bg-brand px-5 py-3 text-center text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95"
+            className="inline-block w-full rounded-lg bg-brand px-5 py-3 text-center text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95"
           >
             Go to sign in
           </Link>
@@ -87,49 +90,44 @@ export function ResetPasswordForm({ token }: { token: string }) {
         Choose a new password
       </h1>
       <form onSubmit={onSubmit} noValidate className="flex flex-col">
-        {error && (
-          <p
-            role="alert"
-            className="animate-fade-up mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
-          >
-            {error}
-          </p>
-        )}
+        {error && <FormError>{error}</FormError>}
 
         <label htmlFor="password" className="block text-sm font-medium">
           New password
         </label>
-        <input
+        <Input
           id="password"
           type="password"
           autoComplete="new-password"
           required
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mt-1 mb-1 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-1"
         />
         <p className="mb-4 text-xs text-ink-3">At least 12 characters.</p>
 
         <label htmlFor="confirm" className="block text-sm font-medium">
           Confirm new password
         </label>
-        <input
+        <Input
           id="confirm"
           type="password"
           autoComplete="new-password"
           required
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
-          className="mt-1 mb-6 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-6"
         />
 
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="lg"
           disabled={pending || !valid}
-          className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="w-full"
         >
           {pending ? 'Updating…' : 'Update password'}
-        </button>
+        </Button>
       </form>
     </>
   );

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Lightbulb, TicketPercent, Users } from 'lucide-react';
 import {
   ApiRequestError,
@@ -76,6 +76,8 @@ export function MarketingClient() {
   const [confirmOff, setConfirmOff] = useState<Coupon | null>(null);
   const [openSegment, setOpenSegment] = useState<Segment | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // Per-coupon in-flight guard: blocks a double-toggle on the same coupon.
+  const pendingRef = useRef<Set<string>>(new Set());
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
   useEffect(() => {
@@ -101,16 +103,29 @@ export function MarketingClient() {
   }, [accessToken, onNewToken, reloadKey, toast]);
 
   async function setActive(c: Coupon, isActive: boolean) {
-    if (!accessToken) return;
+    if (!accessToken || pendingRef.current.has(c.id)) return;
+    pendingRef.current.add(c.id);
+    // Optimistic: flip the badge now. On failure roll back ONLY this coupon's
+    // flag (targeted, like orders/kitchen) — a whole-list snapshot restore would
+    // clobber a concurrent toggle of a different coupon, and with no socket to
+    // resync coupons that inconsistency would stick until reload.
+    const prevActive = c.isActive;
+    setCoupons((prev) =>
+      prev === null ? prev : prev.map((x) => (x.id === c.id ? { ...x, isActive } : x)),
+    );
     try {
       await setCouponActive(accessToken, onNewToken, c.id, isActive);
       toast({ title: isActive ? 'Coupon enabled' : 'Coupon disabled', variant: 'success' });
-      reload();
     } catch (e) {
+      setCoupons((prev) =>
+        prev === null ? prev : prev.map((x) => (x.id === c.id ? { ...x, isActive: prevActive } : x)),
+      );
       toast({
         title: e instanceof ApiRequestError ? e.message : 'Could not update coupon',
         variant: 'danger',
       });
+    } finally {
+      pendingRef.current.delete(c.id);
     }
   }
 
@@ -146,7 +161,7 @@ export function MarketingClient() {
 
           <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
             {loadingCoupons ? (
-              <div className="space-y-2 p-4" aria-label="Loading coupons">
+              <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading coupons">
                 {Array.from({ length: 4 }, (_, i) => (
                   <Skeleton key={i} className="h-9" />
                 ))}
@@ -272,7 +287,7 @@ function SegmentsTab({
 }) {
   if (!segments) {
     return (
-      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4" aria-label="Loading segments">
+      <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4" role="status" aria-busy="true" aria-label="Loading segments">
         {Array.from({ length: 4 }, (_, i) => (
           <Skeleton key={i} className="h-28" />
         ))}
@@ -378,7 +393,7 @@ function SegmentSheet({ segment, onClose }: { segment: Segment | null; onClose: 
     >
       {segment && <p className="mb-4 text-[12px] text-ink-3">{segment.rule}</p>}
       {customers === null ? (
-        <div className="space-y-2" aria-label="Loading customers">
+        <div className="space-y-2" role="status" aria-busy="true" aria-label="Loading customers">
           {Array.from({ length: 5 }, (_, i) => (
             <Skeleton key={i} className="h-12" />
           ))}

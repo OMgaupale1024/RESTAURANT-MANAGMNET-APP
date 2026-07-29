@@ -73,7 +73,12 @@ export function CashClient() {
     return (
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Day Close</h1>
-        <div className="mt-6 max-w-2xl space-y-4">
+        <div
+          className="mt-6 max-w-2xl space-y-4"
+          role="status"
+          aria-busy="true"
+          aria-label="Loading day close"
+        >
           <Skeleton className="h-40" />
           <Skeleton className="h-64" />
         </div>

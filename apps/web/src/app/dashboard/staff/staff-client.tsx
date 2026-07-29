@@ -168,7 +168,7 @@ export function StaffClient() {
       </div>
 
       {loading ? (
-        <div className="mt-4 space-y-2" aria-label="Loading staff">
+        <div className="mt-4 space-y-2" role="status" aria-busy="true" aria-label="Loading staff">
           {Array.from({ length: 5 }, (_, i) => (
             <Skeleton key={i} className="h-10" />
           ))}
@@ -482,7 +482,7 @@ function AttendanceTab({
 
         <div className="rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
           {sheet === null ? (
-            <div className="space-y-2 p-4" aria-label="Loading timesheet">
+            <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading timesheet">
               {Array.from({ length: 4 }, (_, i) => (
                 <Skeleton key={i} className="h-9" />
               ))}

@@ -5,6 +5,9 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ApiRequestError, register } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { FormError } from '@/components/ui/form-error';
 
 /**
  * Creates the owner's account, then sends them straight to /setup — a fresh
@@ -47,21 +50,13 @@ export function RegisterForm() {
 
   return (
     <form onSubmit={onSubmit} noValidate className="flex flex-col">
-      {error && (
-        <p
-          role="alert"
-          className="animate-fade-up mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
-          style={{ animationDelay: '0ms' }}
-        >
-          {error}
-        </p>
-      )}
+      {error && <FormError>{error}</FormError>}
 
       <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
         <label htmlFor="name" className="block text-sm font-medium">
           Your name
         </label>
-        <input
+        <Input
           id="name"
           name="name"
           type="text"
@@ -71,7 +66,7 @@ export function RegisterForm() {
           maxLength={120}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-4"
         />
       </div>
 
@@ -79,7 +74,7 @@ export function RegisterForm() {
         <label htmlFor="email" className="block text-sm font-medium">
           Email
         </label>
-        <input
+        <Input
           id="email"
           name="email"
           type="email"
@@ -87,7 +82,7 @@ export function RegisterForm() {
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-4"
         />
       </div>
 
@@ -95,7 +90,7 @@ export function RegisterForm() {
         <label htmlFor="password" className="block text-sm font-medium">
           Password
         </label>
-        <input
+        <Input
           id="password"
           name="password"
           type="password"
@@ -105,19 +100,21 @@ export function RegisterForm() {
           maxLength={72}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mt-1 mb-1 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-1"
         />
         <p className="mb-6 text-xs text-ink-3">At least 12 characters.</p>
       </div>
 
       <div className="animate-fade-up" style={{ animationDelay: '160ms' }}>
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="lg"
           disabled={pending}
-          className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="w-full"
         >
           {pending ? 'Creating account…' : 'Create account'}
-        </button>
+        </Button>
       </div>
 
       <p
@@ -125,7 +122,7 @@ export function RegisterForm() {
         style={{ animationDelay: '200ms' }}
       >
         Already have an account?{' '}
-        <Link href="/login" className="underline hover:text-ink-1">
+        <Link href="/login" className="underline hover:text-ink">
           Sign in
         </Link>
       </p>

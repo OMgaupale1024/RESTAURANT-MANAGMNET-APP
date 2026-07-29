@@ -203,7 +203,7 @@ export function MenuClient() {
 
       <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
         {loading ? (
-          <div className="space-y-2 p-4" aria-label="Loading menu">
+          <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading menu">
             {Array.from({ length: 6 }, (_, i) => (
               <Skeleton key={i} className="h-9" />
             ))}
@@ -411,7 +411,7 @@ function FoodCostBody() {
   return (
     <>
       {rows === null ? (
-        <div className="space-y-2" aria-label="Loading food cost">
+        <div className="space-y-2" role="status" aria-busy="true" aria-label="Loading food cost">
           {Array.from({ length: 5 }, (_, i) => (
             <Skeleton key={i} className="h-9" />
           ))}

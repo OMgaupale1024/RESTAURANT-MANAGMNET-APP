@@ -5,6 +5,10 @@ import { useRouter } from 'next/navigation';
 import { acceptInvite, ApiRequestError, describeInvite } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { FormError } from '@/components/ui/form-error';
+import { Skeleton } from '@/components/ui/skeleton';
 
 /**
  * Invite acceptance.
@@ -73,8 +77,20 @@ export function JoinClient({ token }: { token: string }) {
 
   if (loading) {
     return (
-      <Card className="p-6 text-center">
-        <p className="text-sm text-ink-2">Loading…</p>
+      <Card
+        className="p-6"
+        role="status"
+        aria-busy="true"
+        aria-label="Loading invitation"
+      >
+        <Skeleton className="h-7 w-48" />
+        <Skeleton className="mt-3 h-4 w-32" />
+        <div className="mt-6 space-y-4">
+          <Skeleton className="h-9" />
+          <Skeleton className="h-9" />
+          <Skeleton className="h-9" />
+        </div>
+        <Skeleton className="mt-6 h-11" />
       </Card>
     );
   }
@@ -109,15 +125,7 @@ export function JoinClient({ token }: { token: string }) {
       </p>
 
       <form onSubmit={submit} noValidate className="flex flex-col">
-        {error && (
-          <p
-            role="alert"
-            className="animate-fade-up mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
-            style={{ animationDelay: '0ms' }}
-          >
-            {error}
-          </p>
-        )}
+        {error && <FormError>{error}</FormError>}
 
         <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
           <label htmlFor="j-email" className="block text-sm font-medium">
@@ -127,7 +135,7 @@ export function JoinClient({ token }: { token: string }) {
             id="j-email"
             value={invite.email}
             readOnly
-            className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-surface-2 px-3 py-2 text-sm text-ink-2 cursor-not-allowed"
+            className="mt-1 mb-4 w-full cursor-not-allowed rounded-lg border border-line-2 bg-surface-2 px-3 py-2 text-sm text-ink-2"
           />
         </div>
 
@@ -135,12 +143,12 @@ export function JoinClient({ token }: { token: string }) {
           <label htmlFor="j-name" className="block text-sm font-medium">
             Your name
           </label>
-          <input
+          <Input
             id="j-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoComplete="name"
-            className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+            className="mt-1 mb-4"
           />
         </div>
 
@@ -148,13 +156,13 @@ export function JoinClient({ token }: { token: string }) {
           <label htmlFor="j-password" className="block text-sm font-medium">
             Choose a password
           </label>
-          <input
+          <Input
             id="j-password"
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
-            className="mt-1 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+            className="mt-1"
           />
           <p className="mt-1 mb-6 text-xs text-ink-3">
             At least 12 characters. Nobody else will know it.
@@ -162,13 +170,15 @@ export function JoinClient({ token }: { token: string }) {
         </div>
 
         <div className="animate-fade-up" style={{ animationDelay: '160ms' }}>
-          <button
+          <Button
             type="submit"
+            variant="primary"
+            size="lg"
             disabled={!valid || busy}
-            className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+            className="w-full"
           >
             {busy ? 'Joining…' : 'Join'}
-          </button>
+          </Button>
         </div>
       </form>
     </Card>

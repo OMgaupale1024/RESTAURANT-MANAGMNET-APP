@@ -132,6 +132,8 @@ describe('Analytics (e2e)', () => {
       'security_events',
       'orders',
       'stock_movements',
+      'refunds',
+      'loyalty_ledger',
     ]) {
       await owner.$executeRawUnsafe(`ALTER TABLE ${t} DISABLE TRIGGER USER`);
     }
@@ -145,6 +147,12 @@ describe('Analytics (e2e)', () => {
         select: { restaurantId: true },
       });
       const rids = ms.map((m) => m.restaurantId);
+      // Ledgers first: loyalty_ledger RESTRICTs its customer, and refunds is
+      // append-only — both must go before the restaurant cascade reaches them.
+      await owner.loyaltyLedger.deleteMany({
+        where: { restaurantId: { in: rids } },
+      });
+      await owner.refund.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.order.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.restaurant.deleteMany({ where: { id: { in: rids } } });
       await owner.securityEvent.deleteMany({
@@ -329,6 +337,146 @@ describe('Analytics (e2e)', () => {
         .get('/api/v1/analytics/overview?range=forever')
         .set('Authorization', `Bearer ${t.token}`)
         .expect(400);
+    });
+  });
+
+  // The insights endpoint: refunds, customers, loyalty, kitchen — all over the
+  // same live tables, same tenant scope, same analytics.read gate.
+  describe('insights', () => {
+    const insights = (token: string, qs = '') =>
+      api()
+        .get(`/api/v1/analytics/insights${qs}`)
+        .set('Authorization', `Bearer ${token}`);
+
+    const setStatus = (token: string, id: string, status: string) =>
+      api()
+        .patch(`/api/v1/orders/${id}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status });
+
+    it('aggregates refunds, the refund rate, and cancellations', async () => {
+      const t = await newTenant('Refund Insights Cafe');
+      // A paid order taken through to COMPLETED, then partially refunded.
+      const paid = await placeOrder(
+        t.token,
+        [{ productId: t.p1, quantity: 1 }],
+        'UPI',
+      ).expect(201); // 10500 gross
+      for (const s of ['PREPARING', 'READY', 'COMPLETED']) {
+        await setStatus(t.token, paid.body.id, s).expect(200);
+      }
+      await api()
+        .post(`/api/v1/orders/${paid.body.id}/refunds`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ method: 'UPI', amountMinor: 5000, reason: 'partial' })
+        .expect(201);
+      // …and one voided order.
+      const voided = await placeOrder(t.token, [
+        { productId: t.p1, quantity: 1 },
+      ]).expect(201);
+      await setStatus(t.token, voided.body.id, 'VOIDED').expect(200);
+
+      const res = await insights(t.token, '?range=30d').expect(200);
+      expect(res.body.refunds.amountMinor).toBe(5000);
+      expect(res.body.refunds.count).toBe(1);
+      expect(res.body.refunds.rateBp).toBe(4762); // round(5000 / 10500 * 10000)
+      expect(res.body.cancelledOrders).toBe(1);
+    });
+
+    it('counts new and active customers', async () => {
+      const t = await newTenant('Customer Insights Cafe');
+      const cust = await api()
+        .post('/api/v1/customers')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Asha', phone: `9${Date.now().toString().slice(-9)}` })
+        .expect(201);
+      await api()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({
+          items: [{ productId: t.p1, quantity: 1 }],
+          customerId: cust.body.id,
+        })
+        .expect(201);
+
+      const res = await insights(t.token, '?range=30d').expect(200);
+      expect(res.body.customers.new).toBeGreaterThanOrEqual(1);
+      expect(res.body.customers.active).toBe(1);
+      expect(res.body.customers.returning).toBe(0); // no order before this window
+    });
+
+    it('sums loyalty points issued and redeemed', async () => {
+      const t = await newTenant('Loyalty Insights Cafe');
+      const cust = await api()
+        .post('/api/v1/customers')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ name: 'Ravi', phone: `9${Date.now().toString().slice(-9)}` })
+        .expect(201);
+      await api()
+        .post(`/api/v1/customers/${cust.body.id}/loyalty/adjust`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ points: 500, reason: 'welcome' })
+        .expect(201);
+      await api()
+        .post(`/api/v1/customers/${cust.body.id}/loyalty/redeem`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ points: 200 })
+        .expect(201);
+
+      const res = await insights(t.token, '?range=30d').expect(200);
+      expect(res.body.loyalty.members).toBeGreaterThanOrEqual(1);
+      expect(res.body.loyalty.pointsIssued).toBe(500);
+      expect(res.body.loyalty.pointsRedeemed).toBe(200);
+    });
+
+    it('measures kitchen prep time and completions', async () => {
+      const t = await newTenant('Kitchen Insights Cafe');
+      const o = await placeOrder(t.token, [
+        { productId: t.p1, quantity: 1 },
+      ]).expect(201);
+      for (const s of ['PREPARING', 'READY', 'COMPLETED']) {
+        await setStatus(t.token, o.body.id, s).expect(200);
+      }
+
+      const res = await insights(t.token, '?range=30d').expect(200);
+      expect(res.body.kitchen.completed).toBe(1);
+      expect(res.body.kitchen.prepSamples).toBe(1);
+      expect(res.body.kitchen.avgPrepSecs).not.toBeNull();
+      expect(res.body.kitchen.avgPrepSecs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('is tenant-scoped', async () => {
+      const a = await newTenant('Iso Ins A');
+      const b = await newTenant('Iso Ins B');
+      const paid = await placeOrder(
+        a.token,
+        [{ productId: a.p1, quantity: 1 }],
+        'UPI',
+      ).expect(201);
+      for (const s of ['PREPARING', 'READY', 'COMPLETED']) {
+        await setStatus(a.token, paid.body.id, s).expect(200);
+      }
+      await api()
+        .post(`/api/v1/orders/${paid.body.id}/refunds`)
+        .set('Authorization', `Bearer ${a.token}`)
+        .send({ method: 'UPI', amountMinor: 1000, reason: 'x' })
+        .expect(201);
+
+      const bView = await insights(b.token, '?range=30d').expect(200);
+      expect(bView.body.refunds.amountMinor).toBe(0);
+      expect(bView.body.cancelledOrders).toBe(0);
+      expect(bView.body.kitchen.completed).toBe(0);
+    });
+
+    it('a CASHIER cannot see insights', async () => {
+      const t = await newTenant('Cashier Insights Cafe');
+      const cashier = await becomeRole(t, 'CASHIER');
+      await insights(cashier, '?range=30d').expect(403);
+    });
+
+    it('rejects an impossible custom date', async () => {
+      const t = await newTenant('Bad Insights Date Cafe');
+      await insights(t.token, '?from=2026-13-40&to=2026-13-40').expect(400);
     });
   });
 });

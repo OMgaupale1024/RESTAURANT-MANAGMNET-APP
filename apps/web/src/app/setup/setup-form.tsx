@@ -8,6 +8,9 @@ import {
   selectRestaurant,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { FormError } from '@/components/ui/form-error';
 
 /**
  * Creates the user's restaurant, then immediately swaps the token for one
@@ -73,21 +76,13 @@ export function SetupForm() {
 
   return (
     <form onSubmit={onSubmit} noValidate className="flex flex-col">
-      {error && (
-        <p
-          role="alert"
-          className="animate-fade-up mb-4 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-700 dark:text-red-300"
-          style={{ animationDelay: '0ms' }}
-        >
-          {error}
-        </p>
-      )}
+      {error && <FormError>{error}</FormError>}
 
       <div className="animate-fade-up" style={{ animationDelay: '40ms' }}>
         <label htmlFor="name" className="block text-sm font-medium">
           Restaurant name
         </label>
-        <input
+        <Input
           id="name"
           name="name"
           required
@@ -95,7 +90,7 @@ export function SetupForm() {
           maxLength={120}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="mt-1 mb-4 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-4"
         />
       </div>
 
@@ -103,25 +98,27 @@ export function SetupForm() {
         <label htmlFor="branchName" className="block text-sm font-medium">
           First branch <span className="text-ink-3">(optional)</span>
         </label>
-        <input
+        <Input
           id="branchName"
           name="branchName"
           maxLength={120}
           placeholder="Main"
           value={branchName}
           onChange={(e) => setBranchName(e.target.value)}
-          className="mt-1 mb-6 w-full rounded-md border border-line-2 bg-transparent px-3 py-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="mt-1 mb-6"
         />
       </div>
 
       <div className="animate-fade-up" style={{ animationDelay: '120ms' }}>
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="lg"
           disabled={pending || name.trim().length < 2}
-          className="w-full rounded-md bg-brand px-5 py-3 text-sm font-semibold text-brand-ink transition-colors duration-120 hover:brightness-95 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          className="w-full"
         >
           {pending ? 'Creating…' : 'Create restaurant'}
-        </button>
+        </Button>
       </div>
     </form>
   );

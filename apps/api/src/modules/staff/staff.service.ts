@@ -10,6 +10,7 @@ import { hash } from 'bcrypt';
 import { createHash, randomBytes } from 'node:crypto';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import { SecurityEventService } from '../auth/security-event.service';
+import { EventsService } from '../../events/events.service';
 import { TokenService, type IssuedTokens } from '../auth/token.service';
 import { MailService } from '../mail/mail.service';
 import type {
@@ -31,9 +32,13 @@ export class StaffService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
-    private readonly events: SecurityEventService,
+    // Identity-level auth trail (login/logout/registration). Distinct from the
+    // tenant event writer below; renamed to disambiguate the two.
+    private readonly securityEvents: SecurityEventService,
     private readonly config: ConfigService,
     private readonly mail: MailService,
+    // Tenant event writer — the shared audit_logs seam.
+    private readonly events: EventsService,
   ) {}
 
   /** Everyone who works here, with their current on-shift state. */
@@ -131,15 +136,11 @@ export class StaffService {
           select: { id: true, email: true, expiresAt: true },
         });
 
-        await db.auditLog.create({
-          data: {
-            restaurantId: ctx.restaurantId,
-            userId: ctx.userId,
-            action: 'staff.invited',
-            entityType: 'staff_invite',
-            entityId: invite.id,
-            metadata: { email: dto.email, role: dto.role },
-          },
+        await this.events.record(db, {
+          action: 'staff.invited',
+          entityType: 'staff_invite',
+          entityId: invite.id,
+          metadata: { email: dto.email, role: dto.role },
         });
 
         return {
@@ -179,7 +180,8 @@ export class StaffService {
   }
 
   async revokeInvite(id: string) {
-    const ctx = this.prisma.requireContext();
+    // No requireContext() here: prisma.tx() and events.record() both derive and
+    // assert the tenant context themselves, so a separate guard would be dead.
     return this.prisma.tx(async (db) => {
       const invite = await db.staffInvite.findFirst({
         where: { id, acceptedAt: null, revokedAt: null },
@@ -191,14 +193,10 @@ export class StaffService {
         where: { id },
         data: { revokedAt: new Date() },
       });
-      await db.auditLog.create({
-        data: {
-          restaurantId: ctx.restaurantId,
-          userId: ctx.userId,
-          action: 'staff.invite_revoked',
-          entityType: 'staff_invite',
-          entityId: id,
-        },
+      await this.events.record(db, {
+        action: 'staff.invite_revoked',
+        entityType: 'staff_invite',
+        entityId: id,
       });
       return { revoked: true };
     });
@@ -339,6 +337,12 @@ export class StaffService {
           select: { id: true },
         });
 
+        // Bootstrap write — deliberately NOT via EventsService.record(). This
+        // is the public /join route: there is no request context, and the
+        // actor is the user being CREATED on this very line, not a logged-in
+        // caller. record() always attributes to the context actor by design,
+        // so this one path writes the row directly. See
+        // docs/architecture/events.md § Bootstrap writes.
         await db.auditLog.create({
           data: {
             restaurantId: invite.restaurantId,
@@ -354,7 +358,7 @@ export class StaffService {
       },
     );
 
-    this.events.record({
+    this.securityEvents.record({
       type: 'REGISTERED',
       userId,
       email: invite.email,
@@ -448,16 +452,11 @@ export class StaffService {
         },
       });
 
-      await db.auditLog.create({
-        data: {
-          restaurantId: ctx.restaurantId,
-          userId: ctx.userId,
-          action:
-            dto.isActive === false ? 'staff.deactivated' : 'staff.updated',
-          entityType: 'membership',
-          entityId: membershipId,
-          metadata: { role: dto.role ?? null, isActive: dto.isActive ?? null },
-        },
+      await this.events.record(db, {
+        action: dto.isActive === false ? 'staff.deactivated' : 'staff.updated',
+        entityType: 'membership',
+        entityId: membershipId,
+        metadata: { role: dto.role ?? null, isActive: dto.isActive ?? null },
       });
 
       return updated;

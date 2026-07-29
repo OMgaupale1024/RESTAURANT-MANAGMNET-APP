@@ -615,6 +615,20 @@ export const listCustomers = (token: string, onNewToken: Retry, q?: string) =>
 export const getCustomer = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<CustomerDetail>(`/customers/${id}`, token, onNewToken);
 
+/** A customer's loyalty standing (Milestone 2). Shape mirrors the API's summary. */
+export type LoyaltySummary = {
+  customerId: string;
+  balancePoints: number;
+  lifetimeEarnedPoints: number;
+  redeemedPoints: number;
+  tier: { key: string; label: string; minPoints: number };
+  nextTier: { key: string; label: string; minPoints: number; pointsToGo: number } | null;
+};
+
+/** Needs loyalty.read; callers treat a failure as "no loyalty" and omit it. */
+export const getLoyaltySummary = (token: string, onNewToken: Retry, customerId: string) =>
+  authedFetch<LoyaltySummary>(`/customers/${customerId}/loyalty`, token, onNewToken);
+
 export const findCustomerByPhone = (
   token: string,
   onNewToken: Retry,
@@ -690,6 +704,7 @@ export type Supplier = {
   phone: string | null;
   notes: string | null;
   isActive: boolean;
+  preferred: boolean;
 };
 
 export const listSuppliers = (token: string, onNewToken: Retry, all?: boolean) =>
@@ -713,11 +728,110 @@ export const updateSupplier = (
   token: string,
   onNewToken: Retry,
   id: string,
-  body: { name?: string; phone?: string; notes?: string; isActive?: boolean },
+  body: {
+    name?: string;
+    phone?: string;
+    notes?: string;
+    isActive?: boolean;
+    preferred?: boolean;
+  },
 ) =>
   authedFetch<Supplier>(`/suppliers/${id}`, token, onNewToken, {
     method: 'PATCH',
     body: JSON.stringify(body),
+  });
+
+// -- Procurement: supplier insights, reorder suggestions, purchase orders ----
+
+export type SupplierInsight = {
+  id: string;
+  name: string;
+  phone: string | null;
+  preferred: boolean;
+  totalSpentMinor: number;
+  purchaseCount: number;
+  lastPurchaseAt: string | null;
+  avgIntervalDays: number | null;
+  topIngredient: { name: string; quantity: number } | null;
+};
+export const getSupplierInsights = (token: string, onNewToken: Retry) =>
+  authedFetch<SupplierInsight[]>('/suppliers/insights', token, onNewToken);
+
+export type ReorderSuggestion = {
+  ingredientId: string;
+  name: string;
+  unit: StockUnit;
+  currentStock: number;
+  reorderLevel: number | null;
+  avgDailyUsage: number;
+  suggestedQuantity: number;
+  lastSupplier: { id: string; name: string; preferred: boolean } | null;
+};
+export const getReorderSuggestions = (token: string, onNewToken: Retry) =>
+  authedFetch<ReorderSuggestion[]>(
+    '/inventory/reorder-suggestions',
+    token,
+    onNewToken,
+  );
+
+export type PurchaseOrderStatus = 'DRAFT' | 'ORDERED' | 'RECEIVED' | 'CANCELLED';
+export type PurchaseOrder = {
+  id: string;
+  status: PurchaseOrderStatus;
+  note: string | null;
+  orderedAt: string | null;
+  receivedAt: string | null;
+  createdAt: string;
+  supplier: { id: string; name: string };
+  items: Array<{
+    id: string;
+    quantity: number;
+    totalCostMinor: number | null;
+    ingredient: { id: string; name: string; unit: StockUnit };
+  }>;
+};
+/** The list shape: items collapsed to their cost/quantity for a total + count. */
+export type PurchaseOrderRow = Omit<PurchaseOrder, 'items'> & {
+  items: Array<{ quantity: number; totalCostMinor: number | null }>;
+};
+
+export const listPurchaseOrders = (
+  token: string,
+  onNewToken: Retry,
+  status?: PurchaseOrderStatus,
+) =>
+  authedFetch<PurchaseOrderRow[]>(
+    `/purchase-orders${status ? `?status=${status}` : ''}`,
+    token,
+    onNewToken,
+  );
+
+export const getPurchaseOrder = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<PurchaseOrder>(`/purchase-orders/${id}`, token, onNewToken);
+
+export const createPurchaseOrder = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    supplierId: string;
+    items: Array<{ ingredientId: string; quantity: number; totalCostMinor?: number }>;
+    note?: string;
+  },
+) =>
+  authedFetch<PurchaseOrder>('/purchase-orders', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const transitionPurchaseOrder = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  status: 'ORDERED' | 'RECEIVED' | 'CANCELLED',
+) =>
+  authedFetch<PurchaseOrder>(`/purchase-orders/${id}/status`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
   });
 
 export type ProductCosting = {
@@ -749,6 +863,30 @@ export const listIngredients = (
     onNewToken,
   );
 };
+
+/** Inventory intelligence: value, stock-health partition, today's flow, wastage. */
+export type InventorySummary = {
+  valueMinor: number;
+  ingredientCount: number;
+  counts: {
+    healthy: number;
+    low: number;
+    critical: number;
+    out: number;
+    negative: number;
+    tracked: number;
+  };
+  today: {
+    purchasesMinor: number;
+    purchaseCount: number;
+    consumptionCount: number;
+    wasteCount: number;
+    adjustmentCount: number;
+  };
+  wasteMonthMinor: number;
+};
+export const getInventorySummary = (token: string, onNewToken: Retry) =>
+  authedFetch<InventorySummary>('/inventory/summary', token, onNewToken);
 
 export const updateIngredient = (
   token: string,
@@ -998,6 +1136,41 @@ export const getSalesReport = (
     onNewToken,
   );
 
+/** Owner business-insights beyond core sales, for the same window. Prep-time
+ *  fields are null when no order went through the kitchen (never faked). */
+export type AnalyticsInsights = {
+  from: string;
+  to: string;
+  refunds: { amountMinor: number; count: number; rateBp: number };
+  cancelledOrders: number;
+  customers: { new: number; active: number; returning: number };
+  loyalty: { members: number; pointsIssued: number; pointsRedeemed: number };
+  kitchen: {
+    completed: number;
+    avgPrepSecs: number | null;
+    longestPrepSecs: number | null;
+    prepSamples: number;
+  };
+};
+
+/** Presets pass `{ range }`; Yesterday/Custom pass `{ from, to }` — same
+ *  window the sales side uses, so both halves of the page always agree. */
+export const getAnalyticsInsights = (
+  token: string,
+  onNewToken: Retry,
+  params: { range?: string; from?: string; to?: string },
+) => {
+  const qs = new URLSearchParams();
+  if (params.range) qs.set('range', params.range);
+  if (params.from) qs.set('from', params.from);
+  if (params.to) qs.set('to', params.to);
+  return authedFetch<AnalyticsInsights>(
+    `/analytics/insights?${qs.toString()}`,
+    token,
+    onNewToken,
+  );
+};
+
 /* --------------------------------------------------------- reports pack */
 
 const reportUrl = (kind: string, from: string, to: string) =>
@@ -1075,17 +1248,31 @@ export type AuditEntry = {
   entityType: string;
   entityId: string | null;
   userId: string | null;
+  /** The staff member who did it, resolved to a name (null for system/bootstrap
+   *  actions or a user no longer a member). */
+  actor: { name: string | null } | null;
   metadata: Record<string, unknown> | null;
   createdAt: string;
 };
 export const getAuditLog = (
   token: string,
   onNewToken: Retry,
-  opts: { cursor?: string; limit?: number } = {},
+  opts: {
+    cursor?: string;
+    limit?: number;
+    category?: string;
+    from?: string;
+    to?: string;
+    q?: string;
+  } = {},
 ) => {
   const params = new URLSearchParams();
   if (opts.cursor) params.set('cursor', opts.cursor);
   if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.category) params.set('category', opts.category);
+  if (opts.from) params.set('from', opts.from);
+  if (opts.to) params.set('to', opts.to);
+  if (opts.q) params.set('q', opts.q);
   const qs = params.toString();
   return authedFetch<AuditEntry[]>(
     `/reports/audit${qs ? `?${qs}` : ''}`,

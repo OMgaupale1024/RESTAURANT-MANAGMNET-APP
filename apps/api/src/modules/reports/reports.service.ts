@@ -12,6 +12,26 @@ const COUNTABLE: Prisma.OrderWhereInput['status'] = {
   notIn: [OrderStatus.VOIDED, OrderStatus.CANCELLED],
 };
 
+/**
+ * Timeline category -> the `audit_logs.action` filter it selects. The client
+ * sends a category label; the mapping lives here so the wire contract stays a
+ * stable label while the action strings can move. "refunds" is a deliberate
+ * subset of "orders" (the money-out lens owners hunt for). Categories that have
+ * no rows in `audit_logs` (kitchen, inventory, cash, security) are absent by
+ * design — see docs/architecture/timeline.md.
+ */
+const CATEGORY_ACTION: Record<
+  string,
+  { startsWith: string } | { equals: string }
+> = {
+  orders: { startsWith: 'order.' },
+  refunds: { equals: 'order.refunded' },
+  customers: { startsWith: 'customer.' },
+  loyalty: { startsWith: 'loyalty.' },
+  staff: { startsWith: 'staff.' },
+  settings: { startsWith: 'restaurant.' },
+};
+
 @Injectable()
 export class ReportsService {
   constructor(
@@ -285,17 +305,51 @@ export class ReportsService {
   }
 
   /**
-   * The tenant audit log — voids, refunds, restaurant edits. Keyset-paginated
-   * by id (UUIDv7 is time-ordered). audit.read only.
+   * The restaurant Timeline — the one operational history, read straight off
+   * the append-only `audit_logs` (voids, refunds, discounts, customer, loyalty,
+   * staff and settings events). Keyset-paginated by id (UUIDv7 is
+   * time-ordered), with optional category / IST-day-range / free-text filters,
+   * and each row's actor resolved to a name in a single tenant-scoped query.
+   * audit.read only. NO new store — every future consumer reads this same table.
    */
-  async auditLog(opts: { limit?: number; cursor?: string; action?: string }) {
+  async auditLog(opts: {
+    limit?: number;
+    cursor?: string;
+    action?: string;
+    category?: string;
+    from?: string;
+    to?: string;
+    q?: string;
+  }) {
     const take = Math.min(opts.limit ?? 50, 100);
-    return this.prisma.tx((db) =>
-      db.auditLog.findMany({
+    const gte = this.dayBound(opts.from, false);
+    const lte = this.dayBound(opts.to, true);
+    const actionFilter = opts.action
+      ? { equals: opts.action }
+      : opts.category
+        ? CATEGORY_ACTION[opts.category]
+        : undefined;
+    const q = opts.q?.trim();
+
+    return this.prisma.tx(async (db) => {
+      const rows = await db.auditLog.findMany({
         take,
         where: {
-          ...(opts.action ? { action: opts.action } : {}),
+          ...(actionFilter ? { action: actionFilter } : {}),
           ...(opts.cursor ? { id: { lt: opts.cursor } } : {}),
+          ...(gte || lte
+            ? {
+                createdAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) },
+              }
+            : {}),
+          ...(q
+            ? {
+                OR: [
+                  { action: { contains: q, mode: 'insensitive' as const } },
+                  { entityType: { contains: q, mode: 'insensitive' as const } },
+                ],
+              }
+            : {}),
         },
         orderBy: { id: 'desc' },
         select: {
@@ -307,8 +361,45 @@ export class ReportsService {
           metadata: true,
           createdAt: true,
         },
-      }),
-    );
+      });
+
+      // Name the actors in one query, never per row. Membership is RLS-scoped,
+      // so this can only ever resolve staff of the current restaurant — the
+      // Timeline never names a user the caller could not already see on Staff.
+      const userIds = [
+        ...new Set(rows.map((r) => r.userId).filter((v): v is string => !!v)),
+      ];
+      const members = userIds.length
+        ? await db.membership.findMany({
+            where: { userId: { in: userIds } },
+            select: { userId: true, user: { select: { name: true } } },
+          })
+        : [];
+      const nameById = new Map(members.map((m) => [m.userId, m.user.name]));
+
+      return rows.map((r) => ({
+        ...r,
+        actor: r.userId ? { name: nameById.get(r.userId) ?? null } : null,
+      }));
+    });
+  }
+
+  /**
+   * One IST day boundary, or undefined when the input is absent — the optional
+   * counterpart to `window()` for the Timeline, where from/to are each optional.
+   * Same NaN guard: a shaped-but-impossible date (2026-13-40) is rejected.
+   */
+  private dayBound(
+    str: string | undefined,
+    endOfDay: boolean,
+  ): Date | undefined {
+    if (!str) return undefined;
+    const time = endOfDay ? '23:59:59.999' : '00:00:00.000';
+    const d = new Date(`${str}T${time}${IST_OFFSET}`);
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException('from and to must be real calendar dates');
+    }
+    return d;
   }
 
   /** Parse + validate an IST calendar-day window, inclusive of both ends. */

@@ -1,12 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CookingPot, PackagePlus, Package, Truck } from 'lucide-react';
+import { AlertTriangle, CookingPot, PackagePlus, Package, Truck } from 'lucide-react';
 import {
   ApiRequestError,
   createIngredient,
   createSupplier,
   getIngredient,
+  getInventorySummary,
   listIngredients,
   listSuppliers,
   recordAdjustment,
@@ -15,6 +16,7 @@ import {
   updateSupplier,
   type IngredientDetail,
   type IngredientRow,
+  type InventorySummary,
   type StockUnit,
   type Supplier,
 } from '@/lib/api';
@@ -56,12 +58,33 @@ const MOVE_META: Record<string, { label: string; variant: 'success' | 'danger' |
   ADJUSTMENT: { label: 'Count', variant: 'warning' },
 };
 
-function stockStatus(r: { currentStock: number; reorderLevel: number | null; isLow: boolean }) {
+/**
+ * The stock-health tier, mirroring the server's partition (InventoryService
+ * .summary): negative < out < critical < low < ok. "Critical" is the honest
+ * "runs out today" — positive stock at or below one day of recent usage.
+ */
+function stockStatus(r: {
+  currentStock: number;
+  reorderLevel: number | null;
+  isLow: boolean;
+  avgDailyUsage: number;
+}) {
   if (r.currentStock < 0) return { label: 'Negative', variant: 'danger' as const };
+  if (r.currentStock === 0) return { label: 'Out', variant: 'danger' as const };
+  if (r.avgDailyUsage > 0 && r.currentStock <= r.avgDailyUsage)
+    return { label: 'Critical', variant: 'danger' as const };
   if (r.isLow) return { label: 'Low', variant: 'warning' as const };
   if (r.reorderLevel === null) return { label: 'Untracked', variant: 'neutral' as const };
   return { label: 'OK', variant: 'success' as const };
 }
+
+/** Sort key for the attention list — most urgent first. */
+const ATTENTION_RANK: Record<string, number> = {
+  Negative: 0,
+  Out: 1,
+  Critical: 2,
+  Low: 3,
+};
 
 /**
  * Weighted-average cost per common unit. avgUnitCostMinor is paise per base
@@ -80,6 +103,7 @@ export function InventoryClient() {
   const toast = useToast();
 
   const [rows, setRows] = useState<IngredientRow[] | null>(null);
+  const [summary, setSummary] = useState<InventorySummary | null>(null);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]['key']>('ALL');
   const [adding, setAdding] = useState(false);
   const [recipesOpen, setRecipesOpen] = useState(false);
@@ -121,6 +145,13 @@ export function InventoryClient() {
           });
         }
       });
+    // Intelligence summary — best-effort: a failure hides the dashboard header,
+    // it never blocks the stock list below.
+    getInventorySummary(accessToken, onNewToken)
+      .then((s) => {
+        if (!cancelled) setSummary(s);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -155,8 +186,18 @@ export function InventoryClient() {
       : filter === 'LOW'
         ? active.filter((r) => r.isLow)
         : active;
-  const lowCount = active.filter((r) => r.isLow).length;
-  const negativeCount = active.filter((r) => r.currentStock < 0).length;
+  // The at-a-glance action list, derived from the already-loaded rows (no extra
+  // query): everything off-healthy, most urgent first.
+  const attention = active
+    .map((r) => ({ r, status: stockStatus(r) }))
+    .filter(({ status }) => status.label in ATTENTION_RANK)
+    .sort((a, b) => {
+      const d = ATTENTION_RANK[a.status.label] - ATTENTION_RANK[b.status.label];
+      if (d !== 0) return d;
+      const cover = (x: IngredientRow) =>
+        x.avgDailyUsage > 0 ? x.currentStock / x.avgDailyUsage : Infinity;
+      return cover(a.r) - cover(b.r);
+    });
 
   return (
     <div>
@@ -178,11 +219,67 @@ export function InventoryClient() {
         </div>
       </div>
 
-      {!loading && all.length > 0 && (
-        <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-3">
-          <StatCard label="Ingredients" value={active.length} format={String} />
-          <StatCard label="Low stock" value={lowCount} format={String} />
-          <StatCard label="Negative stock" value={negativeCount} format={String} />
+      {summary && (
+        <>
+          <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <StatCard label="Stock value" value={summary.valueMinor} format={formatMinor} />
+            <StatCard label="Low stock" value={summary.counts.low} format={String} />
+            <StatCard
+              label="Critical / out"
+              value={summary.counts.critical + summary.counts.out + summary.counts.negative}
+              format={String}
+            />
+            <StatCard label="Waste (30d)" value={summary.wasteMonthMinor} format={formatMinor} />
+          </div>
+          <p className="mt-2 text-[12px] text-ink-3">
+            Today: {summary.today.purchaseCount} received
+            {summary.today.purchasesMinor > 0 &&
+              ` · ${formatMinor(summary.today.purchasesMinor)} spent`}
+            {` · ${summary.today.consumptionCount} depletions`}
+            {summary.today.wasteCount > 0 && ` · ${summary.today.wasteCount} waste`}
+          </p>
+        </>
+      )}
+
+      {!loading && attention.length > 0 && (
+        <div className="mt-4 rounded-xl border border-line bg-surface p-3 shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
+          <h2 className="text-label mb-1 flex items-center gap-1.5">
+            <AlertTriangle aria-hidden className="size-3.5 text-warning-text" />
+            Needs attention
+          </h2>
+          <ul className="divide-y divide-line">
+            {attention.slice(0, 6).map(({ r, status }) => {
+              const daysLeft =
+                r.avgDailyUsage > 0 && r.currentStock > 0
+                  ? Math.floor(r.currentStock / r.avgDailyUsage)
+                  : null;
+              return (
+                <li key={r.id} className="flex items-center gap-2 py-2">
+                  <button
+                    type="button"
+                    onClick={() => open(r.id)}
+                    className="min-w-0 flex-1 truncate text-left text-[13px] font-medium hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                  >
+                    {r.name}
+                  </button>
+                  <span className="shrink-0 text-[12px] text-ink-3 tabular-nums">
+                    {formatQuantity(r.currentStock, r.unit)}
+                    {daysLeft !== null && ` · ~${daysLeft}d`}
+                  </span>
+                  <Badge variant={status.variant}>{status.label}</Badge>
+                </li>
+              );
+            })}
+          </ul>
+          {attention.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setFilter('LOW')}
+              className="mt-1 text-[12px] text-ink-3 hover:text-ink"
+            >
+              +{attention.length - 6} more
+            </button>
+          )}
         </div>
       )}
 
@@ -192,7 +289,7 @@ export function InventoryClient() {
 
       <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
         {loading ? (
-          <div className="space-y-2 p-4" aria-label="Loading stock">
+          <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading stock">
             {Array.from({ length: 6 }, (_, i) => (
               <Skeleton key={i} className="h-9" />
             ))}
@@ -340,7 +437,7 @@ export function InventoryClient() {
         title={detail ? detail.name : 'Ingredient'}
       >
         {!detail ? (
-          <div className="space-y-3" aria-label="Loading ingredient">
+          <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading ingredient">
             <Skeleton className="h-8 w-40" />
             <Skeleton className="h-24" />
             <Skeleton className="h-40" />

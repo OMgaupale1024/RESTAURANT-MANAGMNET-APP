@@ -114,6 +114,121 @@ export class InventoryService {
     });
   }
 
+  /**
+   * The inventory intelligence summary — the owner's at-a-glance answers:
+   * what is stock worth, what needs attention, and what moved today. Every
+   * figure is aggregated in Postgres and reuses the SAME `stockByIngredient` /
+   * `costByIngredient` helpers the ingredient list uses, so a value here can
+   * never disagree with a value there. No new store, no cached counter.
+   *
+   * Health is a PARTITION (each active ingredient in exactly one bucket, by
+   * priority): negative < out < critical < low < healthy. "critical" is the
+   * honest "will run out today" — positive stock at or below one day of recent
+   * usage — which needs no reorder level; "low" is the reorder-level flag.
+   */
+  async summary() {
+    return this.prisma.tx(async (db) => {
+      // IST day start (India has no DST, so a fixed +05:30 is exact).
+      const istToday = new Date(
+        `${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}T00:00:00.000+05:30`,
+      );
+      const weekAgo = new Date(Date.now() - 7 * 86_400_000);
+      const monthAgo = new Date(Date.now() - 30 * 86_400_000);
+
+      // Serial, not Promise.all: concurrent queries share this transaction's one
+      // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
+      const [ingredients, stock, cost, recentUse, todayMoves, wasteMonth] = [
+        await db.ingredient.findMany({
+          where: { isActive: true },
+          select: { id: true, reorderLevel: true },
+        }),
+        await this.stockByIngredient(db),
+        await this.costByIngredient(db),
+        await db.stockMovement.groupBy({
+          by: ['ingredientId'],
+          where: { type: 'CONSUMPTION', createdAt: { gte: weekAgo } },
+          _sum: { quantity: true },
+        }),
+        await db.stockMovement.groupBy({
+          by: ['type'],
+          where: { createdAt: { gte: istToday } },
+          _count: { _all: true },
+          _sum: { totalCostMinor: true },
+        }),
+        await db.stockMovement.groupBy({
+          by: ['ingredientId'],
+          where: { type: 'WASTE', createdAt: { gte: monthAgo } },
+          _sum: { quantity: true },
+        }),
+      ];
+
+      const dailyUse = new Map(
+        recentUse.map((g) => [
+          g.ingredientId,
+          Math.abs(g._sum?.quantity ?? 0) / 7,
+        ]),
+      );
+
+      let valueMinor = 0;
+      const counts = {
+        healthy: 0,
+        low: 0,
+        critical: 0,
+        out: 0,
+        negative: 0,
+        tracked: 0,
+      };
+      for (const i of ingredients) {
+        const s = stock.get(i.id) ?? 0;
+        const c = cost.get(i.id);
+        if (c != null && s > 0) valueMinor += Math.round(s * c);
+        if (i.reorderLevel !== null) counts.tracked++;
+
+        const use = dailyUse.get(i.id) ?? 0;
+        if (s < 0) counts.negative++;
+        else if (s === 0) counts.out++;
+        else if (use > 0 && s <= use) counts.critical++;
+        else if (i.reorderLevel !== null && s <= i.reorderLevel) counts.low++;
+        else counts.healthy++;
+      }
+
+      // Today's flow: activity counts by type, and the ₹ spent receiving stock.
+      const today = {
+        purchasesMinor: 0,
+        purchaseCount: 0,
+        consumptionCount: 0,
+        wasteCount: 0,
+        adjustmentCount: 0,
+      };
+      for (const g of todayMoves) {
+        const n = g._count?._all ?? 0;
+        if (g.type === 'PURCHASE') {
+          today.purchaseCount = n;
+          today.purchasesMinor = g._sum?.totalCostMinor ?? 0;
+        } else if (g.type === 'CONSUMPTION') today.consumptionCount = n;
+        else if (g.type === 'WASTE') today.wasteCount = n;
+        else if (g.type === 'ADJUSTMENT') today.adjustmentCount = n;
+      }
+
+      // Waste as money lost over 30 days (qty × weighted-average cost).
+      let wasteMonthMinor = 0;
+      for (const g of wasteMonth) {
+        const c = cost.get(g.ingredientId);
+        if (c != null) {
+          wasteMonthMinor += Math.round(Math.abs(g._sum?.quantity ?? 0) * c);
+        }
+      }
+
+      return {
+        valueMinor,
+        ingredientCount: ingredients.length,
+        counts,
+        today,
+        wasteMonthMinor,
+      };
+    });
+  }
+
   async getById(id: string) {
     return this.prisma.tx(async (db) => {
       const ingredient = await db.ingredient.findFirst({
@@ -617,6 +732,7 @@ export class InventoryService {
           phone: true,
           notes: true,
           isActive: true,
+          preferred: true,
         },
         orderBy: { name: 'asc' },
       }),
@@ -640,6 +756,7 @@ export class InventoryService {
             phone: true,
             notes: true,
             isActive: true,
+            preferred: true,
           },
         }),
       );
@@ -666,6 +783,9 @@ export class InventoryService {
             ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
             ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
             ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+            ...(dto.preferred !== undefined
+              ? { preferred: dto.preferred }
+              : {}),
           },
           select: {
             id: true,
@@ -673,6 +793,7 @@ export class InventoryService {
             phone: true,
             notes: true,
             isActive: true,
+            preferred: true,
           },
         });
       } catch (e) {

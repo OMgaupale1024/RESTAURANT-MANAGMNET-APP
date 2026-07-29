@@ -17,6 +17,7 @@ import {
 import { InventoryService } from '../inventory/inventory.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { MarketingService } from '../marketing/marketing.service';
+import { EventsService } from '../../events/events.service';
 
 @Injectable()
 export class OrdersService {
@@ -25,6 +26,7 @@ export class OrdersService {
     private readonly inventory: InventoryService,
     private readonly realtime: RealtimeGateway,
     private readonly marketing: MarketingService,
+    private readonly events: EventsService,
   ) {}
 
   /**
@@ -245,18 +247,14 @@ export class OrdersService {
       // A manual discount is money moved off a sale by a person — it lands in
       // the audit log next to voids and refunds, with the reason.
       if (dto.manualDiscountMinor) {
-        await db.auditLog.create({
-          data: {
-            restaurantId,
-            userId,
-            action: 'order.discounted',
-            entityType: 'order',
-            entityId: order.id,
-            metadata: {
-              orderNumber: order.orderNumber,
-              discountMinor: discount,
-              reason: dto.discountReason ?? null,
-            },
+        await this.events.record(db, {
+          action: 'order.discounted',
+          entityType: 'order',
+          entityId: order.id,
+          metadata: {
+            orderNumber: order.orderNumber,
+            discountMinor: discount,
+            reason: dto.discountReason ?? null,
           },
         });
       }
@@ -485,17 +483,13 @@ export class OrdersService {
       // Voids are the theft vector, so they also land in the tenant audit log
       // — the record an owner reviews, separate from the order's own timeline.
       if (VOID_STATUSES.includes(to)) {
-        await db.auditLog.create({
-          data: {
-            restaurantId: ctx.restaurantId,
-            userId: ctx.userId,
-            action: 'order.voided',
-            entityType: 'order',
-            entityId: orderId,
-            metadata: {
-              orderNumber: order.orderNumber,
-              reason: reason ?? null,
-            },
+        await this.events.record(db, {
+          action: 'order.voided',
+          entityType: 'order',
+          entityId: orderId,
+          metadata: {
+            orderNumber: order.orderNumber,
+            reason: reason ?? null,
           },
         });
       }
@@ -704,19 +698,15 @@ export class OrdersService {
         });
 
         // Refunds sit next to voids in the owner's review — money went out.
-        await db.auditLog.create({
-          data: {
-            restaurantId: ctx.restaurantId,
-            userId: ctx.userId,
-            action: 'order.refunded',
-            entityType: 'order',
-            entityId: orderId,
-            metadata: {
-              orderNumber: order.orderNumber,
-              method: dto.method,
-              amountMinor: dto.amountMinor,
-              reason: dto.reason,
-            },
+        await this.events.record(db, {
+          action: 'order.refunded',
+          entityType: 'order',
+          entityId: orderId,
+          metadata: {
+            orderNumber: order.orderNumber,
+            method: dto.method,
+            amountMinor: dto.amountMinor,
+            reason: dto.reason,
           },
         });
 

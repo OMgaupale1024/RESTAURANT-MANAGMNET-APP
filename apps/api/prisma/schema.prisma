@@ -552,8 +552,13 @@ model Supplier {
   phone        String?
   notes        String?
   isActive     Boolean  @default(true) @map("is_active")
+  /// The owner's go-to for this kind of stock. A hint for reorder suggestions,
+  /// never a constraint — any active supplier can still be chosen.
+  preferred    Boolean  @default(false) @map("is_preferred")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
+
+  purchaseOrders PurchaseOrder[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -571,8 +576,9 @@ model Ingredient {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  movements   StockMovement[]
-  recipeItems RecipeItem[]
+  movements          StockMovement[]
+  recipeItems        RecipeItem[]
+  purchaseOrderItems PurchaseOrderItem[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -650,6 +656,67 @@ model RecipeItem {
   @@map("recipe_items")
 }
 
+enum PurchaseOrderStatus {
+  /// Being assembled — items can still be added, changed, removed.
+  DRAFT
+  /// Sent to the supplier, awaiting delivery.
+  ORDERED
+  /// Delivered. Receiving writes the PURCHASE stock movements; terminal.
+  RECEIVED
+  /// Abandoned before receipt; terminal. Never wrote any stock.
+  CANCELLED
+
+  @@map("purchase_order_status")
+}
+
+/// A planned purchase from a supplier — the procurement wrapper around the
+/// existing stock ledger. Deliberately NOT a second purchase history: receiving
+/// a PO writes ordinary PURCHASE `stock_movements` (the single source of what
+/// stock arrived and what it cost), and the PO just records the plan and its
+/// status. Mutable while DRAFT/ORDERED; RECEIVED and CANCELLED are terminal.
+model PurchaseOrder {
+  id           String              @id @default(uuid(7)) @db.Uuid
+  restaurantId String              @map("restaurant_id") @db.Uuid
+  supplierId   String              @map("supplier_id") @db.Uuid
+  status       PurchaseOrderStatus @default(DRAFT)
+  note         String?
+  actorUserId  String?             @map("actor_user_id") @db.Uuid
+  orderedAt    DateTime?           @map("ordered_at")
+  receivedAt   DateTime?           @map("received_at")
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  supplier Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  items    PurchaseOrderItem[]
+
+  @@index([restaurantId, status])
+  @@index([restaurantId, supplierId])
+  @@map("purchase_orders")
+}
+
+/// One line of a purchase order: how much of an ingredient, and the agreed cost
+/// for that line. On receipt this becomes a PURCHASE movement carrying the same
+/// quantity, supplier and cost — so nothing about the arriving stock is stored
+/// twice.
+model PurchaseOrderItem {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  restaurantId    String   @map("restaurant_id") @db.Uuid
+  purchaseOrderId String   @map("purchase_order_id") @db.Uuid
+  ingredientId    String   @map("ingredient_id") @db.Uuid
+  /// Ordered quantity, in the ingredient's base unit.
+  quantity        Int
+  /// Agreed TOTAL cost for this line (paise). Null = price not yet known.
+  totalCostMinor  Int?     @map("total_cost_minor")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  ingredient    Ingredient    @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([purchaseOrderId, ingredientId])
+  @@index([restaurantId])
+  @@map("purchase_order_items")
+}
+
 // ---------------------------------------------------------------------------
 // Customers
 // ---------------------------------------------------------------------------
@@ -681,11 +748,79 @@ model Customer {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  orders Order[]
+  orders        Order[]
+  loyaltyLedger LoyaltyLedger[]
 
   @@unique([restaurantId, phone])
   @@index([restaurantId, name])
   @@map("customers")
+}
+
+// ---------------------------------------------------------------------------
+// Loyalty — the points ledger
+// ---------------------------------------------------------------------------
+
+enum LoyaltyEntryType {
+  /// Points credited for a sale. Positive.
+  EARN
+  /// Points spent by the customer. Negative.
+  REDEEM
+  /// A manual correction or goodwill grant. Signed.
+  ADJUST
+  /// Points clawed back when the sale that earned them is refunded. Negative.
+  REFUND_REVERSAL
+  /// Points lapsing after an inactivity window. Negative. The type exists so
+  /// the ledger and balance maths already account for it; no expiry job runs
+  /// yet — that arrives with its own milestone.
+  EXPIRE
+
+  @@map("loyalty_entry_type")
+}
+
+/// The loyalty points ledger. Append-only, enforced by trigger — the same
+/// discipline as the stock ledger and every money trail in this system.
+///
+/// There is deliberately NO cached balance column and NO balance table. A
+/// customer's balance is SUM(points) over their rows; their lifetime earned
+/// (which drives the tier) is SUM over the crediting rows. A mutable counter
+/// would be a lie the moment two tills touched it, and it would throw away the
+/// one question loyalty must answer in a dispute — not "how many points" but
+/// "where did they come from". Identical reasoning to StockMovement, which for
+/// the same reason keeps no `quantity` column on Ingredient.
+///
+/// `points` is SIGNED and its sign is tied to the type by a CHECK: EARN and a
+/// positive ADJUST credit (+); REDEEM, EXPIRE, REFUND_REVERSAL and a negative
+/// ADJUST debit (−). The balance is their sum. The non-negative-balance rule is
+/// enforced in the service under a customer-row lock (REFUND_REVERSAL is the
+/// one entry allowed to push a balance below zero), not by a column CHECK —
+/// there is no balance column to constrain, by design.
+model LoyaltyLedger {
+  id             String           @id @default(uuid(7)) @db.Uuid
+  restaurantId   String           @map("restaurant_id") @db.Uuid
+  customerId     String           @map("customer_id") @db.Uuid
+  type           LoyaltyEntryType
+  /// Signed points. Sign follows the type (CHECK-enforced).
+  points         Int
+  /// The order that earned or (on refund) reversed these points. Null for
+  /// manual adjustments and redemptions. NO FK — a ledger row must outlive any
+  /// order tidy-up, the same rule as stock_movements.order_id.
+  orderId        String?          @map("order_id") @db.Uuid
+  /// Why the points moved. Required for a manual ADJUST; optional otherwise.
+  reason         String?
+  /// Who performed a manual action (adjust/redeem at the counter). NO FK, same
+  /// reasoning as refunds.actor_user_id — the record outlives the staff account.
+  actorUserId    String?          @map("actor_user_id") @db.Uuid
+  /// Client-supplied so a retried redeem/adjust cannot double-apply. Unique per
+  /// tenant; NULLs do not collide. Same contract as Payment.idempotencyKey.
+  idempotencyKey String?          @map("idempotency_key")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@unique([restaurantId, idempotencyKey])
+  @@index([restaurantId, customerId, createdAt])
+  @@index([orderId])
+  @@map("loyalty_ledger")
 }
 
 // ---------------------------------------------------------------------------

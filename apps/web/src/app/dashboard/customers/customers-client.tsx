@@ -15,6 +15,7 @@ import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { downloadCsv, minorToCsv, toCsv } from '@/lib/csv';
 import { formatMinor } from '@/lib/money';
+import { validPhone } from '@/lib/phone';
 import { StatusBadge, timeShort } from '../orders/order-detail';
 
 /** Customer list → CSV. Names go through toCsv's injection-safe escaping. */
@@ -34,11 +35,11 @@ function exportCustomersCsv(list: CustomerSummary[]) {
   );
   downloadCsv(`customers-${new Date().toISOString().slice(0, 10)}.csv`, csv);
 }
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Field, Input, Textarea } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
+import { SegmentChip } from '@/components/ui/segment-chip';
 import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatCard } from '@/components/ui/stat-card';
@@ -57,28 +58,6 @@ function dayShort(iso: string | null): string {
     month: 'short',
     year: 'numeric',
   });
-}
-
-/** Mirrors the server rule (7-15 digits). The server re-validates regardless. */
-const validPhone = (raw: string) => {
-  const digits = raw.replace(/\D/g, '');
-  return digits.length >= 7 && digits.length <= 15 ? digits : null;
-};
-
-/**
- * Segment colour identity — presentation only. The segment itself is classified
- * server-side (one shared classifier) and arrives on the customer payload; this
- * page never reclassifies anyone.
- */
-const SEGMENT_VARIANT: Record<string, 'brand' | 'info' | 'success' | 'warning' | 'neutral'> = {
-  VIP: 'brand',
-  REGULAR: 'info',
-  NEW: 'success',
-  LAPSED: 'warning',
-};
-
-function SegmentChip({ segment }: { segment: { key: string; label: string } }) {
-  return <Badge variant={SEGMENT_VARIANT[segment.key] ?? 'neutral'}>{segment.label}</Badge>;
 }
 
 export function CustomersClient() {
@@ -142,6 +121,16 @@ export function CustomersClient() {
     [onNewToken, toast],
   );
 
+  // ?id= deep link — once, when a token exists to fetch with. Lets the Timeline
+  // (and command palette) open a customer profile straight from a link.
+  const deepLinked = useRef(false);
+  useEffect(() => {
+    if (!accessToken || deepLinked.current) return;
+    deepLinked.current = true;
+    const id = new URLSearchParams(window.location.search).get('id');
+    if (id) open(id);
+  }, [accessToken, open]);
+
   function close() {
     setSelectedId(null);
     setDetail(null);
@@ -202,7 +191,7 @@ export function CustomersClient() {
 
       <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
         {loading ? (
-          <div className="space-y-2 p-4" aria-label="Loading customers">
+          <div className="space-y-2 p-4" role="status" aria-busy="true" aria-label="Loading customers">
             {Array.from({ length: 6 }, (_, i) => (
               <Skeleton key={i} className="h-9" />
             ))}
@@ -294,7 +283,7 @@ export function CustomersClient() {
         title={detail ? detail.name : 'Customer'}
       >
         {!detail ? (
-          <div className="space-y-3" aria-label="Loading customer">
+          <div className="space-y-3" role="status" aria-busy="true" aria-label="Loading customer">
             <Skeleton className="h-8 w-40" />
             <Skeleton className="h-24" />
             <Skeleton className="h-40" />

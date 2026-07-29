@@ -1,0 +1,377 @@
+/**
+ * Loyalty foundation end-to-end.
+ *
+ * The rules that matter, and the ones a financial subsystem must never get
+ * wrong: points are earned from net spend, the balance is the SUM of an
+ * append-only ledger (never a stored counter), a redemption can never overspend
+ * — not even under two tills racing — a refund reverses what its sale earned,
+ * tier follows lifetime-earned, and every movement lands in the audit log.
+ */
+import { ValidationPipe } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { PrismaPg } from '@prisma/adapter-pg';
+import cookieParser from 'cookie-parser';
+import request from 'supertest';
+import { AppModule } from '../src/app.module';
+import { PrismaClient } from '../src/generated/prisma/client';
+
+const password = 'correct-horse-battery';
+let app: NestExpressApplication;
+
+const owner = new PrismaClient({
+  adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
+});
+
+let ipCounter = 720000;
+function api() {
+  ipCounter++;
+  const ip = `10.${(ipCounter >> 16) & 255}.${(ipCounter >> 8) & 255}.${ipCounter & 255}`;
+  const server = app.getHttpServer();
+  return {
+    post: (url: string) => request(server).post(url).set('X-Forwarded-For', ip),
+    get: (url: string) => request(server).get(url).set('X-Forwarded-For', ip),
+    patch: (url: string) =>
+      request(server).patch(url).set('X-Forwarded-For', ip),
+  };
+}
+
+const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+/** Tenant + one product + one customer; helpers to place orders and read loyalty. */
+async function newTenant() {
+  const email = `loy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
+  const reg = await api()
+    .post('/api/v1/auth/register')
+    .send({ email, password, name: 'Loyalty Owner' })
+    .expect(201);
+  const cookie = reg.headers['set-cookie'][0].split(';')[0];
+  const created = await api()
+    .post('/api/v1/restaurants')
+    .set(auth(reg.body.accessToken))
+    .send({ name: `Loyalty Cafe ${Date.now()}` })
+    .expect(201);
+  const scoped = await api()
+    .post('/api/v1/auth/select-restaurant')
+    .set(auth(reg.body.accessToken))
+    .set('Cookie', cookie)
+    .send({ restaurantId: created.body.restaurant.id })
+    .expect(200);
+  const token = scoped.body.accessToken as string;
+
+  const product = await api()
+    .post('/api/v1/products')
+    .set(auth(token))
+    // 100.00 + 5% GST. Net spend 10000 paise → 10 points per unit at ₹10/point.
+    .send({ name: 'Plate Momo', priceMinor: 10000, taxRateBp: 500 })
+    .expect(201);
+
+  const customer = await api()
+    .post('/api/v1/customers')
+    .set(auth(token))
+    .send({ name: 'Asha', phone: `9${Date.now().toString().slice(-9)}` })
+    .expect(201);
+
+  const placeOrder = async (opts: Record<string, unknown> = {}) => {
+    const res = await api()
+      .post('/api/v1/orders')
+      .set(auth(token))
+      .send({
+        items: [{ productId: product.body.id, quantity: 1 }],
+        customerId: customer.body.id,
+        ...opts,
+      })
+      .expect(201);
+    return res.body as { id: string; totalMinor: number };
+  };
+
+  const summary = (customerId = customer.body.id as string) =>
+    api().get(`/api/v1/customers/${customerId}/loyalty`).set(auth(token));
+
+  return {
+    token,
+    restaurantId: created.body.restaurant.id,
+    customerId: customer.body.id as string,
+    placeOrder,
+    summary,
+  };
+}
+
+const earn = (token: string, orderId: string) =>
+  api().post(`/api/v1/orders/${orderId}/loyalty/earn`).set(auth(token));
+const reverse = (token: string, orderId: string) =>
+  api().post(`/api/v1/orders/${orderId}/loyalty/reverse`).set(auth(token));
+const redeem = (
+  token: string,
+  customerId: string,
+  body: Record<string, unknown>,
+) =>
+  api()
+    .post(`/api/v1/customers/${customerId}/loyalty/redeem`)
+    .set(auth(token))
+    .send(body);
+const adjust = (
+  token: string,
+  customerId: string,
+  body: Record<string, unknown>,
+) =>
+  api()
+    .post(`/api/v1/customers/${customerId}/loyalty/adjust`)
+    .set(auth(token))
+    .send(body);
+const setStatus = (
+  token: string,
+  orderId: string,
+  status: string,
+  reason?: string,
+) =>
+  api()
+    .patch(`/api/v1/orders/${orderId}/status`)
+    .set(auth(token))
+    .send({ status, ...(reason ? { reason } : {}) });
+
+describe('Loyalty foundation (e2e)', () => {
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+    app = moduleRef.createNestApplication<NestExpressApplication>();
+    app.use(cookieParser());
+    app.set('trust proxy', 1);
+    app.setGlobalPrefix('api/v1');
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
+    await app.init();
+  });
+
+  afterAll(async () => {
+    // The ledger and audit log are append-only by trigger — disable it to tidy
+    // up, delete loyalty rows before their customer (FK is RESTRICT), re-enable.
+    for (const t of [
+      'audit_logs',
+      'order_events',
+      'security_events',
+      'loyalty_ledger',
+      'orders',
+    ]) {
+      await owner.$executeRawUnsafe(`ALTER TABLE ${t} DISABLE TRIGGER USER`);
+    }
+    try {
+      const users = await owner.user.findMany({
+        where: { email: { startsWith: 'loy-' } },
+        select: { id: true },
+      });
+      const ms = await owner.membership.findMany({
+        where: { userId: { in: users.map((u) => u.id) } },
+        select: { restaurantId: true },
+      });
+      const ids = ms.map((m) => m.restaurantId);
+      // FK order: loyalty and orders both RESTRICT-reference customers, so both
+      // must go before the customer (orders cascade to items/payments/events).
+      await owner.loyaltyLedger.deleteMany({
+        where: { restaurantId: { in: ids } },
+      });
+      await owner.order.deleteMany({ where: { restaurantId: { in: ids } } });
+      await owner.customer.deleteMany({ where: { restaurantId: { in: ids } } });
+      await owner.restaurant.deleteMany({ where: { id: { in: ids } } });
+      await owner.securityEvent.deleteMany({
+        where: { email: { startsWith: 'loy-' } },
+      });
+      await owner.user.deleteMany({ where: { email: { startsWith: 'loy-' } } });
+    } finally {
+      for (const t of [
+        'audit_logs',
+        'order_events',
+        'security_events',
+        'loyalty_ledger',
+        'orders',
+      ]) {
+        await owner.$executeRawUnsafe(`ALTER TABLE ${t} ENABLE TRIGGER USER`);
+      }
+      await owner.$disconnect();
+    }
+    await app.close();
+  });
+
+  describe('earning', () => {
+    it('credits points from net spend, and does so only once', async () => {
+      const t = await newTenant();
+      const order = await t.placeOrder(); // subtotal 10000 → 10 points
+
+      const first = await earn(t.token, order.id).expect(201);
+      expect(first.body.balancePoints).toBe(10);
+      expect(first.body.lifetimeEarnedPoints).toBe(10);
+
+      // Replaying earn for the same order does not credit again.
+      const again = await earn(t.token, order.id).expect(201);
+      expect(again.body.balancePoints).toBe(10);
+
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(10);
+      expect(s.body.recentEntries).toHaveLength(1);
+      expect(s.body.recentEntries[0].type).toBe('EARN');
+    });
+
+    it('refuses to earn on an anonymous or a voided order', async () => {
+      const t = await newTenant();
+
+      const anon = await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({ items: [{ productId: await productId(t.token), quantity: 1 }] })
+        .expect(201);
+      await earn(t.token, anon.body.id).expect(400);
+
+      const order = await t.placeOrder();
+      await setStatus(t.token, order.id, 'VOIDED', 'test').expect(200);
+      await earn(t.token, order.id).expect(400);
+    });
+  });
+
+  describe('tiers', () => {
+    it('promotes by lifetime earned, and redeeming does not demote', async () => {
+      const t = await newTenant();
+      // Grant straight to GOLD (5000) via a manual adjustment.
+      const granted = await adjust(t.token, t.customerId, {
+        points: 5000,
+        reason: 'migration credit',
+      }).expect(201);
+      expect(granted.body.tier.key).toBe('GOLD');
+      expect(granted.body.nextTier.key).toBe('PLATINUM');
+
+      // Spend most of it — balance drops, tier holds (lifetime-earned unchanged).
+      const spent = await redeem(t.token, t.customerId, {
+        points: 4900,
+      }).expect(201);
+      expect(spent.body.balancePoints).toBe(100);
+      expect(spent.body.lifetimeEarnedPoints).toBe(5000);
+      expect(spent.body.tier.key).toBe('GOLD');
+    });
+  });
+
+  describe('redeeming', () => {
+    it('never overspends the balance', async () => {
+      const t = await newTenant();
+      await adjust(t.token, t.customerId, {
+        points: 100,
+        reason: 'seed',
+      }).expect(201);
+
+      await redeem(t.token, t.customerId, { points: 150 }).expect(400); // insufficient
+      const ok = await redeem(t.token, t.customerId, { points: 60 }).expect(
+        201,
+      );
+      expect(ok.body.balancePoints).toBe(40);
+      expect(ok.body.redeemedPoints).toBe(60);
+    });
+
+    it('replays an idempotency key instead of double-spending', async () => {
+      const t = await newTenant();
+      await adjust(t.token, t.customerId, {
+        points: 100,
+        reason: 'seed',
+      }).expect(201);
+      const key = `redeem-${Date.now()}`;
+
+      await redeem(t.token, t.customerId, {
+        points: 30,
+        idempotencyKey: key,
+      }).expect(201);
+      const replay = await redeem(t.token, t.customerId, {
+        points: 30,
+        idempotencyKey: key,
+      }).expect(201);
+      expect(replay.body.balancePoints).toBe(70); // spent once, not twice
+    });
+
+    it('serializes concurrent redemptions so neither drives the balance negative', async () => {
+      const t = await newTenant();
+      await adjust(t.token, t.customerId, {
+        points: 100,
+        reason: 'seed',
+      }).expect(201);
+
+      // Two tills try to spend the whole balance at once. The customer-row lock
+      // lets exactly one win; the other sees a zero balance and is refused.
+      const [a, b] = await Promise.all([
+        redeem(t.token, t.customerId, { points: 100 }),
+        redeem(t.token, t.customerId, { points: 100 }),
+      ]);
+      const statuses = [a.status, b.status].sort();
+      expect(statuses).toEqual([201, 400]);
+
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(0); // never -100
+    });
+  });
+
+  describe('refund reversal', () => {
+    it("reverses a sale's points once, and may go negative if they were spent", async () => {
+      const t = await newTenant();
+      const order = await t.placeOrder();
+      await earn(t.token, order.id).expect(201); // +10
+
+      // Customer spends the earned points before the sale is refunded.
+      await redeem(t.token, t.customerId, { points: 10 }).expect(201); // balance 0
+
+      const reversed = await reverse(t.token, order.id).expect(201);
+      expect(reversed.body.balancePoints).toBe(-10); // the honest, owed position
+
+      // Reversing again is a no-op — the sale's points are unwound once.
+      const again = await reverse(t.token, order.id).expect(201);
+      expect(again.body.balancePoints).toBe(-10);
+    });
+  });
+
+  describe('adjusting', () => {
+    it('rejects a zero adjustment and a deduction below zero', async () => {
+      const t = await newTenant();
+      await adjust(t.token, t.customerId, { points: 0, reason: 'nope' }).expect(
+        400,
+      );
+      await adjust(t.token, t.customerId, {
+        points: -50,
+        reason: 'too much',
+      }).expect(400);
+    });
+  });
+
+  describe('ledger integrity & events', () => {
+    it('is append-only at the database and records an audit event per movement', async () => {
+      const t = await newTenant();
+      const order = await t.placeOrder();
+      await earn(t.token, order.id).expect(201);
+
+      // The audit log carries the loyalty event (owner bypasses RLS to read it).
+      const events = await owner.auditLog.findMany({
+        where: { restaurantId: t.restaurantId, action: 'loyalty.earned' },
+        select: { entityType: true, entityId: true },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0].entityType).toBe('customer');
+      expect(events[0].entityId).toBe(t.customerId);
+
+      // The trigger refuses an in-place edit of a ledger row — even for the owner.
+      const row = await owner.loyaltyLedger.findFirst({
+        where: { restaurantId: t.restaurantId },
+        select: { id: true },
+      });
+      await expect(
+        owner.$executeRawUnsafe(
+          `UPDATE loyalty_ledger SET points = 0 WHERE id = '${row!.id}'`,
+        ),
+      ).rejects.toThrow();
+    });
+  });
+});
+
+/** A product id for a tenant, for the anonymous-order case. */
+async function productId(token: string): Promise<string> {
+  const res = await api().get('/api/v1/products').set(auth(token)).expect(200);
+  return res.body[0].id as string;
+}

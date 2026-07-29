@@ -29,7 +29,7 @@ export default function LandingPage() {
   return (
     <div className="flex min-h-dvh flex-col bg-page">
       {/* Hero section gets the dark brand panel treatment */}
-      <div className="relative overflow-hidden bg-[#0a0a0a] text-[#ededed]">
+      <div className="theme-dark bg-page text-ink relative overflow-hidden">
         {/* Subtle animated yellow orb-gradient */}
         <div className="absolute inset-x-0 top-0 z-0 flex justify-center opacity-30 pointer-events-none">
           <div className="h-[40rem] w-[40rem] -translate-y-1/2 rounded-full bg-brand blur-[128px] animate-pulse" style={{ animationDuration: '4s' }} />
