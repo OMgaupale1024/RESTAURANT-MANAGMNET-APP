@@ -1012,6 +1012,41 @@ export const getSalesReport = (
     onNewToken,
   );
 
+/** Owner business-insights beyond core sales, for the same window. Prep-time
+ *  fields are null when no order went through the kitchen (never faked). */
+export type AnalyticsInsights = {
+  from: string;
+  to: string;
+  refunds: { amountMinor: number; count: number; rateBp: number };
+  cancelledOrders: number;
+  customers: { new: number; active: number; returning: number };
+  loyalty: { members: number; pointsIssued: number; pointsRedeemed: number };
+  kitchen: {
+    completed: number;
+    avgPrepSecs: number | null;
+    longestPrepSecs: number | null;
+    prepSamples: number;
+  };
+};
+
+/** Presets pass `{ range }`; Yesterday/Custom pass `{ from, to }` — same
+ *  window the sales side uses, so both halves of the page always agree. */
+export const getAnalyticsInsights = (
+  token: string,
+  onNewToken: Retry,
+  params: { range?: string; from?: string; to?: string },
+) => {
+  const qs = new URLSearchParams();
+  if (params.range) qs.set('range', params.range);
+  if (params.from) qs.set('from', params.from);
+  if (params.to) qs.set('to', params.to);
+  return authedFetch<AnalyticsInsights>(
+    `/analytics/insights?${qs.toString()}`,
+    token,
+    onNewToken,
+  );
+};
+
 /* --------------------------------------------------------- reports pack */
 
 const reportUrl = (kind: string, from: string, to: string) =>

@@ -1,6 +1,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { RequirePermissions } from '../../common/decorators/auth.decorators';
 import { AnalyticsQuery } from './dto/analytics.query';
+import { InsightsQuery } from './dto/insights.query';
 import { AnalyticsService } from './analytics.service';
 
 @Controller('analytics')
@@ -12,5 +13,13 @@ export class AnalyticsController {
   @Get('overview')
   overview(@Query() query: AnalyticsQuery) {
     return this.analytics.overview(query.range ?? '7d');
+  }
+
+  // Owner business-insights beyond core sales (refunds, customers, loyalty,
+  // kitchen). Same books, same gate — additive to the overview above.
+  @RequirePermissions('analytics.read')
+  @Get('insights')
+  insights(@Query() query: InsightsQuery) {
+    return this.analytics.insights(query);
   }
 }
