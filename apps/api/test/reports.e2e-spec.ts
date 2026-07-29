@@ -80,7 +80,12 @@ const salesReport = (token: string, from: string, to: string) =>
     .set('Authorization', `Bearer ${token}`);
 
 /** Today and 30 days ago as YYYY-MM-DD, matching the client's default window. */
-const iso = (d: Date) => d.toISOString().slice(0, 10);
+// Reports bucket by the IST wall-day. Shift the instant by the IST offset
+// before slicing the UTC date so "today" is the India calendar day — otherwise
+// a run after 18:30 UTC (past IST midnight) computes yesterday and the day's
+// own orders fall outside every "today" window.
+const iso = (d: Date) =>
+  new Date(d.getTime() + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const today = iso(new Date());
 const monthAgo = iso(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
 const nextYear = iso(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
@@ -448,6 +453,34 @@ describe('Reports (e2e)', () => {
         past.body.some((e: { action: string }) => e.action === 'order.voided'),
       ).toBe(false);
       await audit(t.token, '?from=2026-13-40&to=2026-13-40').expect(400);
+    });
+
+    it('narrows to one entity with entityId (per-customer timeline)', async () => {
+      const t = await newTenant('Timeline Entity Cafe');
+      await voidAnOrder(t); // an order.voided on a different entity
+      const c = await api()
+        .post('/api/v1/customers')
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({
+          name: 'Timeline Person',
+          phone: `9${Date.now().toString().slice(-9)}`,
+        })
+        .expect(201);
+
+      const res = await audit(t.token, `?entityId=${c.body.id}`).expect(200);
+      expect(res.body.length).toBeGreaterThan(0);
+      // Every row is this customer's, and the order.voided never leaks in.
+      expect(
+        res.body.every((e: { entityId: string }) => e.entityId === c.body.id),
+      ).toBe(true);
+      expect(
+        res.body.some(
+          (e: { action: string }) => e.action === 'customer.created',
+        ),
+      ).toBe(true);
+      expect(
+        res.body.some((e: { action: string }) => e.action === 'order.voided'),
+      ).toBe(false);
     });
   });
 });

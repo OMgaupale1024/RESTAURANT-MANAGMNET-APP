@@ -119,6 +119,7 @@ describe('Customers (e2e)', () => {
       'order_events',
       'security_events',
       'orders',
+      'refunds',
     ]) {
       await owner.$executeRawUnsafe(`ALTER TABLE ${t} DISABLE TRIGGER USER`);
     }
@@ -148,6 +149,7 @@ describe('Customers (e2e)', () => {
         'order_events',
         'security_events',
         'orders',
+        'refunds',
       ]) {
         await owner.$executeRawUnsafe(`ALTER TABLE ${t} ENABLE TRIGGER USER`);
       }
@@ -484,6 +486,132 @@ describe('Customers (e2e)', () => {
         .expect(200);
       expect(byPhone.body).toHaveLength(1);
       expect(byPhone.body[0].name).toBe('Rahul Verma');
+    });
+  });
+
+  // M9 — the profile is the Customer Intelligence layer. These derive entirely
+  // from orders / order_items / refunds; there is no new customer store.
+  describe('customer intelligence (M9)', () => {
+    const addProduct = (token: string, name: string, priceMinor: number) =>
+      api()
+        .post('/api/v1/products')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name, priceMinor });
+
+    const placeItems = (
+      token: string,
+      customerId: string,
+      items: Array<{ productId: string; quantity: number }>,
+      paymentMethod?: string,
+    ) =>
+      api()
+        .post('/api/v1/orders')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          items,
+          customerId,
+          ...(paymentMethod ? { paymentMethod } : {}),
+        });
+
+    it('ranks favorite items by quantity and excludes voided orders', async () => {
+      const t = await newTenant('Fav Cafe');
+      const coke = await addProduct(t.token, 'Coke', 5000).expect(201);
+      const c = await addCustomer(t.token, {
+        name: 'Foodie',
+        phone: '9010101010',
+      }).expect(201);
+
+      // Kept: 2 x Momo. Voided: 5 x Coke — a reversed sale is no favourite.
+      await placeItems(t.token, c.body.id, [
+        { productId: t.productId, quantity: 2 },
+      ]).expect(201);
+      const voided = await placeItems(t.token, c.body.id, [
+        { productId: coke.body.id, quantity: 5 },
+      ]).expect(201);
+      await api()
+        .patch(`/api/v1/orders/${voided.body.id}/status`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ status: 'VOIDED', reason: 'mistake' })
+        .expect(200);
+
+      const res = await api()
+        .get(`/api/v1/customers/${c.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+
+      expect(res.body.favoriteItems).toEqual([{ name: 'Momo', quantity: 2 }]);
+    });
+
+    it('sums refunds for the customer (a refund is a refund)', async () => {
+      const t = await newTenant('Refund Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Refunded',
+        phone: '9020202020',
+      }).expect(201);
+
+      const order = await placeItems(
+        t.token,
+        c.body.id,
+        [{ productId: t.productId, quantity: 1 }],
+        'CASH',
+      ).expect(201);
+      for (const status of ['PREPARING', 'READY', 'COMPLETED']) {
+        await api()
+          .patch(`/api/v1/orders/${order.body.id}/status`)
+          .set('Authorization', `Bearer ${t.token}`)
+          .send({ status })
+          .expect(200);
+      }
+      await api()
+        .post(`/api/v1/orders/${order.body.id}/refunds`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .send({ method: 'CASH', amountMinor: 4000, reason: 'Cold momos' })
+        .expect(201);
+
+      const res = await api()
+        .get(`/api/v1/customers/${c.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+
+      expect(res.body.refunds.count).toBe(1);
+      expect(res.body.refunds.totalMinor).toBe(4000);
+      expect(res.body.refunds.recent[0].orderNumber).toBe(
+        order.body.orderNumber,
+      );
+    });
+
+    it('derives visit frequency: null under two visits, avg days at two+', async () => {
+      const t = await newTenant('Freq Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Cadence',
+        phone: '9030303030',
+      }).expect(201);
+
+      const first = await placeItems(t.token, c.body.id, [
+        { productId: t.productId, quantity: 1 },
+      ]).expect(201);
+
+      const one = await api()
+        .get(`/api/v1/customers/${c.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(one.body.stats.avgDaysBetweenVisits).toBeNull();
+
+      // Second visit today; backdate the first 10 days via the BYPASSRLS client.
+      await placeItems(t.token, c.body.id, [
+        { productId: t.productId, quantity: 1 },
+      ]).expect(201);
+      await owner.order.update({
+        where: { id: first.body.id },
+        data: { createdAt: new Date(Date.now() - 10 * 86_400_000) },
+      });
+
+      const two = await api()
+        .get(`/api/v1/customers/${c.body.id}`)
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(two.body.stats.visits).toBe(2);
+      expect(two.body.stats.avgDaysBetweenVisits).toBe(10);
     });
   });
 });

@@ -595,6 +595,8 @@ export type CustomerDetail = CustomerSummary & {
     averageBillMinor: number;
     firstVisit: string | null;
     lastVisit: string | null;
+    /** Avg days between visits (server-derived); null under two visits. */
+    avgDaysBetweenVisits: number | null;
   };
   recentOrders: Array<{
     id: string;
@@ -603,6 +605,20 @@ export type CustomerDetail = CustomerSummary & {
     totalMinor: number;
     createdAt: string;
   }>;
+  /** Top items by quantity from non-void orders. */
+  favoriteItems: Array<{ name: string; quantity: number }>;
+  refunds: {
+    totalMinor: number;
+    count: number;
+    recent: Array<{
+      id: string;
+      amountMinor: number;
+      method: string;
+      reason: string;
+      createdAt: string;
+      orderNumber: number;
+    }>;
+  };
 };
 
 export const listCustomers = (token: string, onNewToken: Retry, q?: string) =>
@@ -623,6 +639,15 @@ export type LoyaltySummary = {
   redeemedPoints: number;
   tier: { key: string; label: string; minPoints: number };
   nextTier: { key: string; label: string; minPoints: number; pointsToGo: number } | null;
+  /** Most recent ledger entries — the points history. */
+  recentEntries: Array<{
+    id: string;
+    type: string;
+    points: number;
+    orderId: string | null;
+    reason: string | null;
+    createdAt: string;
+  }>;
 };
 
 /** Needs loyalty.read; callers treat a failure as "no loyalty" and omit it. */
@@ -1264,6 +1289,7 @@ export const getAuditLog = (
     from?: string;
     to?: string;
     q?: string;
+    entityId?: string;
   } = {},
 ) => {
   const params = new URLSearchParams();
@@ -1273,6 +1299,7 @@ export const getAuditLog = (
   if (opts.from) params.set('from', opts.from);
   if (opts.to) params.set('to', opts.to);
   if (opts.q) params.set('q', opts.q);
+  if (opts.entityId) params.set('entityId', opts.entityId);
   const qs = params.toString();
   return authedFetch<AuditEntry[]>(
     `/reports/audit${qs ? `?${qs}` : ''}`,

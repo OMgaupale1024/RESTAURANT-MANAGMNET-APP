@@ -164,7 +164,15 @@ export class CustomersService {
 
       // Serial, not Promise.all: concurrent queries share this transaction's one
       // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
-      const [agg, firstOrder, lastOrder, recent] = [
+      const [
+        agg,
+        firstOrder,
+        lastOrder,
+        recent,
+        favItems,
+        refundAgg,
+        refundRecent,
+      ] = [
         await db.order.aggregate({
           where: countable,
           _count: { _all: true },
@@ -193,9 +201,42 @@ export class CustomersService {
             createdAt: true,
           },
         }),
+        // Favorite items — top 5 by quantity, grouped by the SOLD name
+        // (nameSnapshot) with the same non-void rule Analytics.topProducts
+        // uses. What the receipt said, never the live product.
+        await db.orderItem.groupBy({
+          by: ['nameSnapshot'],
+          where: { order: countable },
+          _sum: { quantity: true },
+          orderBy: { _sum: { quantity: 'desc' } },
+          take: 5,
+        }),
+        // Refund history — every refund on this customer's orders. Deliberately
+        // NOT filtered by `countable`: a voided order can be refunded and that
+        // money really left the till. A refund is a refund.
+        await db.refund.aggregate({
+          where: { order: { customerId: id } },
+          _sum: { amountMinor: true },
+          _count: { _all: true },
+        }),
+        await db.refund.findMany({
+          where: { order: { customerId: id } },
+          take: 5,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            amountMinor: true,
+            method: true,
+            reason: true,
+            createdAt: true,
+            order: { select: { orderNumber: true } },
+          },
+        }),
       ];
 
       const visits = agg._count?._all ?? 0;
+      const firstVisit = firstOrder?.createdAt ?? null;
+      const lastVisit = lastOrder?.createdAt ?? null;
       return {
         ...customer,
         stats: {
@@ -206,14 +247,38 @@ export class CustomersService {
           averageBillMinor: agg._avg?.totalMinor
             ? Math.round(agg._avg.totalMinor)
             : 0,
-          firstVisit: firstOrder?.createdAt ?? null,
-          lastVisit: lastOrder?.createdAt ?? null,
+          firstVisit,
+          lastVisit,
+          // Visit frequency = average days between visits, derived on the server
+          // so no client recomputes it. Null under two visits — one visit has
+          // no interval to average.
+          avgDaysBetweenVisits:
+            visits >= 2 && firstVisit && lastVisit
+              ? Math.round(
+                  (lastVisit.getTime() - firstVisit.getTime()) /
+                    86_400_000 /
+                    (visits - 1),
+                )
+              : null,
         },
-        segment: this.segmentFor(
-          visits,
-          agg._sum?.totalMinor ?? 0,
-          lastOrder?.createdAt ?? null,
-        ),
+        segment: this.segmentFor(visits, agg._sum?.totalMinor ?? 0, lastVisit),
+        // Reuses the same grouped read as Analytics — no per-customer item store.
+        favoriteItems: favItems.map((f) => ({
+          name: f.nameSnapshot,
+          quantity: f._sum?.quantity ?? 0,
+        })),
+        refunds: {
+          totalMinor: refundAgg._sum?.amountMinor ?? 0,
+          count: refundAgg._count?._all ?? 0,
+          recent: refundRecent.map((r) => ({
+            id: r.id,
+            amountMinor: r.amountMinor,
+            method: r.method,
+            reason: r.reason,
+            createdAt: r.createdAt,
+            orderNumber: r.order.orderNumber,
+          })),
+        },
         recentOrders: recent,
       };
     });
