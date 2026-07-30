@@ -769,6 +769,11 @@ enum LoyaltyEntryType {
   ADJUST
   /// Points clawed back when the sale that earned them is refunded. Negative.
   REFUND_REVERSAL
+  /// Points restored when a redemption's sale is refunded. Positive, and
+  /// deliberately NOT a status type — restoring spent points must not inflate
+  /// lifetime-earned or tier (the REDEEM it undoes never lowered them). The
+  /// symmetric counterpart to REFUND_REVERSAL. (M11 Loyalty Redemption.)
+  REDEEM_REVERSAL
   /// Points lapsing after an inactivity window. Negative. The type exists so
   /// the ledger and balance maths already account for it; no expiry job runs
   /// yet — that arrives with its own milestone.

@@ -15,6 +15,25 @@ import { LoyaltyEntryType } from '../../generated/prisma/enums';
 /** Net spend that earns one point. 1000 paise = ₹10 per point. */
 export const EARN_RATE_MINOR_PER_POINT = 1000;
 
+/** Paise a redeemed point is worth as a checkout discount. 100 = ₹1 per point. */
+export const REDEEM_RATE_MINOR_PER_POINT = 100;
+
+/**
+ * The discount a redemption of `points` funds, capped so it can never exceed the
+ * subtotal — points worth more than the bill are left unspent, not wasted, and
+ * the orders CHECK (discount <= subtotal) is the last line of defence. Pure: the
+ * caller enforces the balance under a lock. Returns the points actually spent and
+ * the paise discount they buy.
+ */
+export function redemptionFor(
+  points: number,
+  subtotalMinor: number,
+): { points: number; discountMinor: number } {
+  const maxBySubtotal = Math.floor(subtotalMinor / REDEEM_RATE_MINOR_PER_POINT);
+  const spent = Math.max(0, Math.min(points, maxBySubtotal));
+  return { points: spent, discountMinor: spent * REDEEM_RATE_MINOR_PER_POINT };
+}
+
 /**
  * Points earned for an order, from its NET sale value (subtotal − discount).
  * Tax is excluded on purpose: a customer is rewarded for what they spent with

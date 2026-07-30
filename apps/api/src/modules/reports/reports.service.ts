@@ -320,6 +320,7 @@ export class ReportsService {
     from?: string;
     to?: string;
     q?: string;
+    entityId?: string;
   }) {
     const take = Math.min(opts.limit ?? 50, 100);
     const gte = this.dayBound(opts.from, false);
@@ -336,6 +337,7 @@ export class ReportsService {
         take,
         where: {
           ...(actionFilter ? { action: actionFilter } : {}),
+          ...(opts.entityId ? { entityId: opts.entityId } : {}),
           ...(opts.cursor ? { id: { lt: opts.cursor } } : {}),
           ...(gte || lte
             ? {

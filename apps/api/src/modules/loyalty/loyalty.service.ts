@@ -144,6 +144,76 @@ export class LoyaltyService {
     }
   }
 
+  // ------------------------------------------------------------- redemption
+
+  /**
+   * Spends points to fund an order's discount, INSIDE the caller's order
+   * transaction — so the sale and the debit commit together or not at all. Locks
+   * the customer (held to the caller's commit, serializing concurrent
+   * redemptions), refuses to overspend, and appends one order-tied REDEEM. The
+   * discount itself belongs to OrdersService; this is the debit and its record.
+   */
+  async redeemForOrder(
+    db: TxClient,
+    customerId: string,
+    orderId: string,
+    points: number,
+  ): Promise<void> {
+    const actorUserId = this.prisma.requireContext().userId ?? null;
+    await this.lockCustomer(db, customerId);
+    const balance = await this.balance(db, customerId);
+    if (points > balance) {
+      throw new BadRequestException('Not enough points to redeem');
+    }
+    await this.append(db, {
+      customerId,
+      type: LoyaltyEntryType.REDEEM,
+      points: -points,
+      orderId,
+      actorUserId,
+      action: 'loyalty.redeemed',
+    });
+  }
+
+  /**
+   * Restores the points a refunded order's redemption spent, once. Idempotent
+   * per (order, REDEEM_REVERSAL). A POSITIVE, balance-only entry — not a status
+   * type — so restoring never inflates lifetime-earned or tier (the REDEEM it
+   * undoes never lowered them). The symmetric counterpart to reverseForOrder.
+   * An order that redeemed nothing is a no-op.
+   */
+  async restoreRedeemedForOrder(orderId: string) {
+    const redeem = await this.prisma.tx((db) =>
+      db.loyaltyLedger.findFirst({
+        where: { orderId, type: LoyaltyEntryType.REDEEM },
+        select: { customerId: true, points: true },
+      }),
+    );
+    if (!redeem) return null; // nothing was redeemed on this order
+    const customerId = redeem.customerId;
+
+    try {
+      return await this.prisma.tx(async (db) => {
+        const already = await db.loyaltyLedger.findFirst({
+          where: { orderId, type: LoyaltyEntryType.REDEEM_REVERSAL },
+          select: { id: true },
+        });
+        if (already) return this.summarize(db, customerId);
+        await this.append(db, {
+          customerId,
+          type: LoyaltyEntryType.REDEEM_REVERSAL,
+          points: -redeem.points, // REDEEM is negative → the restore is positive
+          orderId,
+          action: 'loyalty.redeem_restored',
+        });
+        return this.summarize(db, customerId);
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) return this.getSummary(customerId);
+      throw e;
+    }
+  }
+
   // ----------------------------------------------------------------- redeem
 
   /** Spends points. Serialized per customer; never overspends. */

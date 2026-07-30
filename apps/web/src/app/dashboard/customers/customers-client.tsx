@@ -5,11 +5,15 @@ import { Download, Search, SearchX, UserRoundPlus, UsersRound } from 'lucide-rea
 import {
   ApiRequestError,
   createCustomer,
+  getAuditLog,
   getCustomer,
+  getLoyaltySummary,
   listCustomers,
   updateCustomer,
+  type AuditEntry,
   type CustomerDetail,
   type CustomerSummary,
+  type LoyaltySummary,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
@@ -58,6 +62,31 @@ function dayShort(iso: string | null): string {
     month: 'short',
     year: 'numeric',
   });
+}
+
+/** Customer-scoped audit actions → a phrase an owner reads at a glance. */
+const ACTIVITY_LABELS: Record<string, string> = {
+  'customer.created': 'Added as a customer',
+  'customer.updated': 'Details updated',
+  'loyalty.earned': 'Points earned',
+  'loyalty.redeemed': 'Points redeemed',
+  'loyalty.adjusted': 'Points adjusted',
+  'loyalty.refund_reversed': 'Points reversed',
+};
+
+const LOYALTY_TYPE_LABELS: Record<string, string> = {
+  EARN: 'Earned',
+  REDEEM: 'Redeemed',
+  ADJUST: 'Adjusted',
+  REFUND_REVERSAL: 'Reversed',
+};
+
+/** Average visit gap → a phrase, not a bare number. */
+function freqLabel(days: number | null): string {
+  if (days === null) return '—';
+  if (days <= 0) return 'Same day';
+  if (days === 1) return 'Daily';
+  return `~${days} days`;
 }
 
 export function CustomersClient() {
@@ -333,6 +362,26 @@ function CustomerSheet({
     notes: detail.notes ?? '',
   });
 
+  // Loyalty and activity load independently of the profile and are each
+  // permission-gated: a caller without loyalty.read / audit.read simply gets no
+  // section (the documented graceful-degradation idiom), never an error. The
+  // activity feed is the per-customer slice of the M5 Timeline via entityId.
+  const [loyalty, setLoyalty] = useState<LoyaltySummary | null>(null);
+  const [activity, setActivity] = useState<AuditEntry[] | null>(null);
+  useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    getLoyaltySummary(accessToken, onNewToken, detail.id)
+      .then((l) => !cancelled && setLoyalty(l))
+      .catch(() => !cancelled && setLoyalty(null));
+    getAuditLog(accessToken, onNewToken, { entityId: detail.id, limit: 8 })
+      .then((a) => !cancelled && setActivity(a))
+      .catch(() => !cancelled && setActivity(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, onNewToken, detail.id]);
+
   async function save() {
     if (!accessToken) return;
     const digits = validPhone(form.phone);
@@ -427,19 +476,67 @@ function CustomerSheet({
       </div>
 
       <section>
-        <h3 className="text-label mb-2">Spend</h3>
+        <h3 className="text-label mb-2">At a glance</h3>
         <dl className="grid grid-cols-2 gap-3">
+          <SheetStat label="Lifetime value" value={formatMinor(detail.stats.totalSpentMinor)} />
+          <SheetStat label="Average spend" value={formatMinor(detail.stats.averageBillMinor)} />
           <SheetStat label="Visits" value={String(detail.stats.visits)} />
-          <SheetStat label="Total spent" value={formatMinor(detail.stats.totalSpentMinor)} />
-          <SheetStat label="Average bill" value={formatMinor(detail.stats.averageBillMinor)} />
-          <SheetStat label="Last visit" value={dayShort(detail.stats.lastVisit)} />
+          <SheetStat
+            label="Visit frequency"
+            value={freqLabel(detail.stats.avgDaysBetweenVisits)}
+          />
         </dl>
-        {detail.stats.firstVisit && (
-          <p className="mt-2 text-[12px] text-ink-3">
-            First visit {dayShort(detail.stats.firstVisit)}
-          </p>
-        )}
+        <p className="mt-2 text-[12px] text-ink-3">
+          {detail.stats.firstVisit
+            ? `First visit ${dayShort(detail.stats.firstVisit)}`
+            : 'No visits yet'}
+          {detail.stats.lastVisit && ` · last ${dayShort(detail.stats.lastVisit)}`}
+        </p>
       </section>
+
+      {loyalty && (
+        <section>
+          <h3 className="text-label mb-2">Loyalty</h3>
+          <dl className="grid grid-cols-2 gap-3">
+            <SheetStat label="Points balance" value={String(loyalty.balancePoints)} />
+            <SheetStat label="Tier" value={loyalty.tier.label} />
+          </dl>
+          {loyalty.nextTier && (
+            <p className="mt-2 text-[12px] text-ink-3">
+              {loyalty.nextTier.pointsToGo} points to {loyalty.nextTier.label}
+            </p>
+          )}
+          {loyalty.recentEntries.length > 0 && (
+            <ul className="mt-3 space-y-1.5">
+              {loyalty.recentEntries.slice(0, 5).map((e) => (
+                <li key={e.id} className="flex items-center gap-2 text-[13px]">
+                  <span className="text-ink-2">
+                    {LOYALTY_TYPE_LABELS[e.type] ?? e.type}
+                  </span>
+                  <span className="ml-auto font-medium tabular-nums">
+                    {e.points > 0 ? `+${e.points}` : e.points}
+                  </span>
+                  <span className="text-ink-3">{dayShort(e.createdAt)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {detail.favoriteItems.length > 0 && (
+        <section>
+          <h3 className="text-label mb-2">Favorite items</h3>
+          <ul className="space-y-1.5">
+            {detail.favoriteItems.map((f) => (
+              <li key={f.name} className="flex items-center gap-2 text-[13px]">
+                <span className="text-ink-2">{f.name}</span>
+                <span className="ml-auto font-medium tabular-nums">×{f.quantity}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section>
         <h3 className="text-label mb-2">Order history</h3>
@@ -465,6 +562,47 @@ function CustomerSheet({
           </ul>
         )}
       </section>
+
+      {detail.refunds.count > 0 && (
+        <section>
+          <h3 className="text-label mb-2">Refunds</h3>
+          <p className="text-[13px] text-ink-2">
+            {formatMinor(detail.refunds.totalMinor)} returned across{' '}
+            {detail.refunds.count} refund{detail.refunds.count === 1 ? '' : 's'}
+          </p>
+          <ul className="mt-2 space-y-2">
+            {detail.refunds.recent.map((r) => (
+              <li
+                key={r.id}
+                className="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2 text-[13px]"
+              >
+                <span className="font-mono font-medium tabular-nums">#{r.orderNumber}</span>
+                <span className="truncate text-ink-3">{r.reason}</span>
+                <span className="ml-auto font-medium tabular-nums">
+                  −{formatMinor(r.amountMinor)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {activity && activity.length > 0 && (
+        <section>
+          <h3 className="text-label mb-2">Recent activity</h3>
+          <ul className="space-y-1.5">
+            {activity.map((e) => (
+              <li key={e.id} className="flex items-center gap-2 text-[13px]">
+                <span className="text-ink-2">
+                  {ACTIVITY_LABELS[e.action] ?? e.action}
+                </span>
+                {e.actor?.name && <span className="text-ink-3">· {e.actor.name}</span>}
+                <span className="ml-auto text-ink-3">{dayShort(e.createdAt)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {detail.notes && (
         <section>

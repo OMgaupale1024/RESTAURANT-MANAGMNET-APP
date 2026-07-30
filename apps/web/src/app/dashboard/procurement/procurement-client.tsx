@@ -499,11 +499,17 @@ function PurchaseOrderSheet({
   const [po, setPo] = useState<PurchaseOrder | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Reset while rendering (not in an effect) when the selected order changes, so
+  // reopening the sheet never flashes the previous order. React's sanctioned
+  // "adjust state on a prop change" pattern; keeps the fetch effect side-effect-only.
+  const [shownId, setShownId] = useState(id);
+  if (id !== shownId) {
+    setShownId(id);
+    setPo(null);
+  }
+
   useEffect(() => {
-    if (!id || !accessToken) {
-      setPo(null);
-      return;
-    }
+    if (!id || !accessToken) return;
     let cancelled = false;
     getPurchaseOrder(accessToken, onNewToken, id)
       .then((p) => {

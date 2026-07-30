@@ -70,19 +70,24 @@ float.
 | `created_at` | when |
 
 **Sign convention** (a `CHECK` enforces it, so a wrong-signed write fails at the
-source): `EARN` and a positive `ADJUST` credit (`> 0`); `REDEEM`, `EXPIRE`,
-`REFUND_REVERSAL` and a negative `ADJUST` debit (`< 0`).
+source): `EARN`, `REDEEM_REVERSAL` and a positive `ADJUST` credit (`> 0`);
+`REDEEM`, `EXPIRE`, `REFUND_REVERSAL` and a negative `ADJUST` debit (`< 0`).
 
-### The five entry types
+### The six entry types
 
 - **EARN** — points for a sale. Computed by the rules engine from the order's
   net spend. One per order, guaranteed by a partial unique index on
   `(restaurant_id, order_id, type)`.
-- **REDEEM** — points the customer spent. Debited under a lock so it can never
+- **REDEEM** — points the customer spent — at the counter, or as a checkout
+  discount (M11, an order-tied `REDEEM`). Debited under a lock so it can never
   overspend.
 - **ADJUST** — a manual signed correction or goodwill grant. Reason mandatory.
 - **REFUND_REVERSAL** — points clawed back when the sale that earned them is
   refunded. One per order. The single entry allowed to push a balance negative.
+- **REDEEM_REVERSAL** — points restored when a refunded sale's redemption is
+  unwound (M11). Positive, one per order, and deliberately NOT a status type: it
+  moves the spendable balance without touching lifetime-earned or tier — the
+  symmetric counterpart to `REFUND_REVERSAL`.
 - **EXPIRE** — points lapsing after inactivity. The type and its maths exist so
   nothing downstream has to change when expiry ships; **no expiry job runs yet.**
 
@@ -134,7 +139,11 @@ can change earning or tiers without touching how points are stored:
 - `pointsForOrder(order)` — points from **net spend** (`subtotal − discount`),
   tax excluded (a customer is rewarded for what they spent, not for the GST the
   restaurant collects). Integer floor, so points never outrun value. Default:
-  1 point per ₹10.
+  1 point per ₹10. A checkout redemption is a discount, so it lowers the net and
+  thus the earn — consistent with coupons.
+- `redemptionFor(points, subtotal)` — the ₹ discount that redeeming `points`
+  funds at **1 point = ₹1**, capped so it can never exceed the subtotal (M11).
+  Pure; the caller enforces the balance under a lock.
 - `tierFor` / `nextTierFor` — the ladder, above.
 
 This is intentionally a **seam, not a rules DSL or a rules table.** The
@@ -182,9 +191,11 @@ of that is a negative balance, not a suppressed one.
 ## API
 
 All routes are permissioned and tenant-scoped. `earn`/`reverse` are exposed as
-explicit endpoints so the foundation is complete and testable on its own; wiring
-them into checkout and refunds is the **Smart Checkout** milestone, which will
-call the same `LoyaltyService` methods.
+explicit endpoints so the foundation is complete and testable on its own.
+**Smart Checkout (M10) now calls these same `LoyaltyService` methods
+automatically** from the payment and refund flow — post-commit and best-effort,
+so a loyalty failure never rolls back the money — and the endpoints remain the
+idempotent manual-recovery path.
 
 | method & path | permission | does |
 | --- | --- | --- |
@@ -196,20 +207,23 @@ call the same `LoyaltyService` methods.
 
 ## What this milestone deliberately does not do
 
-- **No checkout/refund wiring.** Earning does not run automatically on payment,
-  and reversal does not run automatically on refund. Those touch the orders
-  flow and belong to Smart Checkout. Prior milestones are not modified.
-- **No expiry job, no per-tenant tiers, no redemption→money conversion, no UI.**
-  The foundation exposes the data (the summary); surfacing points in the POS
-  customer preview or a timeline is a later, small integration.
+- **Checkout/refund wiring — added later in M10.** The foundation shipped without
+  it: earning and reversal ran only via the manual endpoints. Smart Checkout
+  (M10) wired them into the payment/refund flow (`OrdersService`, post-commit,
+  best-effort) without changing the ledger or these methods.
+- **No expiry job and no per-tenant tiers.** (Redemption→discount at checkout —
+  once listed here as not-done — shipped in M11; auto earn/reverse in M10.) The
+  foundation exposed the data; the integrations that surface and spend it arrived
+  in the later milestones.
 
 ## Future extensions (foundation designed for, not built)
 
-- **Auto-earn / auto-reverse** wired into checkout and refunds (Smart Checkout).
+- **Auto-earn / auto-reverse** wired into checkout and refunds — **done in M10.**
 - **Per-tenant tier ladders** — `TIERS` becomes a `loyalty_tiers` table.
 - **Expiry** — a scheduled job appends `EXPIRE` rows; the maths already excludes
   them from tier and includes them in balance.
-- **Redemption value** — points → discount conversion at checkout.
+- **Redemption value** — points → discount conversion at checkout — **done in
+  M11** (`redemptionFor`, an order-tied `REDEEM`, and `REDEEM_REVERSAL` on refund).
 - **Rollup rows** for customers with very large ledgers, if a tenant ever needs
   them. A rollup is a summarizing ledger row, still append-only — never a
   mutable counter.

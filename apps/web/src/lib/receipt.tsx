@@ -11,6 +11,39 @@ import { Modal } from '@/components/ui/modal';
 /** Whole points with Indian grouping — 1,200. Never money; that's formatMinor. */
 const pts = (n: number) => n.toLocaleString('en-IN');
 
+/**
+ * Points earned on THIS order — the EARN row Smart Checkout appended to the
+ * ledger when the order settled, read back from the summary. Server-derived: it
+ * is never recomputed from the bill on the client. null when the order earned
+ * nothing (a guest, an unsettled order, or an old order no longer in the recent
+ * window on a reprint).
+ */
+export function earnedForOrder(
+  loyalty: LoyaltySummary | null | undefined,
+  orderId: string,
+): number | null {
+  const entry = loyalty?.recentEntries.find(
+    (r) => r.orderId === orderId && r.type === 'EARN',
+  );
+  return entry && entry.points > 0 ? entry.points : null;
+}
+
+/**
+ * Points redeemed on THIS order — the negative REDEEM row the sale wrote when it
+ * spent them, read back as a positive count. Lets the bill label its discount
+ * "Redeemed (N pts)" rather than a generic "Discount". Server-derived; null when
+ * the order redeemed nothing.
+ */
+export function redeemedForOrder(
+  loyalty: LoyaltySummary | null | undefined,
+  orderId: string,
+): number | null {
+  const entry = loyalty?.recentEntries.find(
+    (r) => r.orderId === orderId && r.type === 'REDEEM',
+  );
+  return entry && entry.points < 0 ? -entry.points : null;
+}
+
 const TYPE_LABEL: Record<string, string> = {
   DINE_IN: 'Dine-in',
   TAKEAWAY: 'Takeaway',
@@ -140,6 +173,7 @@ export function BillReceipt({
 }) {
   const groups = taxGroups(order);
   const paid = order.payments.filter((p) => p.status === 'CAPTURED');
+  const redeemed = redeemedForOrder(loyalty, order.id);
   return (
     <div className="rc">
       {headerLines(profile)}
@@ -177,7 +211,9 @@ export function BillReceipt({
           </tr>
           {order.discountMinor > 0 && (
             <tr>
-              <td>Discount</td>
+              <td>
+                {redeemed != null ? `Redeemed (${pts(redeemed)} pts)` : 'Discount'}
+              </td>
               <td className="rc-amt">−{formatMinor(order.discountMinor)}</td>
             </tr>
           )}
@@ -205,7 +241,13 @@ export function BillReceipt({
           ))}
         </tbody>
       </table>
-      {loyalty && <LoyaltyBlock loyalty={loyalty} name={order.customer?.name} />}
+      {loyalty && (
+        <LoyaltyBlock
+          loyalty={loyalty}
+          name={order.customer?.name}
+          earnedPoints={earnedForOrder(loyalty, order.id)}
+        />
+      )}
       <div className="rc-rule" />
       <footer className="rc-center">
         {/* The custom footer IS the thank-you when set; otherwise a warm default,
@@ -220,16 +262,20 @@ export function BillReceipt({
 /**
  * The loyalty engagement block. Text-only on purpose: it prints identically on
  * an 80mm thermal head and on A4, where a graphical bar or QR would not. Shows
- * only what Milestone 2 actually knows — tier, balance, lifetime earned, and
- * the gap to the next tier. "Points earned on this order" arrives when Smart
- * Checkout wires earning into payment; until then it is not shown, not faked.
+ * tier, balance, lifetime earned, and the gap to the next tier — plus, once
+ * Smart Checkout has credited the sale, the points earned on THIS order. That
+ * earned figure is read back from the ledger, shown only when present, never
+ * faked.
  */
 function LoyaltyBlock({
   loyalty,
   name,
+  earnedPoints,
 }: {
   loyalty: LoyaltySummary;
   name?: string;
+  /** Points earned on this order (server-derived); omitted when absent. */
+  earnedPoints?: number | null;
 }) {
   return (
     <>
@@ -237,6 +283,12 @@ function LoyaltyBlock({
       <p className="rc-center rc-loyalty-tier">★ {loyalty.tier.label} member</p>
       <table className="rc-totals">
         <tbody>
+          {earnedPoints != null && (
+            <tr>
+              <td>Points earned</td>
+              <td className="rc-amt">+{pts(earnedPoints)}</td>
+            </tr>
+          )}
           <tr>
             <td>Points balance</td>
             <td className="rc-amt">{pts(loyalty.balancePoints)}</td>
@@ -314,17 +366,25 @@ export function buildShareText(
     `Subtotal: ${formatMinor(order.subtotalMinor)}`,
   ];
   if (order.discountMinor > 0) {
-    lines.push(`Discount: −${formatMinor(order.discountMinor)}`);
+    const redeemed = redeemedForOrder(loyalty, order.id);
+    const label =
+      redeemed != null ? `Redeemed (${pts(redeemed)} pts)` : 'Discount';
+    lines.push(`${label}: −${formatMinor(order.discountMinor)}`);
   }
   lines.push(`GST: ${formatMinor(order.taxMinor)}`);
   lines.push(`Total: ${formatMinor(order.totalMinor)}`);
   const paid = order.payments.find((p) => p.status === 'CAPTURED');
   if (paid) lines.push(`Paid by ${paid.method}`);
   if (loyalty) {
+    const earned = earnedForOrder(loyalty, order.id);
     const next = loyalty.nextTier
       ? ` · ${pts(loyalty.nextTier.pointsToGo)} to ${loyalty.nextTier.label}`
       : '';
-    lines.push('', `⭐ ${loyalty.tier.label} · ${pts(loyalty.balancePoints)} points${next}`);
+    const earnedStr = earned != null ? `+${pts(earned)} pts this bill · ` : '';
+    lines.push(
+      '',
+      `⭐ ${loyalty.tier.label} · ${earnedStr}${pts(loyalty.balancePoints)} points${next}`,
+    );
   }
   if (profile.gstin) lines.push(`GSTIN: ${profile.gstin}`);
   if (profile.receiptFooter) lines.push('', profile.receiptFooter);

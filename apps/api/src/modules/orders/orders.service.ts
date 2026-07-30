@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
@@ -18,15 +19,20 @@ import { InventoryService } from '../inventory/inventory.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { MarketingService } from '../marketing/marketing.service';
 import { EventsService } from '../../events/events.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
+import { redemptionFor } from '../loyalty/loyalty.rules';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly realtime: RealtimeGateway,
     private readonly marketing: MarketingService,
     private readonly events: EventsService,
+    private readonly loyalty: LoyaltyService,
   ) {}
 
   /**
@@ -48,19 +54,44 @@ export class OrdersService {
       );
     }
 
-    // A manual discount is a client-supplied amount off, so it is gated
-    // exactly where a coupon is not: one discount source only, and the
-    // permission that a plain order-taker may not hold.
-    if (dto.manualDiscountMinor && dto.couponCode) {
+    // Exactly one discount source: a coupon, a manual amount, or redeemed
+    // points. Each is a different trust class; combining them is a scope we
+    // deliberately don't open (the total identity has one discount column).
+    const discountSources = [
+      dto.couponCode,
+      dto.manualDiscountMinor,
+      dto.redeemPoints,
+    ].filter((x) => x != null).length;
+    if (discountSources > 1) {
       throw new BadRequestException(
-        'Use either a coupon or a manual discount, not both',
+        'Use only one discount: a coupon, a manual discount, or redeemed points',
       );
     }
+
+    // A manual discount is a client-supplied amount off — gated by the
+    // permission a plain order-taker may not hold.
     if (
       dto.manualDiscountMinor &&
       !ctx.permissions.includes('order.discount')
     ) {
       throw new ForbiddenException('Missing permission: order.discount');
+    }
+
+    // Redeeming points spends a real balance and needs a real account: a
+    // customer to spend from, the till permission, and a live sale (a hold
+    // takes no money and so spends no points — collect them when placing).
+    if (dto.redeemPoints) {
+      if (!dto.customerId) {
+        throw new BadRequestException('Redeeming points needs a customer');
+      }
+      if (dto.hold) {
+        throw new BadRequestException(
+          'A held order cannot redeem points — redeem when placing',
+        );
+      }
+      if (!ctx.permissions.includes('loyalty.redeem')) {
+        throw new ForbiddenException('Missing permission: loyalty.redeem');
+      }
     }
 
     // An idempotent replay must return the original order, not a second one.
@@ -83,6 +114,12 @@ export class OrdersService {
             orderNumber: order.orderNumber,
             status: order.status,
           });
+        }
+        // A payment at placement is always the full total (insert() captures
+        // `amountMinor: total`), so a customer-attached paid order is settled and
+        // earns — post-commit, best-effort, never blocking the sale. See M10.
+        if (dto.customerId && dto.paymentMethod) {
+          await this.creditLoyalty(order.id);
         }
         return order;
       } catch (e) {
@@ -170,6 +207,7 @@ export class OrdersService {
       // the discount. A bad/expired/exhausted code is rejected, not silently
       // ignored, so the cashier knows it did not apply.
       let discount = 0;
+      let redeemPoints = 0; // points actually spent, after the subtotal cap
       let couponRedemption: { couponId: string; discountMinor: number } | null =
         null;
       if (dto.couponCode) {
@@ -193,6 +231,18 @@ export class OrdersService {
           );
         }
         discount = dto.manualDiscountMinor;
+      } else if (dto.redeemPoints) {
+        // Points fund the discount at ₹1/point, capped at the subtotal. The
+        // debit itself happens after the order row exists (below), so the ledger
+        // entry carries the order id; the balance is enforced there under a lock.
+        const r = redemptionFor(dto.redeemPoints, subtotal);
+        if (r.discountMinor <= 0) {
+          throw new BadRequestException(
+            'The subtotal is too small to redeem points',
+          );
+        }
+        discount = r.discountMinor;
+        redeemPoints = r.points;
       }
 
       // total = subtotal - discount + tax. The DB CHECK enforces this exact
@@ -241,6 +291,20 @@ export class OrdersService {
           couponRedemption.couponId,
           order.id,
           couponRedemption.discountMinor,
+        );
+      }
+
+      // The points debit, tied to the order, INSIDE this transaction — the sale
+      // and the spend commit together, or neither does. redeemForOrder locks the
+      // customer (held to commit) and refuses to overspend; an insufficient
+      // balance throws here and rolls the whole sale back. customerId is
+      // guaranteed by the create() guard when redeemPoints is present.
+      if (redeemPoints > 0) {
+        await this.loyalty.redeemForOrder(
+          db,
+          dto.customerId!,
+          order.id,
+          redeemPoints,
         );
       }
 
@@ -550,10 +614,16 @@ export class OrdersService {
     if (existing) return existing;
 
     try {
-      return await this.prisma.tx(async (db) => {
+      let settled = false;
+      const result = await this.prisma.tx(async (db) => {
         const order = await db.order.findFirst({
           where: { id: orderId },
-          select: { id: true, status: true, totalMinor: true },
+          select: {
+            id: true,
+            status: true,
+            totalMinor: true,
+            customerId: true,
+          },
         });
         if (!order) throw new NotFoundException('Order not found');
 
@@ -598,8 +668,15 @@ export class OrdersService {
           },
         });
 
+        // This leg settles the order when it exactly clears the outstanding
+        // balance; a customer-attached settled order earns its points below.
+        settled = order.customerId != null && dto.amountMinor === outstanding;
         return this.load(db, orderId);
       });
+      // Post-commit, best-effort: the payment is already durable, so a loyalty
+      // failure can never undo it (M10 Smart Checkout).
+      if (settled) await this.creditLoyalty(orderId);
+      return result;
     } catch (e) {
       // A concurrent identical leg won the unique index — its result is ours.
       if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
@@ -636,7 +713,7 @@ export class OrdersService {
     if (existing) return existing;
 
     try {
-      return await this.prisma.tx(async (db) => {
+      const result = await this.prisma.tx(async (db) => {
         const order = await db.order.findFirst({
           where: { id: orderId },
           select: { id: true, status: true, orderNumber: true },
@@ -712,12 +789,63 @@ export class OrdersService {
 
         return this.load(db, orderId);
       });
+      // Post-commit, best-effort: reverse the sale's earned points. Any refund
+      // reverses the full earned amount, once (idempotent). A refund on a sale
+      // that earned nothing is a benign no-op; a loyalty failure never undoes
+      // the refund (M10 Smart Checkout).
+      await this.reverseLoyalty(orderId);
+      return result;
     } catch (e) {
       if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
         const won = await replay();
         if (won) return won;
       }
       throw e;
+    }
+  }
+
+  /**
+   * Post-commit loyalty settlement (M10 Smart Checkout). Both run AFTER the
+   * financial transaction has committed and swallow their own errors, so a
+   * loyalty hiccup can never fail or roll back a payment/refund. The seams are
+   * idempotent at the ledger, so a retry — or the manual POST /orders/:id/
+   * loyalty/earn|reverse recovery endpoints — never double-applies.
+   */
+  private async creditLoyalty(orderId: string): Promise<void> {
+    try {
+      await this.loyalty.earnForOrder(orderId);
+    } catch (e) {
+      this.logger.warn(
+        `Loyalty earn failed for order ${orderId}; recover via POST /orders/${orderId}/loyalty/earn`,
+        e instanceof Error ? e.stack : String(e),
+      );
+    }
+  }
+
+  private async reverseLoyalty(orderId: string): Promise<void> {
+    // Earn-reversal (M10) and redemption-restore (M11) are independent, both
+    // idempotent and best-effort — a failure of either never undoes the refund,
+    // and the earn-reversal's benign NotFound must not short-circuit the restore.
+    try {
+      await this.loyalty.reverseForOrder(orderId);
+    } catch (e) {
+      // No earned points to reverse (guest sale, or one never fully paid) is
+      // expected, not a failure.
+      if (!(e instanceof NotFoundException)) {
+        this.logger.warn(
+          `Loyalty earn-reversal failed for order ${orderId}; recover via POST /orders/${orderId}/loyalty/reverse`,
+          e instanceof Error ? e.stack : String(e),
+        );
+      }
+    }
+    try {
+      // Restores redeemed points; a no-op when the order redeemed nothing.
+      await this.loyalty.restoreRedeemedForOrder(orderId);
+    } catch (e) {
+      this.logger.warn(
+        `Loyalty redeem-restore failed for order ${orderId}`,
+        e instanceof Error ? e.stack : String(e),
+      );
     }
   }
 

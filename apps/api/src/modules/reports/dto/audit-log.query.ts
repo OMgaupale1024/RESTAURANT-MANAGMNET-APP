@@ -66,4 +66,12 @@ export class AuditLogQuery {
   @IsString()
   @MaxLength(64)
   q?: string;
+
+  /**
+   * Narrow to a single entity's activity — e.g. one customer's timeline on the
+   * profile. Only narrows RLS scope, never widens it.
+   */
+  @IsOptional()
+  @IsUUID()
+  entityId?: string;
 }
