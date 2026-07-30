@@ -15,6 +15,7 @@ Related: [DEPLOYMENT.md](DEPLOYMENT.md) · [ENVIRONMENT.md](ENVIRONMENT.md) ·
 | Users bounced to /login | refresh cookie / same-site domain | [Common failures](#common-failures) |
 | No emails arriving | `RESEND_API_KEY` / logs | [Email](#email-issues) |
 | Deploy won't start | boot validation crash in logs | [Migrations](#migration-failures), [ENVIRONMENT.md](ENVIRONMENT.md) |
+| Realtime stops after scaling | running more than one API replica | [Scaling](#scaling-and-realtime-single-instance) |
 
 ## Service restart
 
@@ -27,6 +28,31 @@ docker compose ps                   # status + health of every service
 A restart is graceful: the API traps SIGTERM, stops accepting connections,
 finishes in-flight requests, and disconnects the Postgres pool before exiting
 (logged as `Shutting down`).
+
+## Scaling and realtime (single instance)
+
+**This release officially supports a single API instance.** Run exactly one
+replica of the API service. This is an intentional Version 1 deployment
+decision — **not a bug** and not an oversight.
+
+Why: realtime updates (the kitchen board and the live order feed) use
+Socket.IO's **in-memory adapter**. Each connected socket lives in the memory of
+the one process holding it, and an event is broadcast only to sockets on that
+same process. With a single instance every client shares that process, so
+delivery is complete and correct.
+
+**Do not run two or more API replicas as-is.** A second instance would not
+crash — HTTP, authentication, and RLS tenant isolation all keep working across
+instances — but a live update emitted by instance A would not reach a socket
+connected to instance B. Some screens would silently miss realtime events until
+their next manual refresh. Scale **vertically** instead (a larger single
+instance); that has no such limit and is the supported way to add capacity in
+this release.
+
+**To scale horizontally in a future version:** add a Socket.IO Redis adapter
+(`@socket.io/redis-adapter`) so every replica shares one broadcast bus, then run
+as many instances as needed. That is the only change realtime requires for a
+multi-instance deployment, and it is deliberately out of scope for v1.
 
 ## Viewing logs
 
