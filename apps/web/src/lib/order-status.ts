@@ -16,5 +16,3 @@ const NEXT: Record<string, string[]> = {
 };
 
 export const nextStatuses = (from: string): string[] => NEXT[from] ?? [];
-
-export const isTerminal = (s: string) => nextStatuses(s).length === 0;

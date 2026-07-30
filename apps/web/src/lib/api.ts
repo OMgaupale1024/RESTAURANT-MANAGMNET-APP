@@ -313,9 +313,6 @@ export const getCurrentSession = (token: string, onNewToken: (t: string) => void
 export const listSessions = (token: string, onNewToken: (t: string) => void) =>
   authedFetch<CashSessionRow[]>('/cash/sessions', token, onNewToken);
 
-export const getSession = (token: string, onNewToken: (t: string) => void, id: string) =>
-  authedFetch<CashSession>(`/cash/sessions/${id}`, token, onNewToken);
-
 export const openSession = (
   token: string,
   onNewToken: (t: string) => void,
@@ -656,17 +653,6 @@ export type LoyaltySummary = {
 /** Needs loyalty.read; callers treat a failure as "no loyalty" and omit it. */
 export const getLoyaltySummary = (token: string, onNewToken: Retry, customerId: string) =>
   authedFetch<LoyaltySummary>(`/customers/${customerId}/loyalty`, token, onNewToken);
-
-export const findCustomerByPhone = (
-  token: string,
-  onNewToken: Retry,
-  phone: string,
-) =>
-  authedFetch<{ id: string; name: string; phone: string } | Record<string, never>>(
-    `/customers/by-phone/${encodeURIComponent(phone)}`,
-    token,
-    onNewToken,
-  );
 
 export const createCustomer = (
   token: string,

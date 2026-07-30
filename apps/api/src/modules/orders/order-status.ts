@@ -26,10 +26,6 @@ export function canTransition(from: OrderStatus, to: OrderStatus): boolean {
   return TRANSITIONS[from].includes(to);
 }
 
-export function allowedNext(from: OrderStatus): readonly OrderStatus[] {
-  return TRANSITIONS[from];
-}
-
 /**
  * VOID and CANCEL both stop an order, and the distinction is a money one:
  *   CANCELLED — nothing was owed. Called off before it mattered.
