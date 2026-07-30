@@ -28,6 +28,22 @@ export function earnedForOrder(
   return entry && entry.points > 0 ? entry.points : null;
 }
 
+/**
+ * Points redeemed on THIS order — the negative REDEEM row the sale wrote when it
+ * spent them, read back as a positive count. Lets the bill label its discount
+ * "Redeemed (N pts)" rather than a generic "Discount". Server-derived; null when
+ * the order redeemed nothing.
+ */
+export function redeemedForOrder(
+  loyalty: LoyaltySummary | null | undefined,
+  orderId: string,
+): number | null {
+  const entry = loyalty?.recentEntries.find(
+    (r) => r.orderId === orderId && r.type === 'REDEEM',
+  );
+  return entry && entry.points < 0 ? -entry.points : null;
+}
+
 const TYPE_LABEL: Record<string, string> = {
   DINE_IN: 'Dine-in',
   TAKEAWAY: 'Takeaway',
@@ -157,6 +173,7 @@ export function BillReceipt({
 }) {
   const groups = taxGroups(order);
   const paid = order.payments.filter((p) => p.status === 'CAPTURED');
+  const redeemed = redeemedForOrder(loyalty, order.id);
   return (
     <div className="rc">
       {headerLines(profile)}
@@ -194,7 +211,9 @@ export function BillReceipt({
           </tr>
           {order.discountMinor > 0 && (
             <tr>
-              <td>Discount</td>
+              <td>
+                {redeemed != null ? `Redeemed (${pts(redeemed)} pts)` : 'Discount'}
+              </td>
               <td className="rc-amt">−{formatMinor(order.discountMinor)}</td>
             </tr>
           )}
@@ -347,7 +366,10 @@ export function buildShareText(
     `Subtotal: ${formatMinor(order.subtotalMinor)}`,
   ];
   if (order.discountMinor > 0) {
-    lines.push(`Discount: −${formatMinor(order.discountMinor)}`);
+    const redeemed = redeemedForOrder(loyalty, order.id);
+    const label =
+      redeemed != null ? `Redeemed (${pts(redeemed)} pts)` : 'Discount';
+    lines.push(`${label}: −${formatMinor(order.discountMinor)}`);
   }
   lines.push(`GST: ${formatMinor(order.taxMinor)}`);
   lines.push(`Total: ${formatMinor(order.totalMinor)}`);

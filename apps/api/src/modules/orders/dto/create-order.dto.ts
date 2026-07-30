@@ -107,6 +107,19 @@ export class CreateOrderDto {
   @MaxLength(200)
   discountReason?: string;
 
+  /**
+   * Points to spend on this sale, funding a discount. The client sends the
+   * POINTS, never an amount — the server caps them (at the balance and the
+   * subtotal) and computes the ₹ discount at 1 point = ₹1. Requires a customer
+   * and the loyalty.redeem permission; mutually exclusive with a coupon or a
+   * manual discount; not allowed on a held order (a hold takes no money).
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(10_000_000)
+  redeemPoints?: number;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)

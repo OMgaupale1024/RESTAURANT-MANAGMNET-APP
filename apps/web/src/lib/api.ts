@@ -466,6 +466,9 @@ export const createOrder = (
     /** Ad-hoc discount in paise. Needs order.discount; excludes couponCode. */
     manualDiscountMinor?: number;
     discountReason?: string;
+    /** Points to spend as a discount (1 pt = ₹1). Needs a customer and
+     *  loyalty.redeem; excludes couponCode/manualDiscountMinor. Server caps it. */
+    redeemPoints?: number;
     notes?: string;
     idempotencyKey?: string;
   },

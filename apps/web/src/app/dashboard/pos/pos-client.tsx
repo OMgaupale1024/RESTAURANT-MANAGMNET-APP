@@ -53,6 +53,7 @@ import {
   BillReceipt,
   buildShareText,
   earnedForOrder,
+  redeemedForOrder,
   usePrintArea,
   waShareUrl,
 } from '@/lib/receipt';
@@ -125,6 +126,13 @@ export function PosClient() {
   const [customer, setCustomer] = useState<PosCustomer | null>(null);
   const [coupon, setCoupon] = useState('');
   const [discount, setDiscount] = useState('');
+  const [redeem, setRedeem] = useState('');
+  // The attached customer's redeemable balance, keyed by customer id so a stale
+  // fetch (or a detached customer) never enables redemption for the wrong one.
+  const [customerBalance, setCustomerBalance] = useState<{
+    customerId: string;
+    balance: number;
+  } | null>(null);
   const [note, setNote] = useState('');
   const [method, setMethod] = useState<MethodKey>('CASH');
   const [orderType, setOrderType] = useState<OrderTypeKey>('TAKEAWAY');
@@ -304,6 +312,7 @@ export function PosClient() {
     setCart([]);
     setCoupon('');
     setDiscount('');
+    setRedeem('');
     setNote('');
     setOrderType('TAKEAWAY');
     setCustomer(null);
@@ -326,8 +335,11 @@ export function PosClient() {
     }));
   }
 
-  /** Discount fields shared by charge and hold. Coupon and manual are exclusive. */
+  /** Discount fields shared by charge and hold — exactly one source: redeemed
+   *  points, else a coupon, else a manual amount. */
   function discountFields() {
+    const points = redeem.trim() ? parseInt(redeem.trim(), 10) : 0;
+    if (points > 0) return { redeemPoints: points };
     const code = coupon.trim();
     const manual = discount.trim() ? parseRupeesToMinor(discount) : null;
     return {
@@ -459,6 +471,29 @@ export function PosClient() {
       ? successLoyalty.summary
       : null;
 
+  // Fetch the attached customer's balance so the cashier can redeem points.
+  // Best-effort: a guest or a user without loyalty.read simply gets no control.
+  useEffect(() => {
+    if (!accessToken || !customer) return;
+    const customerId = customer.id;
+    let cancelled = false;
+    getLoyaltySummary(accessToken, onNewToken, customerId)
+      .then((s) => {
+        if (!cancelled) setCustomerBalance({ customerId, balance: s.balancePoints });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, customer, onNewToken]);
+
+  // Only the attached customer's balance — a stale fetch or a detached customer
+  // yields null, which hides the redemption control.
+  const redeemableBalance =
+    customer && customerBalance?.customerId === customer.id
+      ? customerBalance.balance
+      : null;
+
   /** One split leg. The server caps the sum at the order total. */
   async function recordLeg(orderId: string, m: string, amountMinor: number) {
     if (!accessToken) return;
@@ -578,6 +613,9 @@ export function PosClient() {
       setCoupon={setCoupon}
       discount={discount}
       setDiscount={setDiscount}
+      redeem={redeem}
+      setRedeem={setRedeem}
+      customerBalance={redeemableBalance}
       note={note}
       setNote={setNote}
       method={method}
@@ -939,6 +977,9 @@ function CartPanel({
   setCoupon,
   discount,
   setDiscount,
+  redeem,
+  setRedeem,
+  customerBalance,
   note,
   setNote,
   method,
@@ -971,6 +1012,10 @@ function CartPanel({
   setCoupon: (v: string) => void;
   discount: string;
   setDiscount: (v: string) => void;
+  redeem: string;
+  setRedeem: (v: string) => void;
+  /** The attached customer's redeemable points, or null (guest / no loyalty.read). */
+  customerBalance: number | null;
   note: string;
   setNote: (v: string) => void;
   method: MethodKey;
@@ -1000,7 +1045,12 @@ function CartPanel({
   // Manual-discount preview (server recomputes and caps it authoritatively).
   const manualMinor = discount.trim() ? (parseRupeesToMinor(discount) ?? 0) : 0;
   const clampedDiscount = Math.min(manualMinor, subtotal);
-  const total = useCountUp(Math.max(0, subtotal + tax - clampedDiscount), 300);
+  // Points redeemed here fund a ₹1/point discount, capped at the subtotal — a
+  // preview only; the server caps and computes it authoritatively at charge.
+  const redeemPts = redeem.trim() ? Math.max(0, parseInt(redeem.trim(), 10) || 0) : 0;
+  const redeemDiscount = Math.min(redeemPts * 100, subtotal);
+  const previewDiscount = redeemPts > 0 ? redeemDiscount : clampedDiscount;
+  const total = useCountUp(Math.max(0, subtotal + tax - previewDiscount), 300);
 
   if (success) {
     const captured = success.payments.filter((p) => p.status === 'CAPTURED');
@@ -1008,6 +1058,7 @@ function CartPanel({
     const remaining = success.totalMinor - capturedMinor;
     // Points earned on this order — read back from the ledger, not recomputed.
     const gained = loyalty ? earnedForOrder(loyalty, success.id) : null;
+    const redeemedOnSuccess = redeemedForOrder(loyalty, success.id);
 
     if (remaining > 0) {
       return (
@@ -1046,7 +1097,15 @@ function CartPanel({
         <dl className="w-full max-w-60 space-y-1.5 text-[13px]">
           <TotalRow label="Subtotal" value={formatMinor(success.subtotalMinor)} />
           {success.discountMinor > 0 && (
-            <TotalRow label="Discount" value={`−${formatMinor(success.discountMinor)}`} accent />
+            <TotalRow
+              label={
+                redeemedOnSuccess != null
+                  ? `Redeemed (${redeemedOnSuccess} pts)`
+                  : 'Discount'
+              }
+              value={`−${formatMinor(success.discountMinor)}`}
+              accent
+            />
           )}
           <TotalRow label="Tax" value={formatMinor(success.taxMinor)} />
           <div className="flex justify-between border-t border-line pt-1.5 text-sm font-semibold">
@@ -1245,7 +1304,7 @@ function CartPanel({
             <Input
               value={coupon}
               onChange={(e) => setCoupon(e.target.value)}
-              disabled={discount.trim() !== ''}
+              disabled={discount.trim() !== '' || redeem.trim() !== ''}
               placeholder="Coupon"
               aria-label="Coupon code"
               className="h-8 font-mono text-[12px] uppercase placeholder:font-sans placeholder:normal-case"
@@ -1254,7 +1313,7 @@ function CartPanel({
               inputMode="decimal"
               value={discount}
               onChange={(e) => setDiscount(e.target.value)}
-              disabled={coupon.trim() !== ''}
+              disabled={coupon.trim() !== '' || redeem.trim() !== ''}
               placeholder="₹ off"
               aria-label="Manual discount"
               className="h-8 text-[12px]"
@@ -1268,6 +1327,28 @@ function CartPanel({
               className="h-8 text-[12px]"
             />
           </div>
+
+          {/* Redemption — only when a customer with points is attached. Spends
+              points as a ₹1/point discount; exclusive with coupon/manual, and
+              the server caps it at the balance and the subtotal. */}
+          {customerBalance != null && customerBalance > 0 && (
+            <div className="mt-2 flex items-center gap-2">
+              <Input
+                inputMode="numeric"
+                value={redeem}
+                onChange={(e) => setRedeem(e.target.value.replace(/[^0-9]/g, ''))}
+                disabled={coupon.trim() !== '' || discount.trim() !== ''}
+                placeholder="Redeem pts"
+                aria-label="Redeem loyalty points"
+                className="h-8 w-28 text-[12px]"
+              />
+              <span className="text-[11px] text-ink-3">
+                {redeemPts > 0
+                  ? `−${formatMinor(redeemDiscount)} · ${customerBalance.toLocaleString('en-IN')} pts available`
+                  : `${customerBalance.toLocaleString('en-IN')} pts available · ₹1 each`}
+              </span>
+            </div>
+          )}
 
           <div
             className="mt-3 grid grid-cols-3 gap-1.5"
@@ -1294,8 +1375,12 @@ function CartPanel({
 
           <dl className="mt-3 space-y-1.5 border-t border-line pt-3 text-[13px]">
             <TotalRow label="Subtotal" value={formatMinor(subtotal)} />
-            {clampedDiscount > 0 && (
-              <TotalRow label="Discount" value={`−${formatMinor(clampedDiscount)}`} accent />
+            {previewDiscount > 0 && (
+              <TotalRow
+                label={redeemPts > 0 ? `Redeemed (${redeemPts} pts)` : 'Discount'}
+                value={`−${formatMinor(previewDiscount)}`}
+                accent
+              />
             )}
             <TotalRow label="Tax" value={formatMinor(tax)} />
             {coupon.trim() && (

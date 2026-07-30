@@ -83,7 +83,11 @@ async function newTenant() {
         ...opts,
       })
       .expect(201);
-    return res.body as { id: string; totalMinor: number };
+    return res.body as {
+      id: string;
+      totalMinor: number;
+      discountMinor: number;
+    };
   };
 
   const summary = (customerId = customer.body.id as string) =>
@@ -537,6 +541,169 @@ describe('Loyalty foundation (e2e)', () => {
 
       const events = await owner.auditLog.findMany({
         where: { restaurantId: t.restaurantId, action: 'loyalty.earned' },
+        select: { entityId: true },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0].entityId).toBe(t.customerId);
+    });
+  });
+
+  // M11 — Loyalty Redemption: spend points as a server-computed discount at
+  // checkout, atomic with the sale; restore them on refund. Rate 1 pt = ₹1.
+  describe('loyalty redemption at checkout', () => {
+    type Entry = { type: string; orderId: string | null; points: number };
+    const seed = (t: Awaited<ReturnType<typeof newTenant>>, points: number) =>
+      adjust(t.token, t.customerId, { points, reason: 'seed balance' });
+
+    it('redeems points as a discount, atomically, once', async () => {
+      const t = await newTenant();
+      await seed(t, 500).expect(201);
+
+      // Subtotal 10000; redeem 30 pts → ₹30 off = 3000 paise. total = 10000−3000+500.
+      const order = await t.placeOrder({ redeemPoints: 30 });
+      expect(order.discountMinor).toBe(3000);
+      expect(order.totalMinor).toBe(7500);
+
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(470); // 500 − 30
+      const redeems = (s.body.recentEntries as Entry[]).filter(
+        (e) => e.type === 'REDEEM' && e.orderId === order.id,
+      );
+      expect(redeems).toHaveLength(1);
+      expect(redeems[0].points).toBe(-30);
+    });
+
+    it('caps the redemption at the subtotal, never wasting points beyond it', async () => {
+      const t = await newTenant();
+      await seed(t, 500).expect(201);
+      // Redeem 150 pts (₹150) on a ₹100 subtotal → capped to 100 pts (₹100 = subtotal).
+      const order = await t.placeOrder({ redeemPoints: 150 });
+      expect(order.discountMinor).toBe(10000); // subtotal, not 15000
+      expect(order.totalMinor).toBe(500); // only tax remains
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(400); // 500 − 100 (only what fit)
+    });
+
+    it('cannot overspend the balance', async () => {
+      const t = await newTenant();
+      await seed(t, 30).expect(201);
+      const pid = await productId(t.token);
+      // 50 pts fits the subtotal (₹50 ≤ ₹100) but exceeds the 30 balance.
+      await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({
+          items: [{ productId: pid, quantity: 1 }],
+          customerId: t.customerId,
+          redeemPoints: 50,
+        })
+        .expect(400);
+      // Nothing spent — no order, no ledger movement.
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(30);
+    });
+
+    it('serializes concurrent redemptions so neither overspends', async () => {
+      const t = await newTenant();
+      await seed(t, 100).expect(201);
+      const pid = await productId(t.token);
+      const place = () =>
+        api()
+          .post('/api/v1/orders')
+          .set(auth(t.token))
+          .send({
+            items: [{ productId: pid, quantity: 1 }],
+            customerId: t.customerId,
+            redeemPoints: 100,
+          });
+      const [a, b] = await Promise.all([place(), place()]);
+      expect([a.status, b.status].sort()).toEqual([201, 400]);
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(0); // exactly one redemption of 100
+    });
+
+    it('refuses redemption without a customer, on a held order, or stacked with a discount', async () => {
+      const t = await newTenant();
+      await seed(t, 500).expect(201);
+      const pid = await productId(t.token);
+      const post = (body: Record<string, unknown>) =>
+        api()
+          .post('/api/v1/orders')
+          .set(auth(t.token))
+          .send({ items: [{ productId: pid, quantity: 1 }], ...body });
+
+      await post({ redeemPoints: 30 }).expect(400); // no customer
+      await post({
+        customerId: t.customerId,
+        redeemPoints: 30,
+        hold: true,
+      }).expect(400); // held order
+      await post({
+        customerId: t.customerId,
+        redeemPoints: 30,
+        manualDiscountMinor: 1000,
+      }).expect(400); // stacked with a manual discount
+    });
+
+    it('earns on the discounted net, and a refund restores the redeemed points once', async () => {
+      const t = await newTenant();
+      await seed(t, 500).expect(201);
+      // Redeem 30 (₹30 off) and pay in full → earns on net (10000−3000=7000 → 7 pts).
+      const order = await t.placeOrder({
+        redeemPoints: 30,
+        paymentMethod: 'CASH',
+      });
+      const afterSale = await t.summary().expect(200);
+      expect(afterSale.body.balancePoints).toBe(477); // 500 − 30 + 7
+      const earns = (afterSale.body.recentEntries as Entry[]).filter(
+        (e) => e.type === 'EARN',
+      );
+      expect(earns).toHaveLength(1);
+      expect(earns[0].points).toBe(7); // earn on the discounted net
+      const lifetimeBefore = afterSale.body.lifetimeEarnedPoints as number;
+
+      await setStatus(t.token, order.id, 'PREPARING').expect(200);
+      await setStatus(t.token, order.id, 'READY').expect(200);
+      await setStatus(t.token, order.id, 'COMPLETED').expect(200);
+      await refund(t.token, order.id, {
+        method: 'CASH',
+        amountMinor: 4000,
+        reason: 'Complaint',
+      }).expect(201);
+
+      const afterRefund = await t.summary().expect(200);
+      // 477 − 7 (earn reversed) + 30 (redeem restored) = 500 (back to the seed).
+      expect(afterRefund.body.balancePoints).toBe(500);
+      const restores = (afterRefund.body.recentEntries as Entry[]).filter(
+        (e) => e.type === 'REDEEM_REVERSAL' && e.orderId === order.id,
+      );
+      expect(restores).toHaveLength(1);
+      expect(restores[0].points).toBe(30);
+      // The redeem/restore pair must NOT inflate the tier statistic — only the
+      // earn walked back.
+      expect(afterRefund.body.lifetimeEarnedPoints).toBe(lifetimeBefore - 7);
+
+      // A second refund cannot double-restore.
+      await refund(t.token, order.id, {
+        method: 'CASH',
+        amountMinor: 1000,
+        reason: 'Again',
+      }).expect(201);
+      const afterSecond = await t.summary().expect(200);
+      expect(afterSecond.body.balancePoints).toBe(500);
+      expect(
+        (afterSecond.body.recentEntries as Entry[]).filter(
+          (e) => e.type === 'REDEEM_REVERSAL',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('records the redemption on the tenant audit log (Timeline/Analytics read this)', async () => {
+      const t = await newTenant();
+      await seed(t, 500).expect(201);
+      await t.placeOrder({ redeemPoints: 30 });
+      const events = await owner.auditLog.findMany({
+        where: { restaurantId: t.restaurantId, action: 'loyalty.redeemed' },
         select: { entityId: true },
       });
       expect(events).toHaveLength(1);
