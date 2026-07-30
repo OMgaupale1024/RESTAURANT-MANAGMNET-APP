@@ -31,6 +31,7 @@ import Link from 'next/link';
 import {
   ApiRequestError,
   createOrder,
+  getLoyaltySummary,
   getOrder,
   getRestaurantProfile,
   listCategories,
@@ -39,6 +40,7 @@ import {
   recordPayment,
   updateOrderStatus,
   type Category,
+  type LoyaltySummary,
   type Order,
   type OrderSummary,
   type Product,
@@ -47,7 +49,13 @@ import {
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor, parseRupeesToMinor } from '@/lib/money';
-import { BillReceipt, buildShareText, usePrintArea, waShareUrl } from '@/lib/receipt';
+import {
+  BillReceipt,
+  buildShareText,
+  earnedForOrder,
+  usePrintArea,
+  waShareUrl,
+} from '@/lib/receipt';
 import { useCountUp } from '@/lib/use-count-up';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -123,6 +131,14 @@ export function PosClient() {
   const [placing, setPlacing] = useState(false);
   const [holding, setHolding] = useState(false);
   const [success, setSuccess] = useState<Order | null>(null);
+  // The settled order's loyalty standing, fetched best-effort for the success
+  // panel and the bill once a customer's order is fully paid. Keyed by order id
+  // so a previous customer's standing never bleeds onto the next sale; absent
+  // without loyalty.read or for a guest — the receipt omits the block (M10).
+  const [successLoyalty, setSuccessLoyalty] = useState<{
+    orderId: string;
+    summary: LoyaltySummary;
+  } | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
   const [lastAction, setLastAction] = useState<LastAction | null>(null);
   const [leaving, setLeaving] = useState<string[]>([]);
@@ -413,6 +429,36 @@ export function PosClient() {
     return () => clearTimeout(t);
   }, [success]);
 
+  // Once a customer's order is fully paid, fetch their loyalty standing so the
+  // success panel and the bill can show the points it just earned. Best-effort:
+  // a guest, or a user without loyalty.read, gets no block — never an error.
+  // Re-runs as split legs land; clears when the panel resets.
+  useEffect(() => {
+    if (!success || !accessToken) return;
+    const captured = success.payments
+      .filter((p) => p.status === 'CAPTURED')
+      .reduce((s, p) => s + p.amountMinor, 0);
+    const customerId = success.customer?.id;
+    if (captured < success.totalMinor || !customerId) return;
+    const orderId = success.id;
+    let cancelled = false;
+    getLoyaltySummary(accessToken, onNewToken, customerId)
+      .then((summary) => {
+        if (!cancelled) setSuccessLoyalty({ orderId, summary });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [success, accessToken, onNewToken]);
+
+  // Only surface loyalty that belongs to the order currently on the panel — a
+  // stale fetch from a previous sale is simply ignored, never displayed.
+  const loyaltyForSuccess =
+    success && successLoyalty?.orderId === success.id
+      ? successLoyalty.summary
+      : null;
+
   /** One split leg. The server caps the sum at the order total. */
   async function recordLeg(orderId: string, m: string, amountMinor: number) {
     if (!accessToken) return;
@@ -485,7 +531,13 @@ export function PosClient() {
             .reduce((s, p) => s + p.amountMinor, 0) ?? 0;
         if (success && profile && paid >= success.totalMinor) {
           e.preventDefault();
-          printNode(<BillReceipt order={success} profile={profile} />);
+          printNode(
+            <BillReceipt
+              order={success}
+              profile={profile}
+              loyalty={loyaltyForSuccess}
+            />,
+          );
         }
         return;
       }
@@ -536,17 +588,28 @@ export function PosClient() {
       holding={holding}
       onHold={() => void hold()}
       success={success}
+      loyalty={loyaltyForSuccess}
       onNewOrder={() => setSuccess(null)}
       onPrintBill={
         profile
-          ? (o: Order) => printNode(<BillReceipt order={o} profile={profile} />)
+          ? (o: Order) =>
+              printNode(
+                <BillReceipt
+                  order={o}
+                  profile={profile}
+                  loyalty={loyaltyForSuccess}
+                />,
+              )
           : undefined
       }
       onShareBill={
         profile
           ? (o: Order) =>
               window.open(
-                waShareUrl(buildShareText(o, profile), o.customer?.phone),
+                waShareUrl(
+                  buildShareText(o, profile, loyaltyForSuccess),
+                  o.customer?.phone,
+                ),
                 '_blank',
                 'noopener,noreferrer',
               )
@@ -886,6 +949,7 @@ function CartPanel({
   holding,
   onHold,
   success,
+  loyalty,
   onNewOrder,
   onPrintBill,
   onShareBill,
@@ -917,6 +981,8 @@ function CartPanel({
   holding: boolean;
   onHold: () => void;
   success: Order | null;
+  /** The settled order's loyalty standing, or null (guest / no loyalty.read). */
+  loyalty: LoyaltySummary | null;
   onNewOrder: () => void;
   /** Absent until the business profile has loaded. */
   onPrintBill?: (order: Order) => void;
@@ -940,6 +1006,8 @@ function CartPanel({
     const captured = success.payments.filter((p) => p.status === 'CAPTURED');
     const capturedMinor = captured.reduce((s, p) => s + p.amountMinor, 0);
     const remaining = success.totalMinor - capturedMinor;
+    // Points earned on this order — read back from the ledger, not recomputed.
+    const gained = loyalty ? earnedForOrder(loyalty, success.id) : null;
 
     if (remaining > 0) {
       return (
@@ -986,6 +1054,23 @@ function CartPanel({
             <dd className="tabular-nums">{formatMinor(success.totalMinor)}</dd>
           </div>
         </dl>
+        {/* Loyalty confirmation — the points this sale just earned, plus the
+            customer's standing. Present only for a customer's fully-paid order
+            when loyalty is visible; a guest or a no-loyalty.read user sees
+            nothing here. All figures are server-derived. */}
+        {loyalty && (
+          <div className="w-full max-w-60 rounded-lg bg-surface-2 px-3 py-2 text-center text-[13px]">
+            <p className="font-semibold text-success-text">
+              ★ {loyalty.tier.label}
+              {gained != null && ` · +${gained.toLocaleString('en-IN')} points`}
+            </p>
+            <p className="mt-0.5 tabular-nums text-ink-2">
+              {loyalty.balancePoints.toLocaleString('en-IN')} points balance
+              {loyalty.nextTier &&
+                ` · ${loyalty.nextTier.pointsToGo.toLocaleString('en-IN')} to ${loyalty.nextTier.label}`}
+            </p>
+          </div>
+        )}
         {/* The panel is rendered twice (rail + sheet); focus() on the hidden
             copy is a no-op, so autoFocus lands on the visible one. */}
         <div className="flex flex-wrap justify-center gap-2">

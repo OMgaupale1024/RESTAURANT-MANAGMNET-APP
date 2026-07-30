@@ -118,6 +118,7 @@ describe('Customers (e2e)', () => {
       'audit_logs',
       'order_events',
       'security_events',
+      'loyalty_ledger',
       'orders',
       'refunds',
     ]) {
@@ -133,7 +134,12 @@ describe('Customers (e2e)', () => {
         select: { restaurantId: true },
       });
       const rids = ms.map((m) => m.restaurantId);
-      // Orders reference customers with onDelete: Restrict, so orders go first.
+      // Orders and the loyalty ledger both RESTRICT-reference customers, so
+      // both must go before the customer. Smart Checkout (M10) now writes a
+      // ledger row when a paid order carries a customer.
+      await owner.loyaltyLedger.deleteMany({
+        where: { restaurantId: { in: rids } },
+      });
       await owner.order.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.customer.deleteMany({
         where: { restaurantId: { in: rids } },
@@ -148,6 +154,7 @@ describe('Customers (e2e)', () => {
         'audit_logs',
         'order_events',
         'security_events',
+        'loyalty_ledger',
         'orders',
         'refunds',
       ]) {

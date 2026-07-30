@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
@@ -18,15 +19,19 @@ import { InventoryService } from '../inventory/inventory.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { MarketingService } from '../marketing/marketing.service';
 import { EventsService } from '../../events/events.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
     private readonly realtime: RealtimeGateway,
     private readonly marketing: MarketingService,
     private readonly events: EventsService,
+    private readonly loyalty: LoyaltyService,
   ) {}
 
   /**
@@ -83,6 +88,12 @@ export class OrdersService {
             orderNumber: order.orderNumber,
             status: order.status,
           });
+        }
+        // A payment at placement is always the full total (insert() captures
+        // `amountMinor: total`), so a customer-attached paid order is settled and
+        // earns — post-commit, best-effort, never blocking the sale. See M10.
+        if (dto.customerId && dto.paymentMethod) {
+          await this.creditLoyalty(order.id);
         }
         return order;
       } catch (e) {
@@ -550,10 +561,16 @@ export class OrdersService {
     if (existing) return existing;
 
     try {
-      return await this.prisma.tx(async (db) => {
+      let settled = false;
+      const result = await this.prisma.tx(async (db) => {
         const order = await db.order.findFirst({
           where: { id: orderId },
-          select: { id: true, status: true, totalMinor: true },
+          select: {
+            id: true,
+            status: true,
+            totalMinor: true,
+            customerId: true,
+          },
         });
         if (!order) throw new NotFoundException('Order not found');
 
@@ -598,8 +615,15 @@ export class OrdersService {
           },
         });
 
+        // This leg settles the order when it exactly clears the outstanding
+        // balance; a customer-attached settled order earns its points below.
+        settled = order.customerId != null && dto.amountMinor === outstanding;
         return this.load(db, orderId);
       });
+      // Post-commit, best-effort: the payment is already durable, so a loyalty
+      // failure can never undo it (M10 Smart Checkout).
+      if (settled) await this.creditLoyalty(orderId);
+      return result;
     } catch (e) {
       // A concurrent identical leg won the unique index — its result is ours.
       if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
@@ -636,7 +660,7 @@ export class OrdersService {
     if (existing) return existing;
 
     try {
-      return await this.prisma.tx(async (db) => {
+      const result = await this.prisma.tx(async (db) => {
         const order = await db.order.findFirst({
           where: { id: orderId },
           select: { id: true, status: true, orderNumber: true },
@@ -712,12 +736,50 @@ export class OrdersService {
 
         return this.load(db, orderId);
       });
+      // Post-commit, best-effort: reverse the sale's earned points. Any refund
+      // reverses the full earned amount, once (idempotent). A refund on a sale
+      // that earned nothing is a benign no-op; a loyalty failure never undoes
+      // the refund (M10 Smart Checkout).
+      await this.reverseLoyalty(orderId);
+      return result;
     } catch (e) {
       if (dto.idempotencyKey && isUniqueViolation(e, 'idempotency_key')) {
         const won = await replay();
         if (won) return won;
       }
       throw e;
+    }
+  }
+
+  /**
+   * Post-commit loyalty settlement (M10 Smart Checkout). Both run AFTER the
+   * financial transaction has committed and swallow their own errors, so a
+   * loyalty hiccup can never fail or roll back a payment/refund. The seams are
+   * idempotent at the ledger, so a retry — or the manual POST /orders/:id/
+   * loyalty/earn|reverse recovery endpoints — never double-applies.
+   */
+  private async creditLoyalty(orderId: string): Promise<void> {
+    try {
+      await this.loyalty.earnForOrder(orderId);
+    } catch (e) {
+      this.logger.warn(
+        `Loyalty earn failed for order ${orderId}; recover via POST /orders/${orderId}/loyalty/earn`,
+        e instanceof Error ? e.stack : String(e),
+      );
+    }
+  }
+
+  private async reverseLoyalty(orderId: string): Promise<void> {
+    try {
+      await this.loyalty.reverseForOrder(orderId);
+    } catch (e) {
+      // No earned points to reverse (anonymous sale, or one never fully paid)
+      // is expected, not a failure.
+      if (e instanceof NotFoundException) return;
+      this.logger.warn(
+        `Loyalty reversal failed for order ${orderId}; recover via POST /orders/${orderId}/loyalty/reverse`,
+        e instanceof Error ? e.stack : String(e),
+      );
     }
   }
 

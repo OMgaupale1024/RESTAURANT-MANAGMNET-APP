@@ -13,6 +13,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { PrismaPg } from '@prisma/adapter-pg';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
+import { randomUUID } from 'node:crypto';
 import { AppModule } from '../src/app.module';
 import { PrismaClient } from '../src/generated/prisma/client';
 
@@ -101,6 +102,20 @@ const earn = (token: string, orderId: string) =>
   api().post(`/api/v1/orders/${orderId}/loyalty/earn`).set(auth(token));
 const reverse = (token: string, orderId: string) =>
   api().post(`/api/v1/orders/${orderId}/loyalty/reverse`).set(auth(token));
+const pay = (token: string, orderId: string, body: Record<string, unknown>) =>
+  api()
+    .post(`/api/v1/orders/${orderId}/payments`)
+    .set(auth(token))
+    .send({ idempotencyKey: randomUUID(), ...body });
+const refund = (
+  token: string,
+  orderId: string,
+  body: Record<string, unknown>,
+) =>
+  api()
+    .post(`/api/v1/orders/${orderId}/refunds`)
+    .set(auth(token))
+    .send({ idempotencyKey: randomUUID(), ...body });
 const redeem = (
   token: string,
   customerId: string,
@@ -157,6 +172,7 @@ describe('Loyalty foundation (e2e)', () => {
       'order_events',
       'security_events',
       'loyalty_ledger',
+      'refunds',
       'orders',
     ]) {
       await owner.$executeRawUnsafe(`ALTER TABLE ${t} DISABLE TRIGGER USER`);
@@ -176,6 +192,8 @@ describe('Loyalty foundation (e2e)', () => {
       await owner.loyaltyLedger.deleteMany({
         where: { restaurantId: { in: ids } },
       });
+      // Refunds reference orders; clear them (trigger disabled above) first.
+      await owner.refund.deleteMany({ where: { restaurantId: { in: ids } } });
       await owner.order.deleteMany({ where: { restaurantId: { in: ids } } });
       await owner.customer.deleteMany({ where: { restaurantId: { in: ids } } });
       await owner.restaurant.deleteMany({ where: { id: { in: ids } } });
@@ -189,6 +207,7 @@ describe('Loyalty foundation (e2e)', () => {
         'order_events',
         'security_events',
         'loyalty_ledger',
+        'refunds',
         'orders',
       ]) {
         await owner.$executeRawUnsafe(`ALTER TABLE ${t} ENABLE TRIGGER USER`);
@@ -366,6 +385,162 @@ describe('Loyalty foundation (e2e)', () => {
           `UPDATE loyalty_ledger SET points = 0 WHERE id = '${row!.id}'`,
         ),
       ).rejects.toThrow();
+    });
+  });
+
+  // M10 — Smart Checkout: earning/reversal now run automatically from the money
+  // flow (create with full payment, the settling split leg, and refunds). No
+  // manual earn/reverse endpoint is called in any test below.
+  describe('smart checkout — automatic earn & reverse on settlement', () => {
+    it('earns once when a full payment settles the order at placement', async () => {
+      const t = await newTenant();
+      await t.placeOrder({ paymentMethod: 'CASH' }); // net 10000 → 10 points
+
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(10);
+      expect(s.body.lifetimeEarnedPoints).toBe(10);
+      expect(
+        s.body.recentEntries.filter((e: { type: string }) => e.type === 'EARN'),
+      ).toHaveLength(1);
+    });
+
+    it('earns only when the final split leg settles the balance', async () => {
+      const t = await newTenant();
+      const order = await t.placeOrder(); // unpaid; total 10500
+
+      // Partial leg — balance still owed, so nothing is earned yet.
+      await pay(t.token, order.id, {
+        method: 'CASH',
+        amountMinor: 4000,
+      }).expect(201);
+      const mid = await t.summary().expect(200);
+      expect(mid.body.balancePoints).toBe(0);
+
+      // Settling leg — now fully paid, so it earns exactly once.
+      await pay(t.token, order.id, {
+        method: 'UPI',
+        amountMinor: 6500,
+      }).expect(201);
+      const done = await t.summary().expect(200);
+      expect(done.body.balancePoints).toBe(10);
+      expect(
+        done.body.recentEntries.filter(
+          (e: { type: string }) => e.type === 'EARN',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('does not earn twice when the settling leg is replayed', async () => {
+      const t = await newTenant();
+      const order = await t.placeOrder();
+      const key = randomUUID();
+
+      await pay(t.token, order.id, {
+        method: 'CASH',
+        amountMinor: order.totalMinor,
+        idempotencyKey: key,
+      }).expect(201);
+      await pay(t.token, order.id, {
+        method: 'CASH',
+        amountMinor: order.totalMinor,
+        idempotencyKey: key,
+      }).expect(201); // replay of the settling leg
+
+      const s = await t.summary().expect(200);
+      expect(s.body.balancePoints).toBe(10);
+      expect(
+        s.body.recentEntries.filter((e: { type: string }) => e.type === 'EARN'),
+      ).toHaveLength(1);
+    });
+
+    it('does not earn for an anonymous (no-customer) sale', async () => {
+      const t = await newTenant();
+      const anon = await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({
+          items: [{ productId: await productId(t.token), quantity: 1 }],
+          paymentMethod: 'CASH',
+        })
+        .expect(201);
+
+      // No customer to credit; the ledger gains no EARN for this order.
+      const rows = await owner.loyaltyLedger.findMany({
+        where: { restaurantId: t.restaurantId, orderId: anon.body.id },
+      });
+      expect(rows).toHaveLength(0);
+    });
+
+    it('reverses all earned points on any refund, once, across repeated refunds', async () => {
+      const t = await newTenant();
+      const order = await t.placeOrder({ paymentMethod: 'CASH' }); // earns 10
+      await setStatus(t.token, order.id, 'PREPARING').expect(200);
+      await setStatus(t.token, order.id, 'READY').expect(200);
+      await setStatus(t.token, order.id, 'COMPLETED').expect(200);
+
+      // A partial refund reverses ALL earned points (M10: not proportional).
+      await refund(t.token, order.id, {
+        method: 'CASH',
+        amountMinor: 4000,
+        reason: 'Cold momos',
+      }).expect(201);
+      const afterFirst = await t.summary().expect(200);
+      expect(afterFirst.body.balancePoints).toBe(0);
+      expect(afterFirst.body.lifetimeEarnedPoints).toBe(0);
+      expect(
+        afterFirst.body.recentEntries.filter(
+          (e: { type: string }) => e.type === 'REFUND_REVERSAL',
+        ),
+      ).toHaveLength(1);
+
+      // A second refund within the refundable balance cannot reverse again.
+      await refund(t.token, order.id, {
+        method: 'CASH',
+        amountMinor: 4000,
+        reason: 'Also this',
+      }).expect(201);
+      const afterSecond = await t.summary().expect(200);
+      expect(afterSecond.body.balancePoints).toBe(0);
+      expect(
+        afterSecond.body.recentEntries.filter(
+          (e: { type: string }) => e.type === 'REFUND_REVERSAL',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('completes a refund even when the sale earned nothing (loyalty never blocks money)', async () => {
+      const t = await newTenant();
+      // Anonymous paid+completed order — no EARN exists, so the reversal is a
+      // no-op the refund must swallow rather than fail on.
+      const anon = await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({
+          items: [{ productId: await productId(t.token), quantity: 1 }],
+          paymentMethod: 'CASH',
+        })
+        .expect(201);
+      await setStatus(t.token, anon.body.id, 'PREPARING').expect(200);
+      await setStatus(t.token, anon.body.id, 'READY').expect(200);
+      await setStatus(t.token, anon.body.id, 'COMPLETED').expect(200);
+
+      await refund(t.token, anon.body.id, {
+        method: 'CASH',
+        amountMinor: 100,
+        reason: 'Goodwill',
+      }).expect(201);
+    });
+
+    it('records the checkout earn on the tenant audit log (Timeline reads this)', async () => {
+      const t = await newTenant();
+      await t.placeOrder({ paymentMethod: 'CASH' });
+
+      const events = await owner.auditLog.findMany({
+        where: { restaurantId: t.restaurantId, action: 'loyalty.earned' },
+        select: { entityId: true },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0].entityId).toBe(t.customerId);
     });
   });
 });

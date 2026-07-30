@@ -182,9 +182,11 @@ of that is a negative balance, not a suppressed one.
 ## API
 
 All routes are permissioned and tenant-scoped. `earn`/`reverse` are exposed as
-explicit endpoints so the foundation is complete and testable on its own; wiring
-them into checkout and refunds is the **Smart Checkout** milestone, which will
-call the same `LoyaltyService` methods.
+explicit endpoints so the foundation is complete and testable on its own.
+**Smart Checkout (M10) now calls these same `LoyaltyService` methods
+automatically** from the payment and refund flow — post-commit and best-effort,
+so a loyalty failure never rolls back the money — and the endpoints remain the
+idempotent manual-recovery path.
 
 | method & path | permission | does |
 | --- | --- | --- |
@@ -196,16 +198,17 @@ call the same `LoyaltyService` methods.
 
 ## What this milestone deliberately does not do
 
-- **No checkout/refund wiring.** Earning does not run automatically on payment,
-  and reversal does not run automatically on refund. Those touch the orders
-  flow and belong to Smart Checkout. Prior milestones are not modified.
+- **Checkout/refund wiring — added later in M10.** The foundation shipped without
+  it: earning and reversal ran only via the manual endpoints. Smart Checkout
+  (M10) wired them into the payment/refund flow (`OrdersService`, post-commit,
+  best-effort) without changing the ledger or these methods.
 - **No expiry job, no per-tenant tiers, no redemption→money conversion, no UI.**
   The foundation exposes the data (the summary); surfacing points in the POS
   customer preview or a timeline is a later, small integration.
 
 ## Future extensions (foundation designed for, not built)
 
-- **Auto-earn / auto-reverse** wired into checkout and refunds (Smart Checkout).
+- **Auto-earn / auto-reverse** wired into checkout and refunds — **done in M10.**
 - **Per-tenant tier ladders** — `TIERS` becomes a `loyalty_tiers` table.
 - **Expiry** — a scheduled job appends `EXPIRE` rows; the maths already excludes
   them from tier and includes them in balance.
