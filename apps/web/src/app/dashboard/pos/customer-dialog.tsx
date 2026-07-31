@@ -26,7 +26,7 @@ type Retry = (t: string) => void;
  * there is no match. Guest checkout is always one button away and never forced.
  *
  * There is deliberately no loyalty tier / points here — no such program exists
- * yet (see docs/roadmap/v2.md, Milestone 2). The segment, visits and spend are
+ * yet (see docs/ROADMAP_V2.md, Milestone 2). The segment, visits and spend are
  * the real signals the data already carries.
  */
 export function CustomerDialog({

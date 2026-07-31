@@ -12,7 +12,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   Reusable tenant event writer (`EventsService.record`) over the existing
   append-only, RLS-protected `audit_logs`. No new table. The single seam every
   future feature uses to record "something happened in this restaurant."
-  See [`docs/architecture/events.md`](../architecture/events.md).
+  See [`docs/architecture/events.md`](architecture/events.md).
 
 - ✅ **Milestone 1A — Smart Customer Identification**
   Optional customer lookup at the till, before payment: a dialog that searches
@@ -46,7 +46,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   under a customer-row lock, idempotent earn/reverse/redeem, and a `loyalty.*`
   audit event per movement via M0's `EventsService`. Admin-safe APIs only;
   **no checkout/refund wiring** (that is Smart Checkout), no expiry job, no UI.
-  See [`docs/architecture/loyalty.md`](../architecture/loyalty.md).
+  See [`docs/architecture/loyalty.md`](architecture/loyalty.md).
 
 - ✅ **Milestone 3 — Digital Receipts & Customer Receipt Experience**
   One receipt template (`BillReceipt`), now richer and shown on three surfaces —
@@ -57,7 +57,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   the same loyalty flows into the WhatsApp share text. The order detail's
   Print-bill and Share buttons fold into one **Receipt** action (view + print +
   share). Pure reuse of `usePrintArea`, `buildShareText`/`waShareUrl`, `Modal`;
-  no prior milestone changed. See [`docs/architecture/receipts.md`](../architecture/receipts.md).
+  no prior milestone changed. See [`docs/architecture/receipts.md`](architecture/receipts.md).
 
 - ✅ **Milestone 4 — Kitchen OS**
   The audit found the kitchen board was already a production-grade KDS — kanban
@@ -69,7 +69,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   status** (an Unpaid flag, shown only when relevant) and **order type** now on
   every ticket, the line-cook **Start · Ready · Deliver** vocabulary, and the
   missing architecture doc. No backend, socket, or state-machine change; no prior
-  milestone touched. See [`docs/architecture/kitchen.md`](../architecture/kitchen.md).
+  milestone touched. See [`docs/architecture/kitchen.md`](architecture/kitchen.md).
 
 - ✅ **Milestone 5 — Restaurant Timeline & Activity Feed**
   The one operational history — "what happened today, who did it, when, to which
@@ -83,7 +83,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   enhanced (`GET /reports/audit`), one page reworked; **no new table, no new
   store**. Kitchen/inventory/cash/security stay in their own ledgers (merging
   would double-count), documented in
-  [`docs/architecture/timeline.md`](../architecture/timeline.md).
+  [`docs/architecture/timeline.md`](architecture/timeline.md).
 
 - ✅ **Milestone 6 — Analytics & Business Insights**
   The audit found the sales half already built and correct — `AnalyticsService`
@@ -98,7 +98,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   (one filter model: Today/Yesterday/7/30/90/Custom). Cohort retention is
   deliberately omitted (needs a cohort definition this milestone doesn't set).
   No new table, no reporting DB, no job, no index; `overviewBetween` untouched.
-  See [`docs/architecture/analytics.md`](../architecture/analytics.md).
+  See [`docs/architecture/analytics.md`](architecture/analytics.md).
 
 - ✅ **Milestone 7 — Inventory Intelligence**
   The audit found ~90% present — an append-only `stock_movements` ledger with
@@ -110,7 +110,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   healthy), today's flow, and 30-day wastage at cost. The inventory page gains a
   dashboard header and a client-derived "Needs attention" list; "critical" is the
   honest "runs out today". No new table, column, cached counter, or job.
-  See [`docs/architecture/inventory.md`](../architecture/inventory.md).
+  See [`docs/architecture/inventory.md`](architecture/inventory.md).
 
 - ✅ **Milestone 8 — Procurement & Supplier Management**
   Suppliers and purchase recording already existed, so this added the missing
@@ -125,7 +125,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   `/dashboard/procurement` page (reorder + POs + supplier insights) round it out;
   permissions reuse `inventory.read` / `inventory.manage`. Partial receipt is
   deferred (needs per-line received quantities). See
-  [`docs/architecture/procurement.md`](../architecture/procurement.md).
+  [`docs/architecture/procurement.md`](architecture/procurement.md).
 
 - ✅ **Milestone 9 — CRM & Customer Intelligence**
   The audit found the customer profile, segmentation, loyalty and the Timeline
@@ -142,7 +142,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   and degrades to an *absent* section (`loyalty.read` / `audit.read`), never an
   error. No new table, endpoint (beyond the filter), cache, or CRM subsystem;
   every figure server-derived. See
-  [`docs/architecture/customer-intelligence.md`](../architecture/customer-intelligence.md).
+  [`docs/architecture/customer-intelligence.md`](architecture/customer-intelligence.md).
 
 - ✅ **Milestone 10 — Smart Checkout**
   The audit found the M2 loyalty seams (`earnForOrder` / `reverseForOrder`), the
@@ -159,7 +159,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   the points the sale earned, read back from the ledger (`recentEntries`), never
   recomputed on the client; a guest or a user without `loyalty.read` simply sees
   no block. No new table, endpoint, event, cache, or background worker. See
-  [`docs/architecture/loyalty.md`](../architecture/loyalty.md).
+  [`docs/architecture/loyalty.md`](architecture/loyalty.md).
 
 - ✅ **Milestone 11 — Loyalty Redemption**
   Spending points as a checkout discount. Unlike M10's earn/reverse (a
@@ -177,7 +177,7 @@ Legend: ✅ done · 🚧 in progress · ⬜ not started
   (server-authoritative preview) and the bill labels its discount "Redeemed
   (N pts)", read back from the ledger. One migration (the enum value + sign
   CHECK); no new table, endpoint, cache, or worker. See
-  [`docs/architecture/loyalty.md`](../architecture/loyalty.md).
+  [`docs/architecture/loyalty.md`](architecture/loyalty.md).
 
 ## Later (deferred, not started)
 
