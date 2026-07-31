@@ -27,6 +27,7 @@ import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatCard } from '@/components/ui/stat-card';
 import { Table, Td, Th, Tr } from '@/components/ui/table';
+import { SEGMENT_VARIANT } from '@/components/ui/segment-chip';
 import { useToast } from '@/components/ui/toast';
 
 /**
@@ -39,14 +40,6 @@ const TABS = [
   { key: 'COUPONS', label: 'Coupons' },
   { key: 'SEGMENTS', label: 'Segments' },
 ] as const;
-
-/** Segment visual identity — colour + accent, consistent with the profile chip. */
-export const SEGMENT_VARIANT: Record<string, 'brand' | 'info' | 'success' | 'warning' | 'neutral'> = {
-  VIP: 'brand',
-  REGULAR: 'info',
-  NEW: 'success',
-  LAPSED: 'warning',
-};
 
 function couponDiscount(c: Coupon): string {
   if (c.type === 'PERCENT') {
