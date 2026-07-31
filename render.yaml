@@ -1,0 +1,43 @@
+# Render Blueprint — OraOS API (NestJS).
+#
+# Scope: this file defines ONLY the backend. The web app runs on Vercel and the
+# database is Neon. Deploy: Render Dashboard → New → Blueprint → pick this repo,
+# then fill every `sync: false` secret in the dashboard (they are never committed).
+#
+# Migrations are intentionally NOT run by this service. Per docs/DEPLOYMENT.md
+# they run as a SEPARATE step against Neon BEFORE the API rolls out — every
+# migration is backward-compatible with the running version (the zero-downtime
+# rule), and the pruned runtime image deliberately carries no Prisma CLI:
+#   DATABASE_URL="<neon owner url>" pnpm --filter @oraos/api db:migrate:deploy
+#
+# Note: `runtime: docker` is the current Render key; older accounts use
+# `env: docker`. The build context is the repo ROOT (the Dockerfile is a pnpm
+# workspace build), hence dockerContext: `.`.
+services:
+  - type: web
+    name: oraos-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    region: singapore          # co-locate with Neon ap-southeast-1 for low latency
+    plan: free
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # PORT is injected by Render automatically; the API reads process.env.PORT.
+      - key: DATABASE_URL        # Neon OWNER role (DDL/migrations). sslmode=verify-full
+        sync: false
+      - key: DATABASE_URL_APP    # Neon least-privilege runtime role. sslmode=verify-full
+        sync: false
+      - key: JWT_SECRET          # >=32 chars, unique per env: openssl rand -base64 48
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://app.oraoss.in
+      - key: WEB_URL
+        value: https://app.oraoss.in
+      - key: RESEND_API_KEY      # optional; unset ⇒ email is logged, not sent
+        sync: false
+      - key: MAIL_FROM           # required only when RESEND_API_KEY is set
+        sync: false

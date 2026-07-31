@@ -244,7 +244,7 @@ signal path is proven in-process rather than by killing a live process.
 ## Milestone 5 — Docker & production containers
 
 **Issue.** No container artifacts; deployment relied on platform buildpacks
-(Vercel/Railway). Package both apps as reproducible, minimal, non-root images.
+(Vercel/Render). Package both apps as reproducible, minimal, non-root images.
 
 **Docker architecture.**
 - **API image** (`apps/api/Dockerfile`, context = repo root) — three stages off

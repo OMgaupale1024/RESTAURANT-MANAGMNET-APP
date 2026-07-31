@@ -18,8 +18,8 @@ async function bootstrap() {
   app.use(helmet());
   app.use(cookieParser());
 
-  // Behind a proxy (Railway/Fly/Vercel), req.ip is the proxy's address unless
-  // X-Forwarded-For is trusted. Rate limiting keyed on the wrong IP would
+  // Behind a platform proxy (Render/Fly/Vercel), req.ip is the proxy's address
+  // unless X-Forwarded-For is trusted. Rate limiting keyed on the wrong IP would
   // throttle every user as one.
   app.set('trust proxy', 1);
 

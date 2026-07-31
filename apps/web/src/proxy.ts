@@ -70,11 +70,16 @@ export function proxy(request: NextRequest) {
   return response;
 }
 
-/** Never let a malformed env var silently widen the policy. */
+/**
+ * Never let a malformed env var silently widen the policy. Returns only a real
+ * http(s) origin — a relative or otherwise opaque value parses to the origin
+ * string "null", which must never reach the CSP.
+ */
 function safeOrigin(url: string | undefined): string | null {
   if (!url) return null;
   try {
-    return new URL(url).origin;
+    const { origin } = new URL(url);
+    return origin.startsWith('http') ? origin : null;
   } catch {
     return null;
   }

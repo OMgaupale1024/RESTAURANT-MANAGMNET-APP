@@ -2,7 +2,7 @@
 
 What to do when OraOS is misbehaving in production. Assumes the Docker Compose
 deployment (`docker-compose.yml`); adapt the commands for a platform deploy
-(Railway/Fly/Vercel) — the checks are the same, only the plumbing differs.
+(Render/Fly/Vercel) — the checks are the same, only the plumbing differs.
 
 Related: [DEPLOYMENT.md](DEPLOYMENT.md) · [ENVIRONMENT.md](ENVIRONMENT.md) ·
 [BACKUP_RESTORE.md](BACKUP_RESTORE.md) · [SECURITY.md](SECURITY.md).
