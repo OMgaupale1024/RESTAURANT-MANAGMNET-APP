@@ -258,7 +258,7 @@ Sharding is listed for completeness. Postgres on decent hardware handles a thous
 | Layer | Free tier | Paid step-up |
 |---|---|---|
 | Frontend | Vercel | Vercel Pro |
-| API | Railway / Fly.io | Fly / Render |
+| API | Render / Fly.io | Fly / self-host |
 | AI | Fly.io (scale-to-zero) | Dedicated + GPU only if training needs it |
 | Postgres | Neon / Supabase | Neon Scale / RDS |
 | Redis | Upstash | Upstash paid |

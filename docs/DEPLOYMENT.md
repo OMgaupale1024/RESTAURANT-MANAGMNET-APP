@@ -31,7 +31,7 @@ or use the containers added in Release M5 (see **Docker** section).
 | Layer | Service | Notes |
 |---|---|---|
 | Web (Next) | Vercel | Native Next build |
-| API (NestJS) | Railway or Fly.io | Node buildpack; start `node dist/main` |
+| API (NestJS) | Render (Docker) | Container from `apps/api/Dockerfile`; see `render.yaml` |
 | Postgres | Neon | Publicly-trusted TLS cert, so `verify-full` works with no custom CA |
 | Errors | Sentry | Not yet wired — add when there is real traffic |
 
@@ -39,6 +39,36 @@ or use the containers added in Release M5 (see **Docker** section).
 `SameSite=Strict`, so the web app and the API must be same-site: put them under
 one apex, e.g. `app.example.com` (web) and `api.example.com` (API). A separate
 apex for the API breaks refresh — the browser will not send the cookie.
+
+## Vercel + Render + Neon (production)
+
+The production deployment: **web on Vercel, API on Render, database on Neon**,
+both under one registrable domain (`oraoss.in`) so the `SameSite=Strict` refresh
+cookie is same-site (see [Domains](#domains)). Nothing in the app code is
+provider-specific — only the environment differs.
+
+**Web — Vercel.** Import the repo and set **Root Directory** to `apps/web`
+(Vercel auto-detects Next + pnpm; the web package imports no workspace packages,
+so it builds cleanly). `next.config.ts` skips the Docker `output: 'standalone'`
+when `VERCEL` is set, so Vercel produces its native output. Set the single
+build-time var `NEXT_PUBLIC_API_URL=https://api.oraoss.in/api/v1` (baked into the
+bundle **and** the CSP), add the custom domain `app.oraoss.in`, deploy.
+
+**API — Render.** Deploy the [`render.yaml`](../render.yaml) blueprint (Docker,
+build context = repo root, health check `/api/v1/health`). Fill the `sync:false`
+secrets in the dashboard (`DATABASE_URL`, `DATABASE_URL_APP`, `JWT_SECRET`, and
+optionally `RESEND_API_KEY`/`MAIL_FROM`); `CORS_ORIGINS` and `WEB_URL` are
+pinned to `https://app.oraoss.in` in the blueprint. Add the custom domain
+`api.oraoss.in`. `PORT` is injected by Render.
+
+**Migrations** run as a separate step against Neon **before** the API rolls out
+(owner role, backward-compatible — the zero-downtime rule):
+
+```bash
+DATABASE_URL="<neon owner url>" pnpm --filter @oraos/api db:migrate:deploy
+```
+
+The `docker-compose` / self-host path below remains fully supported.
 
 ## Secrets
 
@@ -138,7 +168,7 @@ sends HSTS.
 
 Two common topologies:
 
-**Platform-terminated TLS (Vercel / Railway / Fly).** The platform provisions
+**Platform-terminated TLS (Vercel / Render / Fly).** The platform provisions
 and renews certificates and terminates TLS at its edge, forwarding plain HTTP to
 the container. The API already runs behind a proxy: `app.set('trust proxy', 1)`
 trusts the first hop, so `X-Forwarded-For` (used for rate-limit keying) and
