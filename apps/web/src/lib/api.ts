@@ -295,6 +295,47 @@ export type OrderItemModifier = {
   priceAdjustMinor: number;
 };
 
+/* -------------------------------------------------------- combos & upsells */
+
+export type ComboComponent = {
+  productId: string;
+  quantity: number;
+  sortOrder: number;
+  product: { name: string; priceMinor: number; isActive: boolean };
+};
+
+export type Combo = {
+  id: string;
+  name: string;
+  description: string | null;
+  priceMinor: number;
+  taxRateBp: number;
+  categoryId: string | null;
+  isActive: boolean;
+  isPopular: boolean;
+  sortOrder: number;
+  items: ComboComponent[];
+  /** False when a component product has been deactivated — the till blocks it. */
+  available: boolean;
+};
+
+export type UpsellRule = {
+  id: string;
+  triggerProductId: string;
+  suggestedProductId: string;
+  sortOrder: number;
+  isActive: boolean;
+  triggerProduct: { name: string };
+  suggestedProduct: { name: string; priceMinor: number; isActive: boolean };
+};
+
+/** Snapshot of a combo's components on the order line (what was actually sold). */
+export type OrderItemCombo = {
+  productId: string;
+  name: string;
+  quantity: number;
+};
+
 /* ------------------------------------------------------------ cash drawer */
 
 export type CashMovementRow = {
@@ -407,6 +448,7 @@ export type Order = {
     taxMinor: number;
     notes: string | null;
     modifiers: OrderItemModifier[] | null;
+    comboItems: OrderItemCombo[] | null;
   }>;
   payments: Array<{ id: string; method: string; status: string; amountMinor: number }>;
   refunds: Array<{
@@ -539,6 +581,84 @@ export const deleteModifierOption = (token: string, onNewToken: Retry, id: strin
     method: 'DELETE',
   });
 
+/* --------------------------------------------------------- combos & upsells */
+export type ComboItemInput = { productId: string; quantity: number; sortOrder?: number };
+
+export const listCombos = (token: string, onNewToken: Retry, all?: boolean) =>
+  authedFetch<Combo[]>(`/combos${all ? '?include=all' : ''}`, token, onNewToken);
+
+export const createCombo = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    name: string;
+    description?: string;
+    priceMinor: number;
+    taxRateBp?: number;
+    categoryId?: string;
+    isPopular?: boolean;
+    items: ComboItemInput[];
+  },
+) =>
+  authedFetch<Combo>('/combos', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updateCombo = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    description?: string;
+    priceMinor?: number;
+    categoryId?: string | null;
+    isPopular?: boolean;
+    sortOrder?: number;
+    isActive?: boolean;
+    items?: ComboItemInput[];
+  },
+) =>
+  authedFetch<Combo>(`/combos/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteCombo = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/combos/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
+export const listUpsellRules = (token: string, onNewToken: Retry) =>
+  authedFetch<UpsellRule[]>('/upsell-rules', token, onNewToken);
+
+export const createUpsellRule = (
+  token: string,
+  onNewToken: Retry,
+  body: { triggerProductId: string; suggestedProductId: string; sortOrder?: number },
+) =>
+  authedFetch<UpsellRule>('/upsell-rules', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updateUpsellRule = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { isActive?: boolean; sortOrder?: number },
+) =>
+  authedFetch<UpsellRule>(`/upsell-rules/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteUpsellRule = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/upsell-rules/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
 export const createCategory = (token: string, onNewToken: Retry, name: string) =>
   authedFetch<Category>('/categories', token, onNewToken, {
     method: 'POST',
@@ -573,7 +693,9 @@ export const createOrder = (
   onNewToken: Retry,
   body: {
     items: Array<{
-      productId: string;
+      /** Exactly one of productId / comboId. The server prices both. */
+      productId?: string;
+      comboId?: string;
       quantity: number;
       notes?: string;
       /** Chosen modifier option ids — server prices and validates them. */
@@ -617,6 +739,7 @@ export type OrderSummary = {
     quantity: number;
     notes: string | null;
     modifiers: OrderItemModifier[] | null;
+    comboItems: OrderItemCombo[] | null;
   }>;
 };
 

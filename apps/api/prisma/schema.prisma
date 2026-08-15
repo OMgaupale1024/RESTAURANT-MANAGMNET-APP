@@ -340,6 +340,7 @@ model Category {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   products Product[]
+  combos   Combo[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId])
@@ -371,9 +372,12 @@ model Product {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  recipeItems    RecipeItem[]
-  modifierGroups ModifierGroup[]
+  category          Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  recipeItems       RecipeItem[]
+  modifierGroups    ModifierGroup[]
+  comboItems        ComboItem[]
+  upsellTriggers    UpsellRule[]    @relation("UpsellTrigger")
+  upsellSuggestions UpsellRule[]    @relation("UpsellSuggested")
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -1031,6 +1035,12 @@ model OrderItem {
   /// still holds); this preserves the human-readable breakdown for receipts,
   /// the kitchen and history even after the definitions change. NULL = none.
   modifiers      Json?    @map("modifiers")
+  /// Set when this line IS a combo: an immutable snapshot of its components —
+  /// an array of { productId, name, quantity }. The line's nameSnapshot is the
+  /// combo name and unitPriceMinor is the combo's own price, so the customer is
+  /// billed the combo price (never the component sum) and history never
+  /// re-prices. NULL for an ordinary product line.
+  comboItems     Json?    @map("combo_items")
   createdAt      DateTime @default(now()) @map("created_at")
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1158,4 +1168,71 @@ model ModifierOption {
 
   @@index([restaurantId, groupId])
   @@map("modifier_options")
+}
+
+// ---------------------------------------------------------------------------
+// Combos & upsells — bundles a cashier sells as one line, and one suggestion
+// shown after a trigger product is added. A combo has its OWN price (not the
+// component sum); order_items snapshot the components + price, so history never
+// re-prices. Component product relationships are kept so the kitchen sees what
+// to make and inventory depletes the real recipes. Tenant-scoped via RLS.
+// ---------------------------------------------------------------------------
+
+model Combo {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  categoryId   String?  @map("category_id") @db.Uuid
+  name         String
+  description  String?
+  /// The combo's own selling price in paise — set by the owner, NOT derived.
+  priceMinor   Int      @map("price_minor")
+  taxRateBp    Int      @default(500) @map("tax_rate_bp")
+  isActive     Boolean  @default(true) @map("is_active")
+  isPopular    Boolean  @default(false) @map("is_popular")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  category Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  items    ComboItem[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId, isActive])
+  @@map("combos")
+}
+
+model ComboItem {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  comboId      String   @map("combo_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  quantity     Int      @default(1)
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  combo   Combo   @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  // Restrict: a product used in a combo cannot be hard-deleted out from under
+  // it. Products are deactivated, never deleted, so this never bites in practice.
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([restaurantId, comboId])
+  @@map("combo_items")
+}
+
+model UpsellRule {
+  id                 String   @id @default(uuid(7)) @db.Uuid
+  restaurantId       String   @map("restaurant_id") @db.Uuid
+  triggerProductId   String   @map("trigger_product_id") @db.Uuid
+  suggestedProductId String   @map("suggested_product_id") @db.Uuid
+  sortOrder          Int      @default(0) @map("sort_order")
+  isActive           Boolean  @default(true) @map("is_active")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  triggerProduct   Product @relation("UpsellTrigger", fields: [triggerProductId], references: [id], onDelete: Cascade)
+  suggestedProduct Product @relation("UpsellSuggested", fields: [suggestedProductId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, triggerProductId, suggestedProductId])
+  @@index([restaurantId, triggerProductId])
+  @@map("upsell_rules")
 }

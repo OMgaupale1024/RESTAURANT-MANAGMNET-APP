@@ -25,8 +25,18 @@ import { OrderType, PaymentMethod } from '../../../generated/prisma/enums';
  * depressingly common one.
  */
 export class OrderItemDto {
+  /**
+   * Exactly one of productId / comboId identifies the line (the service
+   * enforces the xor). A combo is priced and snapshotted server-side from its
+   * own definition — the client never sends a price.
+   */
+  @IsOptional()
   @IsUUID()
-  productId!: string;
+  productId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  comboId?: string;
 
   @IsInt()
   @Min(1)

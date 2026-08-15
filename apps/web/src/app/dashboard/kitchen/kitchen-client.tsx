@@ -125,6 +125,7 @@ function toSummary(o: Order): OrderSummary {
       quantity: i.quantity,
       notes: i.notes,
       modifiers: i.modifiers,
+      comboItems: i.comboItems,
     })),
   };
 }
@@ -617,6 +618,16 @@ const Ticket = memo(function Ticket({
           {order.items.map((i, idx) => (
             <li key={idx} className="text-[15px] leading-snug font-medium">
               <span className="text-ink-2 tabular-nums">{i.quantity} ×</span> {i.nameSnapshot}
+              {i.comboItems && i.comboItems.length > 0 && (
+                // A combo: the components are what to make. No prices.
+                <ul className="mt-0.5 ml-5 list-disc text-[13px] font-normal text-ink-2 marker:text-ink-3">
+                  {i.comboItems.map((ci) => (
+                    <li key={ci.productId}>
+                      {ci.quantity} × {ci.name}
+                    </li>
+                  ))}
+                </ul>
+              )}
               {i.modifiers && i.modifiers.length > 0 && (
                 // What to prepare — no prices; the kitchen doesn't need money.
                 <ul className="mt-0.5 ml-5 list-disc text-[13px] font-normal text-ink-2 marker:text-ink-3">

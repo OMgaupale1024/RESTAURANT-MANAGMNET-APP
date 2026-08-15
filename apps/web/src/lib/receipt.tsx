@@ -195,6 +195,12 @@ export function BillReceipt({
               <td className="rc-qty">{i.quantity}×</td>
               <td>
                 {i.nameSnapshot}
+                {i.comboItems?.map((ci) => (
+                  <span key={ci.productId} className="rc-note">
+                    <br />
+                    {ci.quantity} × {ci.name}
+                  </span>
+                ))}
                 {i.modifiers?.map((m) => (
                   <span key={m.optionId} className="rc-note">
                     <br />
@@ -338,6 +344,11 @@ export function KotTicket({
         {order.items.map((i) => (
           <li key={i.id}>
             <span className="rc-qty">{i.quantity}×</span> {i.nameSnapshot}
+            {i.comboItems?.map((ci) => (
+              <p key={ci.productId} className="rc-note">
+                • {ci.quantity} × {ci.name}
+              </p>
+            ))}
             {i.modifiers?.map((m) => (
               // The line cook needs what to make, not the price.
               <p key={m.optionId} className="rc-note">
@@ -375,10 +386,13 @@ export function buildShareText(
     '',
     ...order.items.map((i) => {
       const base = `${i.quantity} × ${i.nameSnapshot} — ${formatMinor(i.lineTotalMinor)}`;
+      const combo = i.comboItems?.length
+        ? i.comboItems.map((ci) => `\n   • ${ci.quantity} × ${ci.name}`).join('')
+        : '';
       const mods = i.modifiers?.length
         ? i.modifiers.map((m) => `\n   • ${m.optionName}`).join('')
         : '';
-      return base + mods;
+      return base + combo + mods;
     }),
     '',
     `Subtotal: ${formatMinor(order.subtotalMinor)}`,

@@ -226,6 +226,11 @@ export function OrderDetail({
                 </span>
                 <span className="shrink-0 tabular-nums">{formatMinor(i.lineTotalMinor)}</span>
               </div>
+              {i.comboItems?.map((ci) => (
+                <div key={ci.productId} className="pl-4 text-[12px] text-ink-3">
+                  {ci.quantity} × {ci.name}
+                </div>
+              ))}
               {i.modifiers?.map((m) => (
                 // Amount = per-unit adjustment × line quantity, matching the bill.
                 <div

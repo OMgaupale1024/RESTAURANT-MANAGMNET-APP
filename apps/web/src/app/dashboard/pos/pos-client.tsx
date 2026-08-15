@@ -24,6 +24,7 @@ import {
   ShoppingCart,
   SlidersHorizontal,
   Flame,
+  Gift,
   Smartphone,
   Split,
   UtensilsCrossed,
@@ -37,17 +38,21 @@ import {
   getOrder,
   getRestaurantProfile,
   listCategories,
+  listCombos,
   listOrders,
   listProducts,
+  listUpsellRules,
   recordPayment,
   updateOrderStatus,
   type Category,
+  type Combo,
   type LoyaltySummary,
   type Order,
   type OrderItemModifier,
   type OrderSummary,
   type Product,
   type RestaurantProfile,
+  type UpsellRule,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
@@ -71,6 +76,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { CustomerPicker, type PosCustomer } from './customer-picker';
 import { ModifierSheet } from './modifier-sheet';
+import { ComboSheet } from './combo-sheet';
+import { UpsellBanner } from './upsell-banner';
 
 /**
  * A cart line. `lineId` (not product id) is the identity: modifiers mean the
@@ -78,26 +85,40 @@ import { ModifierSheet } from './modifier-sheet';
  * steppers, notes and removal all key on lineId. `modifiers` is the chosen
  * snapshot; its adjustments fold into the line's unit price.
  */
+/** A cart line is EITHER a product (with optional modifiers) OR a combo. */
 type CartLine = {
   lineId: string;
-  product: Product;
   quantity: number;
   notes?: string;
+  product?: Product;
   modifiers?: OrderItemModifier[];
+  combo?: Combo;
 };
+/** The parts that define a line's identity + price, before it gets a lineId. */
+type LineSpec = Pick<CartLine, 'product' | 'modifiers' | 'combo'>;
 type LastAction = { label: string; productId: string; at: number };
 
-/** Per-unit price including the chosen modifiers' adjustments. */
-function lineUnitMinor(l: CartLine): number {
+function lineName(l: LineSpec): string {
+  return l.combo ? l.combo.name : l.product!.name;
+}
+
+/** Per-unit price: a combo's own price, or a product plus its modifiers. */
+function lineUnitMinor(l: LineSpec): number {
+  if (l.combo) return l.combo.priceMinor;
   return (
-    l.product.priceMinor +
+    l.product!.priceMinor +
     (l.modifiers?.reduce((s, m) => s + m.priceAdjustMinor, 0) ?? 0)
   );
 }
 
-/** Identity of a selection, so identical lines merge and different ones don't. */
-function lineSig(productId: string, modifiers?: OrderItemModifier[]): string {
-  return `${productId}|${(modifiers ?? [])
+function lineTaxRateBp(l: LineSpec): number {
+  return l.combo ? l.combo.taxRateBp : l.product!.taxRateBp;
+}
+
+/** Identity, so identical lines merge and different selections stay apart. */
+function lineSig(l: LineSpec): string {
+  if (l.combo) return `combo:${l.combo.id}`;
+  return `product:${l.product!.id}|${(l.modifiers ?? [])
     .map((m) => m.optionId)
     .sort()
     .join(',')}`;
@@ -151,6 +172,8 @@ export function PosClient() {
 
   const [products, setProducts] = useState<Product[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [combos, setCombos] = useState<Combo[]>([]);
+  const [upsellRules, setUpsellRules] = useState<UpsellRule[]>([]);
 
   const [q, setQ] = useState('');
   const [cat, setCat] = useState<string>('all');
@@ -158,6 +181,12 @@ export function PosClient() {
   // The product whose modifier picker is open (null = closed). Only products
   // that HAVE modifier groups ever set this; plain products add in one tap.
   const [modifierProduct, setModifierProduct] = useState<Product | null>(null);
+  // The combo whose confirmation sheet is open (null = closed).
+  const [comboSheet, setComboSheet] = useState<Combo | null>(null);
+  // The one upsell suggestion currently offered (null = none). Suggestions are
+  // shown at most once per trigger per session — see shownUpsells.
+  const [upsell, setUpsell] = useState<UpsellRule | null>(null);
+  const shownUpsells = useRef<Set<string>>(new Set());
   const [customer, setCustomer] = useState<PosCustomer | null>(null);
   const [coupon, setCoupon] = useState('');
   const [discount, setDiscount] = useState('');
@@ -235,13 +264,17 @@ export function PosClient() {
     let cancelled = false;
     void (async () => {
       try {
-        const [p, c] = await Promise.all([
+        const [p, c, cb, u] = await Promise.all([
           listProducts(accessToken, onNewToken),
           listCategories(accessToken, onNewToken),
+          listCombos(accessToken, onNewToken),
+          listUpsellRules(accessToken, onNewToken),
         ]);
         if (!cancelled) {
           setProducts(p);
           setCategories(c);
+          setCombos(cb);
+          setUpsellRules(u);
         }
       } catch (e) {
         if (!cancelled) {
@@ -279,9 +312,19 @@ export function PosClient() {
   );
 
   const popularCount = useMemo(
-    () => (products ?? []).filter((p) => p.isPopular).length,
-    [products],
+    () =>
+      (products ?? []).filter((p) => p.isPopular).length +
+      combos.filter((c) => c.isPopular).length,
+    [products, combos],
   );
+
+  // Combos to show in the grid: all under the Combos tab, the popular ones in
+  // the Popular tab (alongside popular products), none elsewhere.
+  const visibleCombos = useMemo(() => {
+    if (cat === 'combos') return combos;
+    if (cat === 'popular') return combos.filter((c) => c.isPopular);
+    return [];
+  }, [cat, combos]);
 
   const filtered = useMemo(() => {
     if (!products) return [];
@@ -302,7 +345,15 @@ export function PosClient() {
   // several lines once modifiers differ).
   const qtyById = useMemo(() => {
     const m = new Map<string, number>();
-    for (const l of cart) m.set(l.product.id, (m.get(l.product.id) ?? 0) + l.quantity);
+    for (const l of cart)
+      if (l.product) m.set(l.product.id, (m.get(l.product.id) ?? 0) + l.quantity);
+    return m;
+  }, [cart]);
+
+  const comboQtyById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of cart)
+      if (l.combo) m.set(l.combo.id, (m.get(l.combo.id) ?? 0) + l.quantity);
     return m;
   }, [cart]);
 
@@ -320,22 +371,33 @@ export function PosClient() {
       setModifierProduct(product);
       return;
     }
-    mergeLine(product, undefined);
+    mergeLine({ product });
+    maybeUpsell(product.id);
   }
 
   /** Add a configured line from the modifier picker. */
   function addWithModifiers(product: Product, modifiers: OrderItemModifier[]) {
-    mergeLine(product, modifiers.length ? modifiers : undefined);
+    mergeLine({ product, modifiers: modifiers.length ? modifiers : undefined });
+    maybeUpsell(product.id);
   }
 
-  /** Insert a line, merging into an existing identical one (same product AND
-   *  same modifier selection); a different selection is its own line. */
-  function mergeLine(product: Product, modifiers?: OrderItemModifier[]) {
-    setLastAction({ label: `Added ${product.name}`, productId: product.id, at: Date.now() });
-    const sig = lineSig(product.id, modifiers);
+  /** Add a combo, confirmed from its sheet. Combos never carry modifiers. */
+  function addCombo(combo: Combo) {
+    mergeLine({ combo });
+  }
+
+  /** Insert a line, merging into an existing identical one (same product+
+   *  modifiers, or same combo); a different selection is its own line. */
+  function mergeLine(spec: LineSpec) {
+    setLastAction({
+      label: `Added ${lineName(spec)}`,
+      productId: spec.combo?.id ?? spec.product!.id,
+      at: Date.now(),
+    });
+    const sig = lineSig(spec);
     setCart((c) => {
       const found = c.find(
-        (l) => !leaving.includes(l.lineId) && lineSig(l.product.id, l.modifiers) === sig,
+        (l) => !leaving.includes(l.lineId) && lineSig(l) === sig,
       );
       if (found) unleave(found.lineId);
       return found
@@ -349,18 +411,49 @@ export function PosClient() {
                 typeof crypto !== 'undefined' && crypto.randomUUID
                   ? crypto.randomUUID()
                   : `${Date.now()}-${Math.random()}`,
-              product,
               quantity: 1,
-              ...(modifiers ? { modifiers } : {}),
+              ...spec,
             },
           ];
     });
   }
 
+  /**
+   * One suggestion after a trigger product is added: the first active rule
+   * whose suggested product is active and not already in the cart, shown at
+   * most once per trigger per session. Never interrupts — it's a dismissible
+   * banner, not a modal.
+   */
+  function maybeUpsell(triggerProductId: string) {
+    if (shownUpsells.current.has(triggerProductId)) return;
+    const rule = upsellRules.find(
+      (r) =>
+        r.isActive &&
+        r.triggerProductId === triggerProductId &&
+        r.suggestedProduct.isActive &&
+        !cart.some((l) => l.product?.id === r.suggestedProductId),
+    );
+    if (!rule) return;
+    shownUpsells.current.add(triggerProductId);
+    setUpsell(rule);
+  }
+
+  /** Accept the current upsell — add the suggested product at its own price. */
+  function acceptUpsell() {
+    if (!upsell || !products) return;
+    const p = products.find((x) => x.id === upsell.suggestedProductId);
+    setUpsell(null);
+    if (p) add(p);
+  }
+
   function removeLine(lineId: string) {
     const line = cart.find((l) => l.lineId === lineId);
     if (!line || leavingTimers.current.has(lineId)) return;
-    setLastAction({ label: `Removed ${line.product.name}`, productId: line.product.id, at: Date.now() });
+    setLastAction({
+      label: `Removed ${lineName(line)}`,
+      productId: line.combo?.id ?? line.product!.id,
+      at: Date.now(),
+    });
     setLeaving((s) => [...s, lineId]);
     // The line collapses first, then leaves the state — an instant removal
     // makes the rest of the cart jump.
@@ -382,8 +475,8 @@ export function PosClient() {
       return;
     }
     setLastAction({
-      label: `${delta > 0 ? 'Added' : 'Removed one'} ${line.product.name}`,
-      productId: line.product.id,
+      label: `${delta > 0 ? 'Added' : 'Removed one'} ${lineName(line)}`,
+      productId: line.combo?.id ?? line.product!.id,
       at: Date.now(),
     });
     setCart((c) =>
@@ -408,6 +501,9 @@ export function PosClient() {
     setCustomer(null);
     setLastAction(null);
     idemKey.current = null;
+    // A placed/cleared order is a fresh start — let upsells surface again.
+    setUpsell(null);
+    shownUpsells.current.clear();
   }
 
   // Lines mid-collapse are already "removed" as far as money is concerned:
@@ -420,7 +516,7 @@ export function PosClient() {
    *  the chosen modifier option ids (server prices and validates them). */
   function cartItems() {
     return activeCart.map((l) => ({
-      productId: l.product.id,
+      ...(l.combo ? { comboId: l.combo.id } : { productId: l.product!.id }),
       quantity: l.quantity,
       ...(l.notes?.trim() ? { notes: l.notes.trim() } : {}),
       ...(l.modifiers?.length
@@ -690,7 +786,7 @@ export function PosClient() {
   // Uses the all-in unit price so the cart total matches the printed bill.
   const subtotal = activeCart.reduce((s, l) => s + lineUnitMinor(l) * l.quantity, 0);
   const tax = activeCart.reduce(
-    (s, l) => s + Math.round((lineUnitMinor(l) * l.quantity * l.product.taxRateBp) / 10_000),
+    (s, l) => s + Math.round((lineUnitMinor(l) * l.quantity * lineTaxRateBp(l)) / 10_000),
     0,
   );
   const itemCount = activeCart.reduce((s, l) => s + l.quantity, 0);
@@ -823,13 +919,14 @@ export function PosClient() {
             </Button>
           </div>
 
-          {shownCategories.length > 0 && (
+          {(shownCategories.length > 0 || combos.length > 0) && (
             <div className="flex gap-1.5 overflow-x-auto pb-1" aria-label="Categories">
               {[
                 { id: 'all', name: 'All' },
                 ...(popularCount > 0
                   ? [{ id: 'popular', name: 'Popular' }]
                   : []),
+                ...(combos.length > 0 ? [{ id: 'combos', name: 'Combos' }] : []),
                 ...shownCategories,
               ].map((c) => (
                 <button
@@ -848,9 +945,14 @@ export function PosClient() {
                   {c.id === 'popular' && (
                     <Flame aria-hidden className="size-3.5 text-warning-text" />
                   )}
+                  {c.id === 'combos' && (
+                    <Gift aria-hidden className="size-3.5 text-ink-2" />
+                  )}
                   {c.name}
                   {c.id === 'popular' ? (
                     <span className="text-ink-3 tabular-nums">({popularCount})</span>
+                  ) : c.id === 'combos' ? (
+                    <span className="text-ink-3 tabular-nums">({combos.length})</span>
                   ) : (
                     c.id !== 'all' && (
                       <span className="text-ink-3 tabular-nums">
@@ -892,7 +994,7 @@ export function PosClient() {
                 }
               />
             </div>
-          ) : filtered.length === 0 ? (
+          ) : filtered.length === 0 && visibleCombos.length === 0 ? (
             <EmptyState
               icon={SearchX}
               title={`No matches for “${q.trim()}”`}
@@ -966,6 +1068,60 @@ export function PosClient() {
                               {qty}
                             </span>
                           </>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+                {visibleCombos.map((combo) => {
+                  const qty = comboQtyById.get(combo.id);
+                  return (
+                    <li key={combo.id}>
+                      <button
+                        type="button"
+                        disabled={!combo.available}
+                        onClick={() => setComboSheet(combo)}
+                        className={cn(
+                          'relative flex min-h-24 w-full flex-col justify-between rounded-xl border bg-surface p-3 text-left',
+                          'shadow-[0_1px_2px_rgb(0_0_0/0.04)] transition-[border-color,transform,box-shadow] duration-120',
+                          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current',
+                          combo.available
+                            ? 'hover:-translate-y-px hover:border-line-2 hover:shadow-[0_4px_12px_rgb(0_0_0/0.06)] active:translate-y-0 active:scale-[0.99]'
+                            : 'cursor-not-allowed opacity-60',
+                          qty ? 'border-line-2' : 'border-line',
+                        )}
+                      >
+                        <span className="mb-1 inline-flex w-fit items-center gap-1 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-ink-2 uppercase">
+                          <Gift aria-hidden className="size-3" />
+                          Combo
+                        </span>
+                        <span className="line-clamp-2 pr-6 text-[13px] leading-snug font-medium">
+                          {combo.name}
+                        </span>
+                        <span className="mt-2 flex items-baseline justify-between gap-2">
+                          <span className="text-[13px] font-semibold tabular-nums">
+                            {formatMinor(combo.priceMinor)}
+                          </span>
+                          {combo.available ? (
+                            <span className="truncate text-[11px] text-ink-3">
+                              {combo.items.length} item
+                              {combo.items.length === 1 ? '' : 's'}
+                            </span>
+                          ) : (
+                            <span className="shrink-0 text-[11px] font-medium text-danger-text">
+                              Unavailable
+                            </span>
+                          )}
+                        </span>
+                        {qty !== undefined && (
+                          <span
+                            key={qty}
+                            aria-label={`${qty} in cart`}
+                            className="absolute top-2 right-2 flex h-5 min-w-5 items-center justify-center rounded-full bg-brand px-1 text-[11px] font-semibold text-brand-ink tabular-nums"
+                            style={{ animation: 'pop 240ms var(--ease-spring) both' }}
+                          >
+                            {qty}
+                          </span>
                         )}
                       </button>
                     </li>
@@ -1079,6 +1235,22 @@ export function PosClient() {
         open={modifierProduct !== null}
         onClose={() => setModifierProduct(null)}
         onAdd={addWithModifiers}
+      />
+
+      <ComboSheet
+        combo={comboSheet}
+        open={comboSheet !== null}
+        onClose={() => setComboSheet(null)}
+        onAdd={(c) => {
+          addCombo(c);
+          setComboSheet(null);
+        }}
+      />
+
+      <UpsellBanner
+        rule={upsell}
+        onAccept={acceptUpsell}
+        onDismiss={() => setUpsell(null)}
       />
 
       <Modal open={helpOpen} onClose={() => setHelpOpen(false)} title="Keyboard shortcuts">
@@ -1348,7 +1520,10 @@ function CartPanel({
             {cart.map((l) => {
               const isLeaving = leaving.includes(l.lineId);
               const flashAt =
-                lastAction && lastAction.productId === l.product.id ? lastAction.at : 0;
+                lastAction &&
+                lastAction.productId === (l.combo?.id ?? l.product!.id)
+                  ? lastAction.at
+                  : 0;
               const unit = lineUnitMinor(l);
               return (
                 <li
@@ -1375,7 +1550,7 @@ function CartPanel({
                   >
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="min-w-0 truncate text-[13px] font-medium">
-                        {l.product.name}
+                        {lineName(l)}
                       </span>
                       <span
                         key={unit * l.quantity}
@@ -1385,6 +1560,18 @@ function CartPanel({
                         {formatMinor(unit * l.quantity)}
                       </span>
                     </div>
+                    {l.combo && (
+                      <ul className="mt-0.5 space-y-0.5">
+                        {l.combo.items.map((ci) => (
+                          <li
+                            key={ci.productId}
+                            className="truncate text-[11px] text-ink-3"
+                          >
+                            {ci.quantity} × {ci.product.name}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     {l.modifiers && l.modifiers.length > 0 && (
                       <ul className="mt-0.5 space-y-0.5">
                         {l.modifiers.map((m) => (
@@ -1406,7 +1593,7 @@ function CartPanel({
                       <Button
                         variant="secondary"
                         size="sm"
-                        aria-label={`Remove one ${l.product.name}`}
+                        aria-label={`Remove one ${lineName(l)}`}
                         onClick={() => changeQty(l.lineId, -1)}
                         className="w-7 px-0"
                       >
@@ -1422,7 +1609,7 @@ function CartPanel({
                       <Button
                         variant="secondary"
                         size="sm"
-                        aria-label={`Add one ${l.product.name}`}
+                        aria-label={`Add one ${lineName(l)}`}
                         onClick={() => changeQty(l.lineId, 1)}
                         className="w-7 px-0"
                       >
@@ -1434,7 +1621,7 @@ function CartPanel({
                       <Button
                         variant="ghost"
                         size="sm"
-                        aria-label={`Remove ${l.product.name}`}
+                        aria-label={`Remove ${lineName(l)}`}
                         onClick={() => removeLine(l.lineId)}
                         className="w-7 px-0 text-ink-3"
                       >

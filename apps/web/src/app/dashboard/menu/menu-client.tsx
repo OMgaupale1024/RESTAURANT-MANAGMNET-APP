@@ -43,6 +43,10 @@ import { Table, Td, Th, Tr } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { PopularToggle } from './popular-toggle';
 import { ProductModifiers } from './product-modifiers';
+import { CombosManager } from './combos-manager';
+// Its own import rather than added to the shared lucide block above, to keep
+// this change isolated from other in-flight edits to that block.
+import { Gift } from 'lucide-react';
 
 /**
  * Menu — where the catalogue is actually managed. POS sells it; this screen
@@ -80,6 +84,7 @@ export function MenuClient() {
   const [editing, setEditing] = useState<Product | null>(null);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [costsOpen, setCostsOpen] = useState(false);
+  const [combosOpen, setCombosOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -170,6 +175,10 @@ export function MenuClient() {
           <Button variant="secondary" onClick={() => setCategoriesOpen(true)}>
             <Tags aria-hidden className="size-4" />
             Categories
+          </Button>
+          <Button variant="secondary" onClick={() => setCombosOpen(true)}>
+            <Gift aria-hidden className="size-4" />
+            Combos
           </Button>
           <Button variant="primary" onClick={() => setCreating(true)}>
             <Plus aria-hidden className="size-4" />
@@ -365,6 +374,8 @@ export function MenuClient() {
       />
 
       <FoodCostSheet open={costsOpen} onClose={() => setCostsOpen(false)} />
+
+      <CombosManager open={combosOpen} onClose={() => setCombosOpen(false)} />
     </div>
   );
 }
