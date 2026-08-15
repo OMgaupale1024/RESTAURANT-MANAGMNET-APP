@@ -7,6 +7,12 @@ import {
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type { StockMovementType } from '../../generated/prisma/enums';
 import { ManualMovementType } from './dto/inventory.dto';
+import {
+  stockByIngredient,
+  costByIngredient,
+  remainingByBatch,
+} from './stock-queries';
+import { allocateFefo } from './prep';
 import type {
   CreateAdjustmentDto,
   CreateIngredientDto,
@@ -73,7 +79,7 @@ export class InventoryService {
       // Serial, not Promise.all: concurrent queries share this transaction's one
       // pg connection — unsafe under @prisma/adapter-pg (removed in pg v9).
       const [stock, lastMoves, recentUse, cost] = [
-        await this.stockByIngredient(db),
+        await stockByIngredient(db),
         await db.stockMovement.groupBy({
           by: ['ingredientId'],
           _max: { createdAt: true },
@@ -83,7 +89,7 @@ export class InventoryService {
           where: { type: 'CONSUMPTION', createdAt: { gte: weekAgo } },
           _sum: { quantity: true },
         }),
-        await this.costByIngredient(db),
+        await costByIngredient(db),
       ];
       const lastById = new Map(
         lastMoves.map((g) => [g.ingredientId, g._max?.createdAt ?? null]),
@@ -142,8 +148,8 @@ export class InventoryService {
           where: { isActive: true },
           select: { id: true, reorderLevel: true },
         }),
-        await this.stockByIngredient(db),
-        await this.costByIngredient(db),
+        await stockByIngredient(db),
+        await costByIngredient(db),
         await db.stockMovement.groupBy({
           by: ['ingredientId'],
           where: { type: 'CONSUMPTION', createdAt: { gte: weekAgo } },
@@ -267,7 +273,7 @@ export class InventoryService {
             createdAt: true,
           },
         }),
-        await this.costByIngredient(db),
+        await costByIngredient(db),
       ];
 
       const currentStock = agg._sum?.quantity ?? 0;
@@ -573,7 +579,15 @@ export class InventoryService {
     const productIds = [...new Set(lines.map((l) => l.productId))];
     const recipes = await db.recipeItem.findMany({
       where: { productId: { in: productIds } },
-      select: { productId: true, ingredientId: true, quantity: true },
+      // isPrepared comes along for free here, so a plain order (no prep items)
+      // pays no extra query — it just writes one CONSUMPTION row per ingredient
+      // exactly as before.
+      select: {
+        productId: true,
+        ingredientId: true,
+        quantity: true,
+        ingredient: { select: { isPrepared: true } },
+      },
     });
     // Products without a recipe deplete nothing. That is legitimate: a bottled
     // drink is bought and sold as-is.
@@ -582,26 +596,87 @@ export class InventoryService {
     // Sum per ingredient first: one movement per ingredient per order, rather
     // than one per line, keeps the ledger readable.
     const totals = new Map<string, number>();
+    const prepared = new Set<string>();
     for (const line of lines) {
       for (const r of recipes.filter((x) => x.productId === line.productId)) {
         totals.set(
           r.ingredientId,
           (totals.get(r.ingredientId) ?? 0) + r.quantity * line.quantity,
         );
+        if (r.ingredient.isPrepared) prepared.add(r.ingredientId);
       }
     }
     if (!totals.size) return;
 
-    await db.stockMovement.createMany({
-      data: [...totals].map(([ingredientId, qty]) => ({
+    type MovementInput = {
+      restaurantId: string;
+      ingredientId: string;
+      type: 'CONSUMPTION';
+      quantity: number;
+      orderId: string;
+      actorUserId: string;
+      prepBatchId?: string;
+    };
+    const rows: MovementInput[] = [];
+
+    // Raw ingredients: one CONSUMPTION row each, as before.
+    for (const [ingredientId, qty] of totals) {
+      if (prepared.has(ingredientId)) continue;
+      rows.push({
         restaurantId,
         ingredientId,
-        type: 'CONSUMPTION' as const,
+        type: 'CONSUMPTION',
         quantity: -qty, // sign is ours, never the client's
         orderId,
         actorUserId: userId,
-      })),
-    });
+      });
+    }
+
+    // Prepared ingredients: draw down real batches FEFO (never an expired one),
+    // one CONSUMPTION row per batch touched. Any shortfall beyond live batches
+    // is a single untagged row, so — like a raw sale — the sale still never
+    // blocks and the ledger still goes honestly negative.
+    if (prepared.size) {
+      const preparedIds = [...prepared];
+      const batches = await db.prepBatch.findMany({
+        where: { prepIngredientId: { in: preparedIds } },
+        select: {
+          id: true,
+          prepIngredientId: true,
+          expiresAt: true,
+          createdAt: true,
+        },
+      });
+      const remaining = await remainingByBatch(
+        db,
+        batches.map((b) => b.id),
+      );
+      const now = new Date();
+      for (const ingredientId of preparedIds) {
+        const need = totals.get(ingredientId) ?? 0;
+        const live = batches
+          .filter((b) => b.prepIngredientId === ingredientId)
+          .map((b) => ({
+            id: b.id,
+            remaining: remaining.get(b.id) ?? 0,
+            expiresAt: b.expiresAt,
+            createdAt: b.createdAt,
+          }));
+        for (const a of allocateFefo(live, need, now)) {
+          rows.push({
+            restaurantId,
+            ingredientId,
+            type: 'CONSUMPTION',
+            quantity: -a.quantity,
+            orderId,
+            actorUserId: userId,
+            ...(a.prepBatchId ? { prepBatchId: a.prepBatchId } : {}),
+          });
+        }
+      }
+    }
+
+    if (rows.length) await db.stockMovement.createMany({ data: rows });
   }
 
   /**
@@ -624,32 +699,42 @@ export class InventoryService {
   ): Promise<void> {
     const consumed = await db.stockMovement.findMany({
       where: { orderId, type: 'CONSUMPTION' },
-      select: { ingredientId: true, quantity: true },
+      select: { ingredientId: true, quantity: true, prepBatchId: true },
     });
     // An order with no recipe depleted nothing, so there is nothing to return.
     if (!consumed.length) return;
 
-    // One movement per ingredient, mirroring how depletion was written.
-    const totals = new Map<string, number>();
+    // One movement per (ingredient, batch), mirroring how depletion was written
+    // — carrying prepBatchId back restores the batch's remaining, so a voided
+    // sale returns prepared stock to the very batch it was drawn from.
+    const totals = new Map<
+      string,
+      { ingredientId: string; prepBatchId: string | null; qty: number }
+    >();
     for (const m of consumed) {
-      totals.set(
-        m.ingredientId,
-        (totals.get(m.ingredientId) ?? 0) - m.quantity,
-      );
+      const key = `${m.ingredientId}|${m.prepBatchId ?? ''}`;
+      const cur = totals.get(key) ?? {
+        ingredientId: m.ingredientId,
+        prepBatchId: m.prepBatchId,
+        qty: 0,
+      };
+      cur.qty -= m.quantity;
+      totals.set(key, cur);
     }
 
-    const rows = [...totals]
+    const rows = [...totals.values()]
       // stock_movements CHECK (quantity <> 0).
-      .filter(([, qty]) => qty !== 0)
-      .map(([ingredientId, qty]) => ({
+      .filter((t) => t.qty !== 0)
+      .map((t) => ({
         restaurantId,
-        ingredientId,
+        ingredientId: t.ingredientId,
         // ADJUSTMENT is the one signed type the CHECK allows in both
         // directions. orderId and the note say why it happened.
         type: 'ADJUSTMENT' as const,
-        quantity: qty,
+        quantity: t.qty,
         orderId,
         actorUserId: userId,
+        ...(t.prepBatchId ? { prepBatchId: t.prepBatchId } : {}),
         note: `Stock returned: order ${toStatus.toLowerCase()}`,
       }));
     if (!rows.length) return;
@@ -677,47 +762,6 @@ export class InventoryService {
       },
     });
     return { productId, items };
-  }
-
-  /** ingredientId -> current stock, in one query. */
-  private async stockByIngredient(db: TxClient): Promise<Map<string, number>> {
-    const grouped = await db.stockMovement.groupBy({
-      by: ['ingredientId'],
-      _sum: { quantity: true },
-    });
-    return new Map(grouped.map((g) => [g.ingredientId, g._sum?.quantity ?? 0]));
-  }
-
-  /**
-   * ingredientId -> weighted-average unit cost (paise per base unit,
-   * fractional), from PURCHASE movements that recorded a cost. Weighted
-   * average = SUM(total_cost) / SUM(quantity purchased) — the standard cost
-   * method, and correct even when prices change between deliveries.
-   *
-   * Purchases without a recorded cost do not distort it: they contribute
-   * neither to the cost sum nor (deliberately) to the quantity sum here, so a
-   * free sample or an unpriced receive is simply excluded from the average.
-   *
-   * ponytail: weighted-average, not FIFO. FIFO COGS needs lot tracking; the
-   * average is what a counter kitchen actually reasons about.
-   */
-  private async costByIngredient(db: TxClient): Promise<Map<string, number>> {
-    const rows = await db.$queryRaw<
-      Array<{ ingredient_id: string; cost: bigint; qty: bigint }>
-    >`
-      SELECT ingredient_id,
-             COALESCE(SUM(total_cost_minor), 0)::bigint AS cost,
-             COALESCE(SUM(quantity) FILTER (WHERE total_cost_minor IS NOT NULL), 0)::bigint AS qty
-      FROM stock_movements
-      WHERE type = 'PURCHASE' AND total_cost_minor IS NOT NULL
-      GROUP BY ingredient_id
-    `;
-    const out = new Map<string, number>();
-    for (const r of rows) {
-      const qty = Number(r.qty);
-      if (qty > 0) out.set(r.ingredient_id, Number(r.cost) / qty);
-    }
-    return out;
   }
 
   // -- suppliers ------------------------------------------------------------
@@ -826,7 +870,7 @@ export class InventoryService {
         await db.recipeItem.findMany({
           select: { productId: true, ingredientId: true, quantity: true },
         }),
-        await this.costByIngredient(db),
+        await costByIngredient(db),
       ];
 
       const itemsByProduct = new Map<

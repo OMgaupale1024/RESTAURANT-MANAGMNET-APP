@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, CookingPot, PackagePlus, Package, Truck } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { AlertTriangle, ChefHat, CookingPot, PackagePlus, Package, Truck } from 'lucide-react';
 import {
   ApiRequestError,
   createIngredient,
@@ -56,6 +57,8 @@ const MOVE_META: Record<string, { label: string; variant: 'success' | 'danger' |
   WASTE: { label: 'Waste', variant: 'danger' },
   CONSUMPTION: { label: 'Sold', variant: 'neutral' },
   ADJUSTMENT: { label: 'Count', variant: 'warning' },
+  PREP_BATCH: { label: 'Prep used', variant: 'neutral' },
+  PREP_OUTPUT: { label: 'Prepared', variant: 'success' },
 };
 
 /**
@@ -101,6 +104,7 @@ export function InventoryClient() {
   const { accessToken, setAccessToken } = useAuth();
   const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
   const toast = useToast();
+  const router = useRouter();
 
   const [rows, setRows] = useState<IngredientRow[] | null>(null);
   const [summary, setSummary] = useState<InventorySummary | null>(null);
@@ -204,6 +208,13 @@ export function InventoryClient() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight">Inventory</h1>
         <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => router.push('/dashboard/inventory/prep')}
+          >
+            <ChefHat aria-hidden className="size-4" />
+            Prep
+          </Button>
           <Button variant="secondary" onClick={() => setSuppliersOpen(true)}>
             <Truck aria-hidden className="size-4" />
             Suppliers

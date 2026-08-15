@@ -1238,6 +1238,153 @@ export const setRecipe = (
     body: JSON.stringify({ items }),
   });
 
+/* --------------------------------------------------------------- prep inventory */
+
+/** A prepared ingredient on the prep board — stock made in the kitchen. */
+export type PrepItemRow = {
+  id: string;
+  name: string;
+  unit: StockUnit;
+  reorderLevel: number | null;
+  prepBatchYield: number | null;
+  prepShelfLifeHours: number | null;
+  hasRecipe: boolean;
+  available: number;
+  isLow: boolean;
+  /** Base units produced (PREP_OUTPUT) today. */
+  preparedToday: number;
+  /** Base units wasted today. */
+  wasteToday: number;
+  /** Live batches expiring within 24h, and already expired (with stock left). */
+  expiringSoon: number;
+  expired: number;
+};
+
+export type PrepComponent = {
+  ingredientId: string;
+  name: string;
+  unit: StockUnit;
+  isActive: boolean;
+  /** Per one standard batch (prepBatchYield), in the component's unit. */
+  quantity: number;
+  /** Current stock of this component — lets the prepare form preview shortfalls. */
+  available: number;
+};
+
+export type YieldVariance = { delta: number; pct: number | null };
+
+export type PrepBatchRow = {
+  id: string;
+  code: string;
+  expectedQuantity: number;
+  actualQuantity: number;
+  expiresAt: string | null;
+  costMinor: number | null;
+  note?: string | null;
+  createdAt: string;
+  remaining: number;
+  expired: boolean;
+  variance: YieldVariance;
+};
+
+export type PrepItemDetail = {
+  id: string;
+  name: string;
+  unit: StockUnit;
+  reorderLevel: number | null;
+  isActive: boolean;
+  prepBatchYield: number | null;
+  prepShelfLifeHours: number | null;
+  available: number;
+  isLow: boolean;
+  /** Standard-batch recipe cost (paise), and per-unit — null if uncosted. */
+  recipeCostMinor: number | null;
+  costPerUnitMinor: number | null;
+  recipe: PrepComponent[];
+  batches: PrepBatchRow[];
+};
+
+export const listPrepItems = (token: string, onNewToken: Retry) =>
+  authedFetch<PrepItemRow[]>('/prep/items', token, onNewToken);
+
+export const getPrepItem = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<PrepItemDetail>(`/prep/items/${id}`, token, onNewToken);
+
+export const createPrepItem = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    name: string;
+    unit: StockUnit;
+    shelfLifeHours?: number;
+    reorderLevel?: number;
+  },
+) =>
+  authedFetch<PrepItemRow>('/prep/items', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updatePrepItem = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    shelfLifeHours?: number | null;
+    reorderLevel?: number | null;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<PrepItemRow>(`/prep/items/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const setPrepRecipe = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    batchYield: number;
+    items: Array<{ ingredientId: string; quantity: number }>;
+  },
+) =>
+  authedFetch<PrepItemDetail>(`/prep/items/${id}/recipe`, token, onNewToken, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+
+export const createPrepBatch = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    quantity: number;
+    actualQuantity?: number;
+    expiresAt?: string;
+    note?: string;
+    idempotencyKey?: string;
+  },
+) =>
+  authedFetch<PrepBatchRow>(`/prep/items/${id}/batches`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const wastePrepBatch = (
+  token: string,
+  onNewToken: Retry,
+  batchId: string,
+  body: { quantity: number; note?: string; idempotencyKey?: string },
+) =>
+  authedFetch<{ id: string }>(
+    `/prep/batches/${batchId}/waste`,
+    token,
+    onNewToken,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+
 export type StaffMember = {
   id: string;
   isActive: boolean;
