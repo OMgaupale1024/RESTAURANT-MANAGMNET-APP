@@ -371,8 +371,9 @@ model Product {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  recipeItems RecipeItem[]
+  category       Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  recipeItems    RecipeItem[]
+  modifierGroups ModifierGroup[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -1024,6 +1025,12 @@ model OrderItem {
   taxRateBp      Int      @map("tax_rate_bp")
   taxMinor       Int      @map("tax_minor")
   notes          String?
+  /// Immutable snapshot of the modifiers chosen at sale time — an array of
+  /// { optionId, groupName, optionName, priceAdjustMinor }. Their cost is
+  /// already baked into unitPriceMinor (so line_total = unit_price * quantity
+  /// still holds); this preserves the human-readable breakdown for receipts,
+  /// the kitchen and history even after the definitions change. NULL = none.
+  modifiers      Json?    @map("modifiers")
   createdAt      DateTime @default(now()) @map("created_at")
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1102,4 +1109,53 @@ model Payment {
   @@index([orderId])
   @@index([restaurantId, createdAt])
   @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Product modifiers — configurable options a cashier picks at the till
+// (Style / Quantity / Add-ons). Generic: the app hard-codes no momo options.
+// Definitions live here and are MUTABLE; what a customer actually ordered is
+// snapshotted onto order_items.modifiers, so editing a definition never
+// rewrites history. Tenant-scoped via RLS, no append-only trigger.
+// ---------------------------------------------------------------------------
+
+model ModifierGroup {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  name         String
+  /// Selection rule. required = minSelect >= 1; "choose exactly 1" is 1/1;
+  /// "up to 3" is 0/3. The DB CHECK enforces 0 <= minSelect <= maxSelect and
+  /// maxSelect >= 1, and the backend re-validates every selection.
+  minSelect    Int      @default(0) @map("min_select")
+  maxSelect    Int      @default(1) @map("max_select")
+  sortOrder    Int      @default(0) @map("sort_order")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  product Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  options ModifierOption[]
+
+  @@index([restaurantId, productId])
+  @@map("modifier_groups")
+}
+
+model ModifierOption {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  restaurantId    String   @map("restaurant_id") @db.Uuid
+  groupId         String   @map("group_id") @db.Uuid
+  name            String
+  /// Paise added to the base unit price when chosen. >= 0 (the DB CHECK holds
+  /// the line; negative "discount" modifiers are out of scope for v1).
+  priceAdjustMinor Int     @default(0) @map("price_adjust_minor")
+  sortOrder       Int      @default(0) @map("sort_order")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  group ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, groupId])
+  @@map("modifier_options")
 }

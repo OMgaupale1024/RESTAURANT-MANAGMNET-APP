@@ -22,6 +22,7 @@ import {
   Search,
   SearchX,
   ShoppingCart,
+  SlidersHorizontal,
   Flame,
   Smartphone,
   Split,
@@ -43,6 +44,7 @@ import {
   type Category,
   type LoyaltySummary,
   type Order,
+  type OrderItemModifier,
   type OrderSummary,
   type Product,
   type RestaurantProfile,
@@ -68,9 +70,38 @@ import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { CustomerPicker, type PosCustomer } from './customer-picker';
+import { ModifierSheet } from './modifier-sheet';
 
-type CartLine = { product: Product; quantity: number; notes?: string };
+/**
+ * A cart line. `lineId` (not product id) is the identity: modifiers mean the
+ * same product can sit in several lines with different options, so quantity
+ * steppers, notes and removal all key on lineId. `modifiers` is the chosen
+ * snapshot; its adjustments fold into the line's unit price.
+ */
+type CartLine = {
+  lineId: string;
+  product: Product;
+  quantity: number;
+  notes?: string;
+  modifiers?: OrderItemModifier[];
+};
 type LastAction = { label: string; productId: string; at: number };
+
+/** Per-unit price including the chosen modifiers' adjustments. */
+function lineUnitMinor(l: CartLine): number {
+  return (
+    l.product.priceMinor +
+    (l.modifiers?.reduce((s, m) => s + m.priceAdjustMinor, 0) ?? 0)
+  );
+}
+
+/** Identity of a selection, so identical lines merge and different ones don't. */
+function lineSig(productId: string, modifiers?: OrderItemModifier[]): string {
+  return `${productId}|${(modifiers ?? [])
+    .map((m) => m.optionId)
+    .sort()
+    .join(',')}`;
+}
 
 const ORDER_TYPES = [
   { key: 'DINE_IN', label: 'Dine-in' },
@@ -124,6 +155,9 @@ export function PosClient() {
   const [q, setQ] = useState('');
   const [cat, setCat] = useState<string>('all');
   const [cart, setCart] = useState<CartLine[]>([]);
+  // The product whose modifier picker is open (null = closed). Only products
+  // that HAVE modifier groups ever set this; plain products add in one tap.
+  const [modifierProduct, setModifierProduct] = useState<Product | null>(null);
   const [customer, setCustomer] = useState<PosCustomer | null>(null);
   const [coupon, setCoupon] = useState('');
   const [discount, setDiscount] = useState('');
@@ -264,10 +298,13 @@ export function PosClient() {
     });
   }, [products, q, cat, catName]);
 
-  const qtyById = useMemo(
-    () => new Map(cart.map((l) => [l.product.id, l.quantity])),
-    [cart],
-  );
+  // Card badge: total across every line of a product (a product may span
+  // several lines once modifiers differ).
+  const qtyById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of cart) m.set(l.product.id, (m.get(l.product.id) ?? 0) + l.quantity);
+    return m;
+  }, [cart]);
 
   function unleave(id: string) {
     const t = leavingTimers.current.get(id);
@@ -277,55 +314,85 @@ export function PosClient() {
     setLeaving((s) => s.filter((x) => x !== id));
   }
 
+  /** Tapping a product: open the modifier picker if it has groups, else add. */
   function add(product: Product) {
-    unleave(product.id);
+    if (product.modifierGroups.length > 0) {
+      setModifierProduct(product);
+      return;
+    }
+    mergeLine(product, undefined);
+  }
+
+  /** Add a configured line from the modifier picker. */
+  function addWithModifiers(product: Product, modifiers: OrderItemModifier[]) {
+    mergeLine(product, modifiers.length ? modifiers : undefined);
+  }
+
+  /** Insert a line, merging into an existing identical one (same product AND
+   *  same modifier selection); a different selection is its own line. */
+  function mergeLine(product: Product, modifiers?: OrderItemModifier[]) {
     setLastAction({ label: `Added ${product.name}`, productId: product.id, at: Date.now() });
+    const sig = lineSig(product.id, modifiers);
     setCart((c) => {
-      const found = c.find((l) => l.product.id === product.id);
+      const found = c.find(
+        (l) => !leaving.includes(l.lineId) && lineSig(l.product.id, l.modifiers) === sig,
+      );
+      if (found) unleave(found.lineId);
       return found
         ? c.map((l) =>
-            l.product.id === product.id ? { ...l, quantity: l.quantity + 1 } : l,
+            l.lineId === found.lineId ? { ...l, quantity: l.quantity + 1 } : l,
           )
-        : [...c, { product, quantity: 1 }];
+        : [
+            ...c,
+            {
+              lineId:
+                typeof crypto !== 'undefined' && crypto.randomUUID
+                  ? crypto.randomUUID()
+                  : `${Date.now()}-${Math.random()}`,
+              product,
+              quantity: 1,
+              ...(modifiers ? { modifiers } : {}),
+            },
+          ];
     });
   }
 
-  function removeLine(id: string) {
-    const line = cart.find((l) => l.product.id === id);
-    if (!line || leavingTimers.current.has(id)) return;
-    setLastAction({ label: `Removed ${line.product.name}`, productId: id, at: Date.now() });
-    setLeaving((s) => [...s, id]);
+  function removeLine(lineId: string) {
+    const line = cart.find((l) => l.lineId === lineId);
+    if (!line || leavingTimers.current.has(lineId)) return;
+    setLastAction({ label: `Removed ${line.product.name}`, productId: line.product.id, at: Date.now() });
+    setLeaving((s) => [...s, lineId]);
     // The line collapses first, then leaves the state — an instant removal
     // makes the rest of the cart jump.
     leavingTimers.current.set(
-      id,
+      lineId,
       setTimeout(() => {
-        leavingTimers.current.delete(id);
-        setLeaving((s) => s.filter((x) => x !== id));
-        setCart((c) => c.filter((l) => l.product.id !== id));
+        leavingTimers.current.delete(lineId);
+        setLeaving((s) => s.filter((x) => x !== lineId));
+        setCart((c) => c.filter((l) => l.lineId !== lineId));
       }, LINE_OUT_MS),
     );
   }
 
-  function changeQty(id: string, delta: number) {
-    const line = cart.find((l) => l.product.id === id);
-    if (!line || leavingTimers.current.has(id)) return;
+  function changeQty(lineId: string, delta: number) {
+    const line = cart.find((l) => l.lineId === lineId);
+    if (!line || leavingTimers.current.has(lineId)) return;
     if (line.quantity + delta <= 0) {
-      removeLine(id);
+      removeLine(lineId);
       return;
     }
     setLastAction({
       label: `${delta > 0 ? 'Added' : 'Removed one'} ${line.product.name}`,
-      productId: id,
+      productId: line.product.id,
       at: Date.now(),
     });
     setCart((c) =>
-      c.map((l) => (l.product.id === id ? { ...l, quantity: l.quantity + delta } : l)),
+      c.map((l) => (l.lineId === lineId ? { ...l, quantity: l.quantity + delta } : l)),
     );
   }
 
-  function setLineNote(id: string, notes: string) {
-    setCart((c) => c.map((l) => (l.product.id === id ? { ...l, notes } : l)));
+  function setLineNote(lineId: string, notes: string) {
+    setCart((c) => c.map((l) => (l.lineId === lineId ? { ...l, notes } : l)));
   }
 
   function clearCart() {
@@ -346,15 +413,19 @@ export function PosClient() {
   // Lines mid-collapse are already "removed" as far as money is concerned:
   // totals and Charge must not include a line the cashier just deleted.
   const activeCart = leaving.length
-    ? cart.filter((l) => !leaving.includes(l.product.id))
+    ? cart.filter((l) => !leaving.includes(l.lineId))
     : cart;
 
-  /** The item payload shared by charge and hold — carries per-line notes. */
+  /** The item payload shared by charge and hold — carries per-line notes and
+   *  the chosen modifier option ids (server prices and validates them). */
   function cartItems() {
     return activeCart.map((l) => ({
       productId: l.product.id,
       quantity: l.quantity,
       ...(l.notes?.trim() ? { notes: l.notes.trim() } : {}),
+      ...(l.modifiers?.length
+        ? { modifierOptionIds: l.modifiers.map((m) => m.optionId) }
+        : {}),
     }));
   }
 
@@ -615,10 +686,11 @@ export function PosClient() {
    * Displayed only. The server recomputes every figure from its own prices —
    * these numbers are a preview for the cashier, never an input to the order.
    */
-  const subtotal = activeCart.reduce((s, l) => s + l.product.priceMinor * l.quantity, 0);
+  // Preview only — the server recomputes both from the modifier definitions.
+  // Uses the all-in unit price so the cart total matches the printed bill.
+  const subtotal = activeCart.reduce((s, l) => s + lineUnitMinor(l) * l.quantity, 0);
   const tax = activeCart.reduce(
-    (s, l) =>
-      s + Math.round((l.product.priceMinor * l.quantity * l.product.taxRateBp) / 10_000),
+    (s, l) => s + Math.round((lineUnitMinor(l) * l.quantity * l.product.taxRateBp) / 10_000),
     0,
   );
   const itemCount = activeCart.reduce((s, l) => s + l.quantity, 0);
@@ -863,10 +935,17 @@ export function PosClient() {
                           <span className="text-[13px] font-semibold tabular-nums">
                             {formatMinor(p.priceMinor)}
                           </span>
-                          {p.categoryId && (
-                            <span className="truncate text-[11px] text-ink-3">
-                              {catName.get(p.categoryId)}
+                          {p.modifierGroups.length > 0 ? (
+                            <span className="flex shrink-0 items-center gap-1 text-[11px] text-ink-3">
+                              <SlidersHorizontal aria-hidden className="size-3" />
+                              Options
                             </span>
+                          ) : (
+                            p.categoryId && (
+                              <span className="truncate text-[11px] text-ink-3">
+                                {catName.get(p.categoryId)}
+                              </span>
+                            )
                           )}
                         </span>
                         {qty !== undefined && (
@@ -994,6 +1073,13 @@ export function PosClient() {
       </Sheet>
 
       {printPortal}
+
+      <ModifierSheet
+        product={modifierProduct}
+        open={modifierProduct !== null}
+        onClose={() => setModifierProduct(null)}
+        onAdd={addWithModifiers}
+      />
 
       <Modal open={helpOpen} onClose={() => setHelpOpen(false)} title="Keyboard shortcuts">
         <dl className="space-y-2.5">
@@ -1260,12 +1346,13 @@ function CartPanel({
         <>
           <ul className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto">
             {cart.map((l) => {
-              const isLeaving = leaving.includes(l.product.id);
+              const isLeaving = leaving.includes(l.lineId);
               const flashAt =
                 lastAction && lastAction.productId === l.product.id ? lastAction.at : 0;
+              const unit = lineUnitMinor(l);
               return (
                 <li
-                  key={l.product.id}
+                  key={l.lineId}
                   className={cn(
                     'animate-fade-up overflow-hidden rounded-lg',
                     isLeaving && 'pointer-events-none',
@@ -1291,19 +1378,36 @@ function CartPanel({
                         {l.product.name}
                       </span>
                       <span
-                        key={l.product.priceMinor * l.quantity}
+                        key={unit * l.quantity}
                         className="shrink-0 text-[13px] font-medium tabular-nums"
                         style={{ animation: 'scale-in 140ms var(--ease-out-quart)' }}
                       >
-                        {formatMinor(l.product.priceMinor * l.quantity)}
+                        {formatMinor(unit * l.quantity)}
                       </span>
                     </div>
+                    {l.modifiers && l.modifiers.length > 0 && (
+                      <ul className="mt-0.5 space-y-0.5">
+                        {l.modifiers.map((m) => (
+                          <li
+                            key={m.optionId}
+                            className="flex items-baseline justify-between gap-2 text-[11px] text-ink-3"
+                          >
+                            <span className="min-w-0 truncate">{m.optionName}</span>
+                            {m.priceAdjustMinor > 0 && (
+                              <span className="shrink-0 tabular-nums">
+                                +{formatMinor(m.priceAdjustMinor)}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     <div className="mt-1.5 flex items-center gap-1.5">
                       <Button
                         variant="secondary"
                         size="sm"
                         aria-label={`Remove one ${l.product.name}`}
-                        onClick={() => changeQty(l.product.id, -1)}
+                        onClick={() => changeQty(l.lineId, -1)}
                         className="w-7 px-0"
                       >
                         <Minus aria-hidden className="size-3.5" />
@@ -1319,19 +1423,19 @@ function CartPanel({
                         variant="secondary"
                         size="sm"
                         aria-label={`Add one ${l.product.name}`}
-                        onClick={() => changeQty(l.product.id, 1)}
+                        onClick={() => changeQty(l.lineId, 1)}
                         className="w-7 px-0"
                       >
                         <Plus aria-hidden className="size-3.5" />
                       </Button>
                       <span className="ml-auto text-[11px] text-ink-3 tabular-nums">
-                        @ {formatMinor(l.product.priceMinor)}
+                        @ {formatMinor(unit)}
                       </span>
                       <Button
                         variant="ghost"
                         size="sm"
                         aria-label={`Remove ${l.product.name}`}
-                        onClick={() => removeLine(l.product.id)}
+                        onClick={() => removeLine(l.lineId)}
                         className="w-7 px-0 text-ink-3"
                       >
                         <X aria-hidden className="size-3.5" />
@@ -1339,7 +1443,7 @@ function CartPanel({
                     </div>
                     <LineNote
                       value={l.notes ?? ''}
-                      onChange={(v) => setLineNote(l.product.id, v)}
+                      onChange={(v) => setLineNote(l.lineId, v)}
                     />
                   </div>
                 </li>

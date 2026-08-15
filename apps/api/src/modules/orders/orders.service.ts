@@ -15,6 +15,7 @@ import {
   VOID_STATUSES,
   canTransition,
 } from './order-status';
+import { resolveModifierSelection, type ModifierGroupDef } from './modifiers';
 import { InventoryService } from '../inventory/inventory.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { MarketingService } from '../marketing/marketing.service';
@@ -181,21 +182,57 @@ export class OrdersService {
         orderBy: { createdAt: 'asc' },
       });
 
+      // Active modifier config for every product on this order, in ONE query —
+      // no per-item round trip (perf) and no per-item trust (each selection is
+      // re-validated server-side below).
+      const groupRows = await db.modifierGroup.findMany({
+        where: { productId: { in: ids }, isActive: true },
+        orderBy: { sortOrder: 'asc' },
+        select: {
+          id: true,
+          productId: true,
+          name: true,
+          minSelect: true,
+          maxSelect: true,
+          options: {
+            where: { isActive: true },
+            orderBy: { sortOrder: 'asc' },
+            select: { id: true, name: true, priceAdjustMinor: true },
+          },
+        },
+      });
+      const groupsByProduct = new Map<string, ModifierGroupDef[]>();
+      for (const g of groupRows) {
+        const arr = groupsByProduct.get(g.productId) ?? [];
+        arr.push(g);
+        groupsByProduct.set(g.productId, arr);
+      }
+
       // --- money, in integer paise throughout
       const lines = dto.items.map((item) => {
         const p = byId.get(item.productId)!;
-        const lineTotal = p.priceMinor * item.quantity;
+        // Validate the selection and price it. Modifier cost is per unit and
+        // folds into the unit price, so line_total = unit_price * quantity (the
+        // DB CHECK) stays true and analytics reconcile with no special case.
+        const { perUnitAdjustMinor, snapshot } = resolveModifierSelection(
+          groupsByProduct.get(item.productId) ?? [],
+          item.modifierOptionIds ?? [],
+        );
+        const unitPrice = p.priceMinor + perUnitAdjustMinor;
+        const lineTotal = unitPrice * item.quantity;
         // Round half-up at the line, matching how a printed receipt reads.
         const tax = Math.round((lineTotal * p.taxRateBp) / 10_000);
         return {
           productId: p.id,
           nameSnapshot: p.name,
-          unitPriceMinor: p.priceMinor,
+          unitPriceMinor: unitPrice,
           quantity: item.quantity,
           lineTotalMinor: lineTotal,
           taxRateBp: p.taxRateBp,
           taxMinor: tax,
           notes: item.notes ?? null,
+          // undefined (not null) leaves the Json column NULL for plain lines.
+          modifiers: snapshot.length ? snapshot : undefined,
         };
       });
 
@@ -409,7 +446,13 @@ export class OrdersService {
           customer: { select: { name: true } },
           payments: { select: { method: true, status: true } },
           items: {
-            select: { nameSnapshot: true, quantity: true, notes: true },
+            select: {
+              nameSnapshot: true,
+              quantity: true,
+              notes: true,
+              // The kitchen board needs to see what to prepare, modifiers and all.
+              modifiers: true,
+            },
           },
         },
       }),
@@ -910,6 +953,7 @@ export class OrdersService {
             taxRateBp: true,
             taxMinor: true,
             notes: true,
+            modifiers: true,
           },
         },
         payments: {

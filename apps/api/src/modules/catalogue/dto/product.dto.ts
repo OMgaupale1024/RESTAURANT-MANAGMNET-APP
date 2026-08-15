@@ -120,6 +120,111 @@ export class ReorderCategoriesDto {
   ids!: string[];
 }
 
+/**
+ * A modifier group on a product (Style / Quantity / Add-ons). Selection rule is
+ * min/max; required = minSelect >= 1. The service enforces minSelect <= maxSelect
+ * and the DB CHECK backs it. Options are added separately.
+ */
+export class CreateModifierGroupDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(60)
+  @Transform(({ value }) => String(value).trim())
+  name!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(30)
+  minSelect?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  maxSelect?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}
+
+export class UpdateModifierGroupDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(60)
+  @Transform(({ value }) => String(value).trim())
+  name?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(30)
+  minSelect?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  maxSelect?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+export class CreateModifierOptionDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(60)
+  @Transform(({ value }) => String(value).trim())
+  name!: string;
+
+  // Paise added when chosen. >= 0 (negative "discount" modifiers are out of
+  // scope for v1); ceiling mirrors a product price to catch a fat-fingered value.
+  @IsOptional()
+  @IsInt({ message: 'must be an integer number of paise' })
+  @Min(0)
+  @Max(10_000_000)
+  priceAdjustMinor?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}
+
+export class UpdateModifierOptionDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(60)
+  @Transform(({ value }) => String(value).trim())
+  name?: string;
+
+  @IsOptional()
+  @IsInt({ message: 'must be an integer number of paise' })
+  @Min(0)
+  @Max(10_000_000)
+  priceAdjustMinor?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
 export class ListProductsQuery {
   /**
    * "all" includes deactivated products — the Menu screen needs them to offer

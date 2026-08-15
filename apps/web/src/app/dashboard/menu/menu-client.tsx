@@ -42,6 +42,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Table, Td, Th, Tr } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { PopularToggle } from './popular-toggle';
+import { ProductModifiers } from './product-modifiers';
 
 /**
  * Menu — where the catalogue is actually managed. POS sells it; this screen
@@ -720,6 +721,15 @@ function EditProduct({
       <Button variant="primary" type="submit" disabled={!valid || busy} className="w-full">
         {busy ? 'Saving…' : 'Save changes'}
       </Button>
+
+      <div className="border-t border-line pt-4">
+        <p className="mb-2 text-[13px] font-semibold">Modifiers</p>
+        <p className="mb-3 text-[12px] text-ink-3">
+          Options the cashier picks at the till — Style, Quantity, Add-ons. Each
+          option can add to the price.
+        </p>
+        <ProductModifiers productId={product.id} />
+      </div>
 
       <div className="border-t border-line pt-4">
         <p className="mb-2 text-[12px] text-ink-3">

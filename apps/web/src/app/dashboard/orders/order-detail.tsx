@@ -226,6 +226,20 @@ export function OrderDetail({
                 </span>
                 <span className="shrink-0 tabular-nums">{formatMinor(i.lineTotalMinor)}</span>
               </div>
+              {i.modifiers?.map((m) => (
+                // Amount = per-unit adjustment × line quantity, matching the bill.
+                <div
+                  key={m.optionId}
+                  className="flex items-baseline justify-between gap-2 pl-4 text-[12px] text-ink-3"
+                >
+                  <span className="min-w-0 truncate">{m.optionName}</span>
+                  {m.priceAdjustMinor > 0 && (
+                    <span className="shrink-0 tabular-nums">
+                      +{formatMinor(m.priceAdjustMinor * i.quantity)}
+                    </span>
+                  )}
+                </div>
+              ))}
               {i.notes && <p className="text-[12px] text-ink-3">{i.notes}</p>}
             </li>
           ))}

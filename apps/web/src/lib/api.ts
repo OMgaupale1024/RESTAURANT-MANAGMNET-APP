@@ -246,6 +246,22 @@ export const updateRestaurantProfile = (
     body: JSON.stringify(body),
   });
 
+/** POS-facing modifier config (active groups/options only), embedded on Product. */
+export type ModifierOption = {
+  id: string;
+  name: string;
+  priceAdjustMinor: number;
+  sortOrder: number;
+};
+export type ModifierGroup = {
+  id: string;
+  name: string;
+  minSelect: number;
+  maxSelect: number;
+  sortOrder: number;
+  options: ModifierOption[];
+};
+
 export type Product = {
   id: string;
   name: string;
@@ -254,6 +270,29 @@ export type Product = {
   categoryId: string | null;
   isActive: boolean;
   isPopular: boolean;
+  /** Active modifier groups, shipped with the product so the till needs no
+   *  per-tap fetch. Empty for a plain product (keeps one-tap add fast). */
+  modifierGroups: ModifierGroup[];
+};
+
+/** Management view (incl. inactive) returned by the modifier-groups endpoints. */
+export type ModifierOptionAdmin = ModifierOption & { isActive: boolean };
+export type ModifierGroupAdmin = {
+  id: string;
+  name: string;
+  minSelect: number;
+  maxSelect: number;
+  sortOrder: number;
+  isActive: boolean;
+  options: ModifierOptionAdmin[];
+};
+
+/** Snapshot of what was actually ordered, stored on the order line. */
+export type OrderItemModifier = {
+  optionId: string;
+  groupName: string;
+  optionName: string;
+  priceAdjustMinor: number;
 };
 
 /* ------------------------------------------------------------ cash drawer */
@@ -367,6 +406,7 @@ export type Order = {
     taxRateBp: number;
     taxMinor: number;
     notes: string | null;
+    modifiers: OrderItemModifier[] | null;
   }>;
   payments: Array<{ id: string; method: string; status: string; amountMinor: number }>;
   refunds: Array<{
@@ -423,6 +463,82 @@ export const updateProduct = (
     body: JSON.stringify(body),
   });
 
+/* --------------------------------------------------------- modifiers (admin) */
+export const listModifierGroups = (
+  token: string,
+  onNewToken: Retry,
+  productId: string,
+) =>
+  authedFetch<ModifierGroupAdmin[]>(
+    `/products/${productId}/modifier-groups`,
+    token,
+    onNewToken,
+  );
+
+export const createModifierGroup = (
+  token: string,
+  onNewToken: Retry,
+  productId: string,
+  body: { name: string; minSelect?: number; maxSelect?: number; sortOrder?: number },
+) =>
+  authedFetch<ModifierGroupAdmin>(
+    `/products/${productId}/modifier-groups`,
+    token,
+    onNewToken,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+
+export const updateModifierGroup = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    minSelect?: number;
+    maxSelect?: number;
+    sortOrder?: number;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<ModifierGroupAdmin>(`/modifier-groups/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteModifierGroup = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/modifier-groups/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
+export const createModifierOption = (
+  token: string,
+  onNewToken: Retry,
+  groupId: string,
+  body: { name: string; priceAdjustMinor?: number; sortOrder?: number },
+) =>
+  authedFetch<ModifierOptionAdmin>(
+    `/modifier-groups/${groupId}/options`,
+    token,
+    onNewToken,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+
+export const updateModifierOption = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { name?: string; priceAdjustMinor?: number; sortOrder?: number; isActive?: boolean },
+) =>
+  authedFetch<ModifierOptionAdmin>(`/modifier-options/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteModifierOption = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/modifier-options/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
 export const createCategory = (token: string, onNewToken: Retry, name: string) =>
   authedFetch<Category>('/categories', token, onNewToken, {
     method: 'POST',
@@ -456,7 +572,13 @@ export const createOrder = (
   token: string,
   onNewToken: Retry,
   body: {
-    items: Array<{ productId: string; quantity: number; notes?: string }>;
+    items: Array<{
+      productId: string;
+      quantity: number;
+      notes?: string;
+      /** Chosen modifier option ids — server prices and validates them. */
+      modifierOptionIds?: string[];
+    }>;
     paymentMethod?: string;
     orderType?: string;
     /** Park as DRAFT: no kitchen, no stock, no payment until resumed. */
@@ -490,7 +612,12 @@ export type OrderSummary = {
   _count: { items: number };
   customer: { name: string } | null;
   payments: Array<{ method: string; status: string }>;
-  items: Array<{ nameSnapshot: string; quantity: number; notes: string | null }>;
+  items: Array<{
+    nameSnapshot: string;
+    quantity: number;
+    notes: string | null;
+    modifiers: OrderItemModifier[] | null;
+  }>;
 };
 
 export type TimelineEvent = {
