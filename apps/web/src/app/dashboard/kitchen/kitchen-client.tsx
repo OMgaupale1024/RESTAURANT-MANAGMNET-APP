@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   BellRing,
   CheckCircle2,
   ChefHat,
@@ -60,6 +61,25 @@ const BOARD_STATUSES = COLUMNS.map((c) => c.status);
 /** Elapsed-time escalation (DESIGN.md §6): calm → warning 10m → critical 20m. */
 const WARN_MS = 10 * 60_000;
 const CRIT_MS = 20 * 60_000;
+/**
+ * Stale threshold — an order still un-delivered this long has been forgotten,
+ * not merely delayed. A momo order clears in minutes; anything past ~2h is a
+ * ticket someone abandoned (the "349h-old order shown as New" bug). Stale
+ * tickets get a distinct banner and a resolve prompt so they never masquerade
+ * as normal work. NOT auto-cancelled — that would corrupt a financial record.
+ * ponytail: 2h flat threshold; make per-order-type if prep times ever diverge.
+ */
+const STALE_MS = 2 * 60 * 60_000;
+/** Coarse board clock for stale detection — forgotten tickets get no socket
+ *  events, so staleness must be time-driven, not event-driven. 30s is plenty
+ *  for a 2h boundary. (The per-ticket seconds clock stays in <Elapsed>.) */
+const STALE_TICK_MS = 30_000;
+
+/** "Delayed by 14h" / "Delayed by 150m" — hours once past an hour. */
+function delayLabel(ms: number): string {
+  const mins = Math.floor(ms / 60_000);
+  return mins >= 60 ? `${Math.floor(mins / 60)}h` : `${mins}m`;
+}
 
 /** How many recently completed tickets the collapsible strip keeps. */
 const DONE_SHOWN = 10;
@@ -115,6 +135,13 @@ export function KitchenClient() {
 
   const [orders, setOrders] = useState<OrderSummary[] | null>(null);
   const [live, setLive] = useState(false);
+  // Coarse board clock: drives stale detection for forgotten tickets that
+  // receive no events. Re-renders the board every 30s — negligible cost.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), STALE_TICK_MS);
+    return () => clearInterval(t);
+  }, []);
   // Ticket id → arrival timestamp for socket-driven inserts/moves: those get
   // the slide-in + flash entrance; the initial load gets a quiet fade-up.
   const [arrivals, setArrivals] = useState<Record<string, number>>({});
@@ -396,6 +423,7 @@ export function KitchenClient() {
                         key={`${o.id}:${o.status}`}
                         order={o}
                         index={i}
+                        now={now}
                         liveArrival={Boolean(arrivals[o.id])}
                         busy={busy === o.id}
                         onOpen={open}
@@ -503,6 +531,7 @@ export function KitchenClient() {
 const Ticket = memo(function Ticket({
   order,
   index,
+  now,
   liveArrival,
   busy,
   onOpen,
@@ -510,6 +539,7 @@ const Ticket = memo(function Ticket({
 }: {
   order: OrderSummary;
   index: number;
+  now: number;
   liveArrival: boolean;
   busy: boolean;
   onOpen: (id: string) => void;
@@ -520,6 +550,8 @@ const Ticket = memo(function Ticket({
   // "If relevant" per the spec: a pay-later ticket the counter must collect on.
   // Fully-paid orders (the POS default) stay unmarked — no money noise.
   const unpaid = !order.payments.some((p) => p.status === 'CAPTURED');
+  const ageMs = now - new Date(since).getTime();
+  const stale = ageMs >= STALE_MS;
   return (
     <li
       className={cn('list-none', liveArrival ? 'animate-slide-in-left' : 'animate-fade-up')}
@@ -528,8 +560,23 @@ const Ticket = memo(function Ticket({
     >
       <div
         onClick={() => onOpen(order.id)}
-        className="relative cursor-pointer overflow-hidden rounded-xl border border-line bg-surface p-3 transition-colors duration-120 hover:border-line-2"
+        className={cn(
+          'relative cursor-pointer overflow-hidden rounded-xl border bg-surface p-3 transition-colors duration-120',
+          stale
+            ? 'border-danger ring-1 ring-danger/40 hover:border-danger'
+            : 'border-line hover:border-line-2',
+        )}
       >
+        {stale && (
+          // Never colour alone (icon + text): a forgotten ticket, visually
+          // pulled out of the normal queue with a resolve prompt. Tapping the
+          // card opens the detail sheet, where void/cancel (reason + permission)
+          // resolves it.
+          <p className="-mx-3 -mt-3 mb-3 flex items-center gap-1.5 bg-danger/15 px-3 py-1.5 text-[13px] font-semibold text-danger-text">
+            <AlertTriangle aria-hidden className="size-4 shrink-0" />
+            Delayed by {delayLabel(ageMs)} · tap to resolve
+          </p>
+        )}
         {liveArrival && (
           <span
             aria-hidden
