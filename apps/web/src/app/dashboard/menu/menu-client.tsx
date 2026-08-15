@@ -41,6 +41,7 @@ import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, Td, Th, Tr } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
+import { PopularToggle } from './popular-toggle';
 
 /**
  * Menu — where the catalogue is actually managed. POS sells it; this screen
@@ -266,16 +267,19 @@ export function MenuClient() {
                   )}
                 >
                   <Td>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEditing(p);
-                      }}
-                      className="rounded font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
-                    >
-                      {p.name}
-                    </button>
+                    <span className="flex items-center gap-2">
+                      <PopularToggle product={p} onChanged={reload} />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditing(p);
+                        }}
+                        className="rounded font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                      >
+                        {p.name}
+                      </button>
+                    </span>
                   </Td>
                   <Td className="hidden max-w-40 truncate text-ink-2 sm:table-cell">
                     {p.categoryId ? (
