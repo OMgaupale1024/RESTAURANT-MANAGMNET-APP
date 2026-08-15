@@ -228,6 +228,21 @@ export function PosClient() {
     [categories],
   );
 
+  // Active-item count per category (products here are already the sellable set —
+  // listProducts without ?include=all). Drives hiding empty categories and the
+  // "Momos (2)" count so the till never shows a category with nothing to sell.
+  const catCount = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of products ?? [])
+      if (p.categoryId) m.set(p.categoryId, (m.get(p.categoryId) ?? 0) + 1);
+    return m;
+  }, [products]);
+
+  const shownCategories = useMemo(
+    () => categories.filter((c) => (catCount.get(c.id) ?? 0) > 0),
+    [categories, catCount],
+  );
+
   const filtered = useMemo(() => {
     if (!products) return [];
     const needle = q.trim().toLowerCase();
@@ -728,9 +743,9 @@ export function PosClient() {
             </Button>
           </div>
 
-          {categories.length > 0 && (
+          {shownCategories.length > 0 && (
             <div className="flex gap-1.5 overflow-x-auto pb-1" aria-label="Categories">
-              {[{ id: 'all', name: 'All' }, ...categories].map((c) => (
+              {[{ id: 'all', name: 'All' }, ...shownCategories].map((c) => (
                 <button
                   key={c.id}
                   type="button"
@@ -745,6 +760,11 @@ export function PosClient() {
                   )}
                 >
                   {c.name}
+                  {c.id !== 'all' && (
+                    <span className="ml-1 text-ink-3 tabular-nums">
+                      ({catCount.get(c.id) ?? 0})
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
