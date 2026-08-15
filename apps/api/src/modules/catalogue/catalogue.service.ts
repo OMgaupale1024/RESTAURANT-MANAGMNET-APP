@@ -20,6 +20,7 @@ const PRODUCT_SELECT = {
   taxRateBp: true,
   categoryId: true,
   isActive: true,
+  isPopular: true,
 } as const;
 
 @Injectable()
@@ -64,6 +65,9 @@ export class CatalogueService {
               ? { taxRateBp: dto.taxRateBp }
               : {}),
             ...(dto.categoryId ? { categoryId: dto.categoryId } : {}),
+            ...(dto.isPopular !== undefined
+              ? { isPopular: dto.isPopular }
+              : {}),
           },
           select: PRODUCT_SELECT,
         });
@@ -112,6 +116,9 @@ export class CatalogueService {
               ? { categoryId: dto.categoryId }
               : {}),
             ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+            ...(dto.isPopular !== undefined
+              ? { isPopular: dto.isPopular }
+              : {}),
           },
           select: PRODUCT_SELECT,
         });

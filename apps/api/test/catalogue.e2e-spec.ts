@@ -171,6 +171,48 @@ describe('Catalogue management (e2e)', () => {
       expect(cleared.body.categoryId).toBeNull();
     });
 
+    it('marks a product Popular and clears it (default is off)', async () => {
+      const t = await newTenant('Popular Cafe');
+      const p = await api()
+        .post('/api/v1/products')
+        .set(auth(t.token))
+        .send({ name: 'Steamed Momo', priceMinor: 6000 })
+        .expect(201);
+      expect(p.body.isPopular).toBe(false);
+
+      const marked = await api()
+        .patch(`/api/v1/products/${p.body.id}`)
+        .set(auth(t.token))
+        .send({ isPopular: true })
+        .expect(200);
+      expect(marked.body.isPopular).toBe(true);
+
+      // Persisted on the list the POS reads, not just the PATCH response.
+      const list = await api()
+        .get('/api/v1/products')
+        .set(auth(t.token))
+        .expect(200);
+      expect(list.body.find((x: { id: string }) => x.id === p.body.id))
+        .toMatchObject({ isPopular: true });
+
+      const cleared = await api()
+        .patch(`/api/v1/products/${p.body.id}`)
+        .set(auth(t.token))
+        .send({ isPopular: false })
+        .expect(200);
+      expect(cleared.body.isPopular).toBe(false);
+    });
+
+    it('can set isPopular at creation time', async () => {
+      const t = await newTenant('Popular Create Cafe');
+      const p = await api()
+        .post('/api/v1/products')
+        .set(auth(t.token))
+        .send({ name: 'Fried Momo', priceMinor: 7000, isPopular: true })
+        .expect(201);
+      expect(p.body.isPopular).toBe(true);
+    });
+
     it('rejects a rename onto an existing product name', async () => {
       const t = await newTenant('Conflict Cafe');
       await api()

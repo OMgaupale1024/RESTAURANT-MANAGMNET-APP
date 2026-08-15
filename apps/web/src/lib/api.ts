@@ -253,6 +253,7 @@ export type Product = {
   taxRateBp: number;
   categoryId: string | null;
   isActive: boolean;
+  isPopular: boolean;
 };
 
 /* ------------------------------------------------------------ cash drawer */
@@ -396,6 +397,7 @@ export const createProduct = (
     priceMinor: number;
     taxRateBp?: number;
     categoryId?: string;
+    isPopular?: boolean;
   },
 ) =>
   authedFetch<Product>('/products', token, onNewToken, {
@@ -413,6 +415,7 @@ export const updateProduct = (
     taxRateBp?: number;
     categoryId?: string | null;
     isActive?: boolean;
+    isPopular?: boolean;
   },
 ) =>
   authedFetch<Product>(`/products/${id}`, token, onNewToken, {

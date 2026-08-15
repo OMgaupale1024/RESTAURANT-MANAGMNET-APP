@@ -364,6 +364,9 @@ model Product {
   /// Basis points: 500 = 5%, the GST rate on restaurant food in India.
   taxRateBp    Int      @default(500) @map("tax_rate_bp")
   isActive     Boolean  @default(true) @map("is_active")
+  /// Owner-flagged "Popular" — surfaces the item in the POS Popular section and
+  /// on a badge. Purely a merchandising hint; no effect on price or stock.
+  isPopular    Boolean  @default(false) @map("is_popular")
   sortOrder    Int      @default(0) @map("sort_order")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")

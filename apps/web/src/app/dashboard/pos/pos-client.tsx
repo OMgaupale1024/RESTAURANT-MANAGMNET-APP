@@ -22,6 +22,7 @@ import {
   Search,
   SearchX,
   ShoppingCart,
+  Flame,
   Smartphone,
   Split,
   UtensilsCrossed,
@@ -243,11 +244,18 @@ export function PosClient() {
     [categories, catCount],
   );
 
+  const popularCount = useMemo(
+    () => (products ?? []).filter((p) => p.isPopular).length,
+    [products],
+  );
+
   const filtered = useMemo(() => {
     if (!products) return [];
     const needle = q.trim().toLowerCase();
     return products.filter((p) => {
-      if (cat !== 'all' && p.categoryId !== cat) return false;
+      if (cat === 'popular') {
+        if (!p.isPopular) return false;
+      } else if (cat !== 'all' && p.categoryId !== cat) return false;
       if (!needle) return true;
       const cn2 = p.categoryId ? (catName.get(p.categoryId) ?? '') : '';
       return (
@@ -745,25 +753,38 @@ export function PosClient() {
 
           {shownCategories.length > 0 && (
             <div className="flex gap-1.5 overflow-x-auto pb-1" aria-label="Categories">
-              {[{ id: 'all', name: 'All' }, ...shownCategories].map((c) => (
+              {[
+                { id: 'all', name: 'All' },
+                ...(popularCount > 0
+                  ? [{ id: 'popular', name: 'Popular' }]
+                  : []),
+                ...shownCategories,
+              ].map((c) => (
                 <button
                   key={c.id}
                   type="button"
                   aria-pressed={cat === c.id}
                   onClick={() => setCat(c.id)}
                   className={cn(
-                    'h-8 shrink-0 rounded-full border px-3.5 text-[13px] whitespace-nowrap transition-[background-color,border-color,color] duration-120',
+                    'inline-flex h-8 shrink-0 items-center gap-1 rounded-full border px-3.5 text-[13px] whitespace-nowrap transition-[background-color,border-color,color] duration-120',
                     'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current',
                     cat === c.id
                       ? 'border-line-2 bg-surface font-medium text-ink shadow-[0_1px_2px_rgb(0_0_0/0.04)]'
                       : 'border-transparent text-ink-2 hover:bg-surface-2 hover:text-ink',
                   )}
                 >
+                  {c.id === 'popular' && (
+                    <Flame aria-hidden className="size-3.5 text-warning-text" />
+                  )}
                   {c.name}
-                  {c.id !== 'all' && (
-                    <span className="ml-1 text-ink-3 tabular-nums">
-                      ({catCount.get(c.id) ?? 0})
-                    </span>
+                  {c.id === 'popular' ? (
+                    <span className="text-ink-3 tabular-nums">({popularCount})</span>
+                  ) : (
+                    c.id !== 'all' && (
+                      <span className="text-ink-3 tabular-nums">
+                        ({catCount.get(c.id) ?? 0})
+                      </span>
+                    )
                   )}
                 </button>
               ))}
@@ -829,6 +850,12 @@ export function PosClient() {
                           qty ? 'border-line-2' : 'border-line',
                         )}
                       >
+                        {p.isPopular && (
+                          <span className="mb-1 inline-flex w-fit items-center gap-1 rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-brand-ink uppercase">
+                            <Flame aria-hidden className="size-3" />
+                            Popular
+                          </span>
+                        )}
                         <span className="line-clamp-2 pr-6 text-[13px] leading-snug font-medium">
                           {p.name}
                         </span>

@@ -41,6 +41,10 @@ export class CreateProductDto {
   @IsOptional()
   @IsUUID()
   categoryId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isPopular?: boolean;
 }
 
 export class CreateCategoryDto {
@@ -89,6 +93,10 @@ export class UpdateProductDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isPopular?: boolean;
 }
 
 export class UpdateCategoryDto {
