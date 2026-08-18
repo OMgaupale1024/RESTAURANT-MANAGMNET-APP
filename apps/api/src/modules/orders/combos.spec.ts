@@ -6,8 +6,16 @@ const combo: ComboDef = {
   priceMinor: 8500,
   taxRateBp: 500,
   items: [
-    { productId: 'p-momo', quantity: 1, product: { name: 'Veg Momos', isActive: true } },
-    { productId: 'p-coke', quantity: 1, product: { name: 'Cold Drink', isActive: true } },
+    {
+      productId: 'p-momo',
+      quantity: 1,
+      product: { name: 'Veg Momos', isActive: true },
+    },
+    {
+      productId: 'p-coke',
+      quantity: 1,
+      product: { name: 'Cold Drink', isActive: true },
+    },
   ],
 };
 
@@ -33,8 +41,16 @@ describe('buildComboLine', () => {
       priceMinor: 19900,
       taxRateBp: 500,
       items: [
-        { productId: 'p-momo', quantity: 3, product: { name: 'Veg Momos', isActive: true } },
-        { productId: 'p-pan', quantity: 2, product: { name: 'Paneer Momos', isActive: true } },
+        {
+          productId: 'p-momo',
+          quantity: 3,
+          product: { name: 'Veg Momos', isActive: true },
+        },
+        {
+          productId: 'p-pan',
+          quantity: 2,
+          product: { name: 'Paneer Momos', isActive: true },
+        },
       ],
     };
     expect(buildComboLine(platter, 2).depletion).toEqual([
@@ -48,14 +64,22 @@ describe('buildComboLine', () => {
       ...combo,
       items: [
         combo.items[0],
-        { productId: 'p-coke', quantity: 1, product: { name: 'Cold Drink', isActive: false } },
+        {
+          productId: 'p-coke',
+          quantity: 1,
+          product: { name: 'Cold Drink', isActive: false },
+        },
       ],
     };
     expect(() => buildComboLine(broken, 1)).toThrow(BadRequestException);
-    expect(() => buildComboLine(broken, 1)).toThrow('contains an unavailable item');
+    expect(() => buildComboLine(broken, 1)).toThrow(
+      'contains an unavailable item',
+    );
   });
 
   it('refuses an empty combo', () => {
-    expect(() => buildComboLine({ ...combo, items: [] }, 1)).toThrow('has no items');
+    expect(() => buildComboLine({ ...combo, items: [] }, 1)).toThrow(
+      'has no items',
+    );
   });
 });

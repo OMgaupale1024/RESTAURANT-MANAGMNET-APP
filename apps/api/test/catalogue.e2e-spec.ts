@@ -192,8 +192,9 @@ describe('Catalogue management (e2e)', () => {
         .get('/api/v1/products')
         .set(auth(t.token))
         .expect(200);
-      expect(list.body.find((x: { id: string }) => x.id === p.body.id))
-        .toMatchObject({ isPopular: true });
+      expect(
+        list.body.find((x: { id: string }) => x.id === p.body.id),
+      ).toMatchObject({ isPopular: true });
 
       const cleared = await api()
         .patch(`/api/v1/products/${p.body.id}`)

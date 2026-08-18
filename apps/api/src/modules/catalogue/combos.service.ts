@@ -77,10 +77,16 @@ export class CombosService {
             name: dto.name,
             description: dto.description ?? null,
             priceMinor: dto.priceMinor,
-            ...(dto.taxRateBp !== undefined ? { taxRateBp: dto.taxRateBp } : {}),
+            ...(dto.taxRateBp !== undefined
+              ? { taxRateBp: dto.taxRateBp }
+              : {}),
             ...(dto.categoryId ? { categoryId: dto.categoryId } : {}),
-            ...(dto.isPopular !== undefined ? { isPopular: dto.isPopular } : {}),
-            ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+            ...(dto.isPopular !== undefined
+              ? { isPopular: dto.isPopular }
+              : {}),
+            ...(dto.sortOrder !== undefined
+              ? { sortOrder: dto.sortOrder }
+              : {}),
             items: {
               create: dto.items.map((i, idx) => ({
                 restaurantId: ctx.restaurantId,
@@ -139,12 +145,18 @@ export class CombosService {
             ...(dto.priceMinor !== undefined
               ? { priceMinor: dto.priceMinor }
               : {}),
-            ...(dto.taxRateBp !== undefined ? { taxRateBp: dto.taxRateBp } : {}),
+            ...(dto.taxRateBp !== undefined
+              ? { taxRateBp: dto.taxRateBp }
+              : {}),
             ...(dto.categoryId !== undefined
               ? { categoryId: dto.categoryId }
               : {}),
-            ...(dto.isPopular !== undefined ? { isPopular: dto.isPopular } : {}),
-            ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+            ...(dto.isPopular !== undefined
+              ? { isPopular: dto.isPopular }
+              : {}),
+            ...(dto.sortOrder !== undefined
+              ? { sortOrder: dto.sortOrder }
+              : {}),
             ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
           },
           select: COMBO_SELECT,
@@ -229,9 +241,15 @@ export class CombosService {
             restaurantId: ctx.restaurantId,
             triggerProductId: dto.triggerProductId,
             suggestedProductId: dto.suggestedProductId,
-            ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+            ...(dto.sortOrder !== undefined
+              ? { sortOrder: dto.sortOrder }
+              : {}),
           },
-          select: { id: true, triggerProductId: true, suggestedProductId: true },
+          select: {
+            id: true,
+            triggerProductId: true,
+            suggestedProductId: true,
+          },
         });
       });
     } catch (e) {

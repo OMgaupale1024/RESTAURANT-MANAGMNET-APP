@@ -148,11 +148,14 @@ describe('Combos & upsells (e2e)', () => {
 
     expect(combo.priceMinor).toBe(8500);
     expect(combo.available).toBe(true);
-    expect(combo.items.map((i: { productId: string }) => i.productId).sort()).toEqual(
-      [momo.id, coke.id].sort(),
-    );
+    expect(
+      combo.items.map((i: { productId: string }) => i.productId).sort(),
+    ).toEqual([momo.id, coke.id].sort());
 
-    const list = await api().get('/api/v1/combos').set(auth(t.token)).expect(200);
+    const list = await api()
+      .get('/api/v1/combos')
+      .set(auth(t.token))
+      .expect(200);
     expect(list.body).toHaveLength(1);
     expect(list.body[0].id).toBe(combo.id);
   });
@@ -162,7 +165,9 @@ describe('Combos & upsells (e2e)', () => {
     const { momo, coke, combo } = await seedVegCombo(t.token);
 
     const order = (
-      await placeOrder(t.token, [{ comboId: combo.id, quantity: 2 }]).expect(201)
+      await placeOrder(t.token, [{ comboId: combo.id, quantity: 2 }]).expect(
+        201,
+      )
     ).body;
 
     const line = order.items[0];
@@ -184,7 +189,9 @@ describe('Combos & upsells (e2e)', () => {
     const { combo } = await seedVegCombo(t.token);
 
     const order = (
-      await placeOrder(t.token, [{ comboId: combo.id, quantity: 1 }]).expect(201)
+      await placeOrder(t.token, [{ comboId: combo.id, quantity: 1 }]).expect(
+        201,
+      )
     ).body;
     expect(order.items[0].unitPriceMinor).toBe(8500);
 
@@ -275,7 +282,10 @@ describe('Combos & upsells (e2e)', () => {
     const seedA = await seedVegCombo(a.token);
 
     // B does not see A's combo.
-    const listB = await api().get('/api/v1/combos').set(auth(b.token)).expect(200);
+    const listB = await api()
+      .get('/api/v1/combos')
+      .set(auth(b.token))
+      .expect(200);
     expect(listB.body).toHaveLength(0);
     // B cannot edit or delete A's combo (not found under B's tenant).
     await api()
@@ -284,17 +294,19 @@ describe('Combos & upsells (e2e)', () => {
       .send({ name: 'Hijacked' })
       .expect(404);
     // B cannot order A's combo (simply unavailable for B).
-    await placeOrder(b.token, [{ comboId: seedA.combo.id, quantity: 1 }]).expect(
-      400,
-    );
+    await placeOrder(b.token, [
+      { comboId: seedA.combo.id, quantity: 1 },
+    ]).expect(400);
   });
 
   it('configures upsell rules and refuses self, loop and duplicate', async () => {
     const t = await newTenant('Combo Upsell');
-    const momo = (await addProduct(t.token, `Momo ${Math.random()}`, 6000).expect(201))
-      .body;
-    const coke = (await addProduct(t.token, `Coke ${Math.random()}`, 3000).expect(201))
-      .body;
+    const momo = (
+      await addProduct(t.token, `Momo ${Math.random()}`, 6000).expect(201)
+    ).body;
+    const coke = (
+      await addProduct(t.token, `Coke ${Math.random()}`, 3000).expect(201)
+    ).body;
 
     // A product cannot upsell itself.
     await api()
