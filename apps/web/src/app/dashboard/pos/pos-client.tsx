@@ -98,6 +98,15 @@ type CartLine = {
 type LineSpec = Pick<CartLine, 'product' | 'modifiers' | 'combo'>;
 type LastAction = { label: string; productId: string; at: number };
 
+/** The attached customer's loyalty standing needed to redeem at the till (M13). */
+type RedeemInfo = {
+  balance: number;
+  enabled: boolean;
+  redeemPoints: number;
+  redeemAmountMinor: number;
+  availableReward: { points: number; discountMinor: number } | null;
+};
+
 function lineName(l: LineSpec): string {
   return l.combo ? l.combo.name : l.product!.name;
 }
@@ -191,11 +200,13 @@ export function PosClient() {
   const [coupon, setCoupon] = useState('');
   const [discount, setDiscount] = useState('');
   const [redeem, setRedeem] = useState('');
-  // The attached customer's redeemable balance, keyed by customer id so a stale
-  // fetch (or a detached customer) never enables redemption for the wrong one.
-  const [customerBalance, setCustomerBalance] = useState<{
+  // The attached customer's loyalty standing for redemption, keyed by customer id
+  // so a stale fetch (or a detached customer) never enables redemption for the
+  // wrong one. Carries the configured reward (M13) so the cashier can apply it in
+  // one tap without a second request.
+  const [customerLoyalty, setCustomerLoyalty] = useState<{
     customerId: string;
-    balance: number;
+    info: RedeemInfo;
   } | null>(null);
   const [note, setNote] = useState('');
   const [method, setMethod] = useState<MethodKey>('CASH');
@@ -661,7 +672,8 @@ export function PosClient() {
       ? successLoyalty.summary
       : null;
 
-  // Fetch the attached customer's balance so the cashier can redeem points.
+  // Fetch the attached customer's loyalty standing so the cashier can redeem the
+  // configured reward. One summary call carries balance + reward + rates (§32).
   // Best-effort: a guest or a user without loyalty.read simply gets no control.
   useEffect(() => {
     if (!accessToken || !customer) return;
@@ -669,7 +681,18 @@ export function PosClient() {
     let cancelled = false;
     getLoyaltySummary(accessToken, onNewToken, customerId)
       .then((s) => {
-        if (!cancelled) setCustomerBalance({ customerId, balance: s.balancePoints });
+        if (!cancelled) {
+          setCustomerLoyalty({
+            customerId,
+            info: {
+              balance: s.balancePoints,
+              enabled: s.enabled,
+              redeemPoints: s.redeemPoints,
+              redeemAmountMinor: s.redeemAmountMinor,
+              availableReward: s.availableReward,
+            },
+          });
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -677,11 +700,11 @@ export function PosClient() {
     };
   }, [accessToken, customer, onNewToken]);
 
-  // Only the attached customer's balance — a stale fetch or a detached customer
+  // Only the attached customer's standing — a stale fetch or a detached customer
   // yields null, which hides the redemption control.
-  const redeemableBalance =
-    customer && customerBalance?.customerId === customer.id
-      ? customerBalance.balance
+  const redeemInfo =
+    customer && customerLoyalty?.customerId === customer.id
+      ? customerLoyalty.info
       : null;
 
   /** One split leg. The server caps the sum at the order total. */
@@ -806,7 +829,7 @@ export function PosClient() {
       setDiscount={setDiscount}
       redeem={redeem}
       setRedeem={setRedeem}
-      customerBalance={redeemableBalance}
+      redeemInfo={redeemInfo}
       note={note}
       setNote={setNote}
       method={method}
@@ -1284,7 +1307,7 @@ function CartPanel({
   setDiscount,
   redeem,
   setRedeem,
-  customerBalance,
+  redeemInfo,
   note,
   setNote,
   method,
@@ -1319,8 +1342,8 @@ function CartPanel({
   setDiscount: (v: string) => void;
   redeem: string;
   setRedeem: (v: string) => void;
-  /** The attached customer's redeemable points, or null (guest / no loyalty.read). */
-  customerBalance: number | null;
+  /** The attached customer's loyalty standing, or null (guest / no loyalty.read). */
+  redeemInfo: RedeemInfo | null;
   note: string;
   setNote: (v: string) => void;
   method: MethodKey;
@@ -1350,10 +1373,13 @@ function CartPanel({
   // Manual-discount preview (server recomputes and caps it authoritatively).
   const manualMinor = discount.trim() ? (parseRupeesToMinor(discount) ?? 0) : 0;
   const clampedDiscount = Math.min(manualMinor, subtotal);
-  // Points redeemed here fund a ₹1/point discount, capped at the subtotal — a
-  // preview only; the server caps and computes it authoritatively at charge.
+  // Points redeemed here fund a discount at the tenant's configured rate (M13) —
+  // a preview only; the server prices and validates it authoritatively at charge.
   const redeemPts = redeem.trim() ? Math.max(0, parseInt(redeem.trim(), 10) || 0) : 0;
-  const redeemDiscount = Math.min(redeemPts * 100, subtotal);
+  const redeemDiscount =
+    redeemInfo && redeemPts > 0
+      ? Math.floor(redeemPts / redeemInfo.redeemPoints) * redeemInfo.redeemAmountMinor
+      : 0;
   const previewDiscount = redeemPts > 0 ? redeemDiscount : clampedDiscount;
   const total = useCountUp(Math.max(0, subtotal + tax - previewDiscount), 300);
 
@@ -1666,26 +1692,50 @@ function CartPanel({
             />
           </div>
 
-          {/* Redemption — only when a customer with points is attached. Spends
-              points as a ₹1/point discount; exclusive with coupon/manual, and
-              the server caps it at the balance and the subtotal. */}
-          {customerBalance != null && customerBalance > 0 && (
-            <div className="mt-2 flex items-center gap-2">
-              <Input
-                inputMode="numeric"
-                value={redeem}
-                onChange={(e) => setRedeem(e.target.value.replace(/[^0-9]/g, ''))}
-                disabled={coupon.trim() !== '' || discount.trim() !== ''}
-                placeholder="Redeem pts"
-                aria-label="Redeem loyalty points"
-                className="h-8 w-28 text-[12px]"
-              />
-              <span className="text-[11px] text-ink-3">
-                {redeemPts > 0
-                  ? `−${formatMinor(redeemDiscount)} · ${customerBalance.toLocaleString('en-IN')} pts available`
-                  : `${customerBalance.toLocaleString('en-IN')} pts available · ₹1 each`}
-              </span>
-            </div>
+          {/* Reward — one tap applies the configured redemption (M13); exclusive
+              with coupon/manual, and the server prices and validates it. Shown
+              only when loyalty is on and this customer can afford the reward. */}
+          {redeemInfo?.enabled && redeemInfo.availableReward && (
+            (() => {
+              const reward = redeemInfo.availableReward;
+              const applied = redeemPts > 0;
+              const tooSmall = reward.discountMinor > subtotal;
+              const blocked = coupon.trim() !== '' || discount.trim() !== '';
+              return (
+                <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-line bg-surface-2 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-[12px] font-medium">
+                      {applied ? 'Reward applied' : 'Reward available'}
+                    </p>
+                    <p className="text-[11px] text-ink-3">
+                      {applied
+                        ? `−${formatMinor(redeemDiscount)} · ${reward.points} pts`
+                        : tooSmall
+                          ? `Order too small for this reward`
+                          : `${reward.points} pts → ${formatMinor(reward.discountMinor)} off · ${redeemInfo.balance.toLocaleString('en-IN')} pts`}
+                    </p>
+                  </div>
+                  {applied ? (
+                    <button
+                      type="button"
+                      onClick={() => setRedeem('')}
+                      className="shrink-0 rounded-md border border-line-2 bg-surface px-2.5 py-1 text-[12px] font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                    >
+                      Remove
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={blocked || tooSmall}
+                      onClick={() => setRedeem(String(reward.points))}
+                      className="shrink-0 rounded-md bg-brand px-2.5 py-1 text-[12px] font-semibold text-brand-ink hover:brightness-95 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                    >
+                      Apply {formatMinor(reward.discountMinor)}
+                    </button>
+                  )}
+                </div>
+              );
+            })()
           )}
 
           <div

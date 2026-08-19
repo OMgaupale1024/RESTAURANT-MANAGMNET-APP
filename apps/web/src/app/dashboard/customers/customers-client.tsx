@@ -498,9 +498,32 @@ function CustomerSheet({
         <section>
           <h3 className="text-label mb-2">Loyalty</h3>
           <dl className="grid grid-cols-2 gap-3">
-            <SheetStat label="Points balance" value={String(loyalty.balancePoints)} />
+            <SheetStat label="Points balance" value={loyalty.balancePoints.toLocaleString('en-IN')} />
             <SheetStat label="Tier" value={loyalty.tier.label} />
+            <SheetStat
+              label="Lifetime earned"
+              value={loyalty.lifetimeEarnedPoints.toLocaleString('en-IN')}
+            />
+            <SheetStat
+              label="Lifetime redeemed"
+              value={loyalty.redeemedPoints.toLocaleString('en-IN')}
+            />
           </dl>
+          {/* The reward this balance can claim now, in plain terms (§21). */}
+          {loyalty.enabled && loyalty.availableReward && (
+            <p className="mt-2 rounded-lg bg-surface-2 px-3 py-2 text-[13px]">
+              Reward available:{' '}
+              <span className="font-medium">
+                {loyalty.availableReward.points} pts →{' '}
+                {formatMinor(loyalty.availableReward.discountMinor)} off
+              </span>
+            </p>
+          )}
+          {!loyalty.enabled && (
+            <p className="mt-2 text-[12px] text-ink-3">
+              Loyalty is turned off. These points are preserved.
+            </p>
+          )}
           {loyalty.nextTier && (
             <p className="mt-2 text-[12px] text-ink-3">
               {loyalty.nextTier.pointsToGo} points to {loyalty.nextTier.label}

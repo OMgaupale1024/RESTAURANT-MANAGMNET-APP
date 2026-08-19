@@ -1018,6 +1018,12 @@ model LoyaltyLedger {
   /// Client-supplied so a retried redeem/adjust cannot double-apply. Unique per
   /// tenant; NULLs do not collide. Same contract as Payment.idempotencyKey.
   idempotencyKey String?          @map("idempotency_key")
+  /// The loyalty rule in force when this row was written, for EARN and REDEEM —
+  /// e.g. {earnAmountMinor, earnPoints} or {redeemPoints, redeemAmountMinor}.
+  /// Immutable with the row (append-only), so a transaction stays explainable
+  /// under YESTERDAY's rules even after the owner changes the settings (M13
+  /// §17). Null for adjustments/reversals, which reference the original.
+  configSnapshot Json?            @map("config_snapshot")
   createdAt      DateTime         @default(now()) @map("created_at")
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -1026,6 +1032,41 @@ model LoyaltyLedger {
   @@index([restaurantId, customerId, createdAt])
   @@index([orderId])
   @@map("loyalty_ledger")
+}
+
+/// Per-tenant loyalty rules — the configurable earn/redeem ratios, thresholds and
+/// the master on/off switch (M13). Exactly one row per restaurant; absence means
+/// "never configured", and the service falls back to DEFAULT_LOYALTY_CONFIG (the
+/// legacy hardcoded rates), so loyalty behaves identically until an owner edits
+/// it. Turning loyalty off stops earning and redeeming but NEVER touches the
+/// ledger — existing balances and history are preserved. Mutable (owner-editable);
+/// every change is audited via a loyalty.settings_updated event, and each ledger
+/// row keeps its own configSnapshot, so history stays explainable independently.
+model LoyaltySettings {
+  id           String  @id @default(uuid(7)) @db.Uuid
+  restaurantId String  @unique @map("restaurant_id") @db.Uuid
+  isEnabled    Boolean @default(true) @map("is_enabled")
+
+  /// Spend (paise) that earns `earnPoints`. e.g. 10000 (₹100) → 10 points.
+  earnAmountMinor Int @default(1000) @map("earn_amount_minor")
+  earnPoints      Int @default(1) @map("earn_points")
+
+  /// `redeemPoints` are worth `redeemAmountMinor` off. e.g. 100 pts → 5000 (₹50).
+  redeemPoints      Int @default(1) @map("redeem_points")
+  redeemAmountMinor Int @default(100) @map("redeem_amount_minor")
+
+  /// Fewest points a single redemption may spend (0 = no floor).
+  minimumRedeemPoints Int @default(0) @map("minimum_redeem_points")
+  /// Most points one order may redeem, or null for no ceiling.
+  maximumRedeemPointsPerOrder Int? @map("maximum_redeem_points_per_order")
+
+  /// Who last saved these rules. NO FK — the record outlives a staff account,
+  /// same reasoning as loyalty_ledger.actor_user_id.
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("loyalty_settings")
 }
 
 // ---------------------------------------------------------------------------

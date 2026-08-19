@@ -892,6 +892,13 @@ export type LoyaltySummary = {
   redeemedPoints: number;
   tier: { key: string; label: string; minPoints: number };
   nextTier: { key: string; label: string; minPoints: number; pointsToGo: number } | null;
+  /** Whether the tenant's loyalty program is currently on (M13). */
+  enabled: boolean;
+  /** The redeem rate, so the POS can explain a reward without a second call. */
+  redeemPoints: number;
+  redeemAmountMinor: number;
+  /** The smallest reward this balance can claim now, or null (off/too few). */
+  availableReward: { points: number; discountMinor: number } | null;
   /** Most recent ledger entries — the points history. */
   recentEntries: Array<{
     id: string;
@@ -899,6 +906,8 @@ export type LoyaltySummary = {
     points: number;
     orderId: string | null;
     reason: string | null;
+    /** The rule in force when the row was written (M13 historical integrity). */
+    configSnapshot: Record<string, number> | null;
     createdAt: string;
   }>;
 };
@@ -906,6 +915,30 @@ export type LoyaltySummary = {
 /** Needs loyalty.read; callers treat a failure as "no loyalty" and omit it. */
 export const getLoyaltySummary = (token: string, onNewToken: Retry, customerId: string) =>
   authedFetch<LoyaltySummary>(`/customers/${customerId}/loyalty`, token, onNewToken);
+
+/** Tenant loyalty rules (M13). Needs loyalty.adjust (owner/manager). */
+export type LoyaltySettings = {
+  isEnabled: boolean;
+  earnAmountMinor: number;
+  earnPoints: number;
+  redeemPoints: number;
+  redeemAmountMinor: number;
+  minimumRedeemPoints: number;
+  maximumRedeemPointsPerOrder: number | null;
+};
+
+export const getLoyaltySettings = (token: string, onNewToken: Retry) =>
+  authedFetch<LoyaltySettings>('/loyalty/settings', token, onNewToken);
+
+export const updateLoyaltySettings = (
+  token: string,
+  onNewToken: Retry,
+  body: LoyaltySettings,
+) =>
+  authedFetch<LoyaltySettings>('/loyalty/settings', token, onNewToken, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 
 export const createCustomer = (
   token: string,

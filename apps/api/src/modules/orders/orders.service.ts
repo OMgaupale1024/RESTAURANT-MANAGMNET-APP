@@ -22,7 +22,8 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { MarketingService } from '../marketing/marketing.service';
 import { EventsService } from '../../events/events.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
-import { redemptionFor } from '../loyalty/loyalty.rules';
+import { redeemSnapshot, redemptionFor } from '../loyalty/loyalty.rules';
+import type { Prisma } from '../../generated/prisma/client';
 
 @Injectable()
 export class OrdersService {
@@ -311,7 +312,10 @@ export class OrdersService {
       // the discount. A bad/expired/exhausted code is rejected, not silently
       // ignored, so the cashier knows it did not apply.
       let discount = 0;
-      let redeemPoints = 0; // points actually spent, after the subtotal cap
+      let redeemPoints = 0; // points actually spent
+      // The redeem rate in force, frozen onto the REDEEM row for historical
+      // integrity (M13 §17) — set only when points are redeemed.
+      let redeemConfigSnapshot: Prisma.InputJsonValue | undefined;
       let couponRedemption: { couponId: string; discountMinor: number } | null =
         null;
       if (dto.couponCode) {
@@ -336,17 +340,19 @@ export class OrdersService {
         }
         discount = dto.manualDiscountMinor;
       } else if (dto.redeemPoints) {
-        // Points fund the discount at ₹1/point, capped at the subtotal. The
-        // debit itself happens after the order row exists (below), so the ledger
-        // entry carries the order id; the balance is enforced there under a lock.
-        const r = redemptionFor(dto.redeemPoints, subtotal);
-        if (r.discountMinor <= 0) {
-          throw new BadRequestException(
-            'The subtotal is too small to redeem points',
-          );
-        }
+        // Points fund the discount at the tenant's configured rate (M13), read
+        // inside this transaction so the price and the debit share one snapshot.
+        // The client sends only a point count — never a discount; the server
+        // prices it, enforces the rules (enabled, block size, min/max) and
+        // refuses an over-large redemption rather than silently capping it. The
+        // debit happens after the order row exists (below); the balance is
+        // enforced there under a lock.
+        const config = await this.loyalty.getConfig(db);
+        const r = redemptionFor(dto.redeemPoints, subtotal, config);
+        if (!r.ok) throw new BadRequestException(r.reason);
         discount = r.discountMinor;
         redeemPoints = r.points;
+        redeemConfigSnapshot = redeemSnapshot(config);
       }
 
       // total = subtotal - discount + tax. The DB CHECK enforces this exact
@@ -409,6 +415,7 @@ export class OrdersService {
           dto.customerId!,
           order.id,
           redeemPoints,
+          redeemConfigSnapshot,
         );
       }
 

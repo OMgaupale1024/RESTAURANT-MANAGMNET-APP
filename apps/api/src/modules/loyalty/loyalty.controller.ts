@@ -5,10 +5,15 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Put,
 } from '@nestjs/common';
 import { RequirePermissions } from '../../common/decorators/auth.decorators';
 import { LoyaltyService } from './loyalty.service';
-import { AdjustPointsDto, RedeemPointsDto } from './dto/loyalty.dto';
+import {
+  AdjustPointsDto,
+  RedeemPointsDto,
+  UpdateLoyaltySettingsDto,
+} from './dto/loyalty.dto';
 
 /**
  * The admin-safe loyalty surface. Reading a balance needs loyalty.read;
@@ -24,6 +29,21 @@ import { AdjustPointsDto, RedeemPointsDto } from './dto/loyalty.dto';
 @Controller()
 export class LoyaltyController {
   constructor(private readonly loyalty: LoyaltyService) {}
+
+  // Loyalty configuration: reuses loyalty.adjust — the manager-level,
+  // money-adjacent loyalty permission (OWNER + MANAGER, never CASHIER/KITCHEN),
+  // which is exactly who may set the program's rules.
+  @RequirePermissions('loyalty.adjust')
+  @Get('loyalty/settings')
+  getSettings() {
+    return this.loyalty.getSettings();
+  }
+
+  @RequirePermissions('loyalty.adjust')
+  @Put('loyalty/settings')
+  updateSettings(@Body() dto: UpdateLoyaltySettingsDto) {
+    return this.loyalty.updateSettings(dto);
+  }
 
   @RequirePermissions('loyalty.read')
   @Get('customers/:customerId/loyalty')

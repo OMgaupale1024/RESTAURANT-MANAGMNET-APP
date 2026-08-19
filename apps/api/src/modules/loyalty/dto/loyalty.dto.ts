@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsInt,
   IsOptional,
   IsPositive,
@@ -12,6 +13,8 @@ import {
 
 /** Points are whole numbers, always — same integer discipline as money. */
 const MAX_POINTS = 10_000_000;
+/** ₹10,000,000 in paise — the same ceiling money uses across the app. */
+const MAX_MINOR = 1_000_000_000;
 
 /**
  * Spend points. `points` is the positive amount to redeem; the service records
@@ -34,6 +37,49 @@ export class RedeemPointsDto {
   @IsString()
   @MaxLength(64)
   idempotencyKey?: string;
+}
+
+/**
+ * The configurable loyalty rules an owner/manager saves (M13). Bounds here are
+ * the trust boundary; LoyaltyService.validateConfig adds the cross-field sanity
+ * checks (sane ratios, multiples), and the DB CHECKs are the final backstop.
+ * Every field is required — the settings screen always sends the whole config —
+ * except the optional per-order maximum (null = no ceiling).
+ */
+export class UpdateLoyaltySettingsDto {
+  @IsBoolean()
+  isEnabled!: boolean;
+
+  @IsInt()
+  @IsPositive()
+  @Max(MAX_MINOR)
+  earnAmountMinor!: number;
+
+  @IsInt()
+  @IsPositive()
+  @Max(MAX_POINTS)
+  earnPoints!: number;
+
+  @IsInt()
+  @IsPositive()
+  @Max(MAX_POINTS)
+  redeemPoints!: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(MAX_MINOR)
+  redeemAmountMinor!: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(MAX_POINTS)
+  minimumRedeemPoints!: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(MAX_POINTS)
+  maximumRedeemPointsPerOrder?: number | null;
 }
 
 /**
