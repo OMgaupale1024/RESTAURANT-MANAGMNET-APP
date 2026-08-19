@@ -613,6 +613,7 @@ model Ingredient {
   /// Prep recipes that consume THIS item as a component.
   usedInPrep         PrepRecipeItem[]    @relation("PrepComponent")
   prepBatches        PrepBatch[]
+  stockCountLines    StockCountLine[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -824,6 +825,96 @@ model PrepBatch {
   @@unique([restaurantId, idempotencyKey])
   @@index([restaurantId, prepIngredientId, createdAt])
   @@map("prep_batches")
+}
+
+// ---------------------------------------------------------------------------
+// Stock counts — a physical count reconciled into the SAME ledger. A count
+// snapshots system stock when it starts, staff enter what they physically
+// counted, and on submit each non-zero discrepancy becomes ONE signed
+// ADJUSTMENT stock_movement — the movement type that already exists precisely
+// for "a stock count correcting reality". No second adjustment ledger, no
+// mutable stock counter: the count is the workflow around the existing
+// primitive. The adjustment reconciles against LIVE stock at submit time, so a
+// sale during the count is never double-counted (see stock-count.ts). Mutable
+// (OPEN → COMPLETED), so like purchase_orders it carries the tenant RLS policy
+// but no append-only trigger; the immutable record is the ADJUSTMENT rows it
+// writes plus the stockcount.* audit-log event.
+// ---------------------------------------------------------------------------
+
+enum StockCountStatus {
+  /// Started; staff are entering physical counts.
+  OPEN
+  /// Submitted and applied; the adjustments are written. Terminal, read-only.
+  COMPLETED
+  /// Abandoned before submit; wrote nothing. Terminal.
+  CANCELLED
+
+  @@map("stock_count_status")
+}
+
+/// Why a counted quantity differs from the system. Required for any non-zero
+/// discrepancy (§12). A controlled enum, not free text — the distinction
+/// between "wasted" and "miscounted" is exactly what a discrepancy report is for.
+enum StockCountReason {
+  WASTE_SPOILAGE
+  COUNTING_ERROR
+  DAMAGED
+  THEFT
+  UNRECORDED_USAGE
+  RECEIVING_DISCREPANCY
+  OTHER
+
+  @@map("stock_count_reason")
+}
+
+/// One physical-count session. Human-friendly `code` (SC-YYMMDD-XXXX) like a
+/// prep batch; the uuid is the key.
+model StockCount {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  restaurantId String           @map("restaurant_id") @db.Uuid
+  code         String
+  status       StockCountStatus @default(OPEN)
+  notes        String?
+  /// Who started / submitted it. No FK — same reasoning as audit_logs.userId:
+  /// the record outlives the staff account.
+  createdBy    String?          @map("created_by") @db.Uuid
+  submittedBy  String?          @map("submitted_by") @db.Uuid
+  startedAt    DateTime         @default(now()) @map("started_at")
+  completedAt  DateTime?        @map("completed_at")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  lines StockCountLine[]
+
+  @@unique([restaurantId, code])
+  @@index([restaurantId, status])
+  @@map("stock_counts")
+}
+
+/// One ingredient on a count. `systemQuantity` is the snapshot taken when the
+/// count started (for display and the record); `difference` is what was
+/// actually applied — counted minus LIVE stock at submit — which can differ from
+/// counted minus systemQuantity when stock moved during the count. Both are
+/// kept: the snapshot is what staff saw, the difference is what the ledger did.
+/// countedQuantity/difference/reason are null until the count is submitted (and
+/// stay null for a line left uncounted).
+model StockCountLine {
+  id              String            @id @default(uuid(7)) @db.Uuid
+  restaurantId    String            @map("restaurant_id") @db.Uuid
+  stockCountId    String            @map("stock_count_id") @db.Uuid
+  ingredientId    String            @map("ingredient_id") @db.Uuid
+  systemQuantity  Int               @map("system_quantity")
+  countedQuantity Int?              @map("counted_quantity")
+  difference      Int?
+  reason          StockCountReason?
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  stockCount StockCount @relation(fields: [stockCountId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([stockCountId, ingredientId])
+  @@index([restaurantId, stockCountId])
+  @@map("stock_count_lines")
 }
 
 // ---------------------------------------------------------------------------

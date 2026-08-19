@@ -1385,6 +1385,93 @@ export const wastePrepBatch = (
     { method: 'POST', body: JSON.stringify(body) },
   );
 
+// -- stock counts ----------------------------------------------------------
+
+export type StockCountStatus = 'OPEN' | 'COMPLETED' | 'CANCELLED';
+
+export type StockCountReason =
+  | 'WASTE_SPOILAGE'
+  | 'COUNTING_ERROR'
+  | 'DAMAGED'
+  | 'THEFT'
+  | 'UNRECORDED_USAGE'
+  | 'RECEIVING_DISCREPANCY'
+  | 'OTHER';
+
+export type StockCountRow = {
+  id: string;
+  code: string;
+  status: StockCountStatus;
+  notes: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  _count: { lines: number };
+};
+
+export type StockCountLine = {
+  id: string;
+  ingredientId: string;
+  name: string;
+  unit: StockUnit;
+  /** System stock snapshotted when the count started. */
+  systemQuantity: number;
+  /** Live stock now (may differ from the snapshot if stock moved since). */
+  currentStock: number;
+  countedQuantity: number | null;
+  /** The signed adjustment applied on submit (counted − live). Null while open. */
+  difference: number | null;
+  reason: StockCountReason | null;
+};
+
+export type StockCountDetail = {
+  id: string;
+  code: string;
+  status: StockCountStatus;
+  notes: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  lines: StockCountLine[];
+};
+
+export const listStockCounts = (token: string, onNewToken: Retry) =>
+  authedFetch<StockCountRow[]>('/stock-counts', token, onNewToken);
+
+export const getStockCount = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<StockCountDetail>(`/stock-counts/${id}`, token, onNewToken);
+
+export const startStockCount = (
+  token: string,
+  onNewToken: Retry,
+  body: { ingredientIds?: string[]; lowStockOnly?: boolean; notes?: string } = {},
+) =>
+  authedFetch<StockCountDetail>('/stock-counts', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const submitStockCount = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    lines: Array<{
+      ingredientId: string;
+      countedQuantity: number;
+      reason?: StockCountReason;
+    }>;
+    notes?: string;
+  },
+) =>
+  authedFetch<StockCountDetail>(`/stock-counts/${id}/submit`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const cancelStockCount = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<StockCountDetail>(`/stock-counts/${id}/cancel`, token, onNewToken, {
+    method: 'POST',
+  });
+
 export type StaffMember = {
   id: string;
   isActive: boolean;
