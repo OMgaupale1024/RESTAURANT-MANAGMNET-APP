@@ -33,7 +33,13 @@ export async function remainingByBatch(
   if (!batchIds.length) return new Map();
   const grouped = await db.stockMovement.groupBy({
     by: ['prepBatchId'],
-    where: { prepBatchId: { in: batchIds } },
+    // Exclude the raw-consumption leg: a batch carries both its raw draw
+    // (PREP_BATCH, negative, on the raw ingredients) and its prepared output
+    // (PREP_OUTPUT, positive) under the same prepBatchId. Remaining is the
+    // PREPARED stock only — output plus later CONSUMPTION/WASTE/ADJUSTMENT —
+    // so summing the raw leg in would wrongly net grams of paneer against
+    // grams of filling.
+    where: { prepBatchId: { in: batchIds }, type: { not: 'PREP_BATCH' } },
     _sum: { quantity: true },
   });
   return new Map(
