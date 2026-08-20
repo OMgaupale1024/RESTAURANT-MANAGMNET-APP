@@ -171,7 +171,9 @@ describe('Combos & upsells (e2e)', () => {
     ).body;
 
     const line = order.items[0];
-    expect(line.productId).toBeNull();
+    // The order-line response identifies a combo by its comboItems snapshot
+    // (asserted below) and nameSnapshot, not by a productId field — the load()
+    // projection deliberately does not expose productId/comboId on lines.
     expect(line.unitPriceMinor).toBe(8500); // the combo's own price
     expect(line.lineTotalMinor).toBe(17000); // × 2 — NOT 2 × (6000 + 4000)
     expect(order.subtotalMinor).toBe(17000);

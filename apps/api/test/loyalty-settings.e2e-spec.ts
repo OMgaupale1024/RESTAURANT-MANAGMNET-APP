@@ -33,6 +33,8 @@ function api() {
     post: (url: string) => request(server).post(url).set('X-Forwarded-For', ip),
     get: (url: string) => request(server).get(url).set('X-Forwarded-For', ip),
     put: (url: string) => request(server).put(url).set('X-Forwarded-For', ip),
+    patch: (url: string) =>
+      request(server).patch(url).set('X-Forwarded-For', ip),
   };
 }
 
@@ -323,11 +325,22 @@ describe('Configurable loyalty (e2e)', () => {
     const order = await t.paidOrder().expect(201);
     expect((await t.summary().expect(200)).body.balancePoints).toBe(10);
 
+    // A refund only applies to a completed/reversed order — walk it through the
+    // lifecycle first (OrdersService rejects a refund on a live order with 409).
+    for (const status of ['PREPARING', 'READY', 'COMPLETED']) {
+      await api()
+        .patch(`/api/v1/orders/${order.body.id}/status`)
+        .set(auth(t.token))
+        .send({ status })
+        .expect(200);
+    }
+
     await api()
       .post(`/api/v1/orders/${order.body.id}/refunds`)
       .set(auth(t.token))
       .send({
         idempotencyKey: randomUUID(),
+        method: 'CASH',
         amountMinor: order.body.totalMinor,
         reason: 'test',
       })

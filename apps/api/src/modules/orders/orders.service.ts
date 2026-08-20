@@ -290,7 +290,7 @@ export class OrdersService {
         // Round half-up at the line, matching how a printed receipt reads.
         const tax = Math.round((lineTotal * p.taxRateBp) / 10_000);
         return {
-          productId: p.id as string | null,
+          productId: p.id,
           nameSnapshot: p.name,
           unitPriceMinor: unitPrice,
           quantity: item.quantity,

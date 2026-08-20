@@ -92,10 +92,10 @@ async function seedRaw(token: string, name: string, stock: number) {
     await api()
       .post('/api/v1/ingredients')
       .set(auth(token))
-      .send({ name: `${name} ${Math.random()}` })
+      // unit is required by CreateIngredientDto — it has no default.
+      .send({ name: `${name} ${Math.random()}`, unit: 'GRAM' })
       .expect(201)
   ).body;
-  // ingredients default to GRAM.
   if (stock > 0) {
     await api()
       .post(`/api/v1/ingredients/${ing.id}/movements`)
@@ -190,7 +190,7 @@ describe('Prep inventory (e2e)', () => {
   });
 
   afterAll(async () => {
-    for (const t of ['orders', 'stock_movements']) {
+    for (const t of ['orders', 'order_events', 'stock_movements']) {
       await owner.$executeRawUnsafe(`ALTER TABLE ${t} DISABLE TRIGGER USER`);
     }
     try {
@@ -222,7 +222,7 @@ describe('Prep inventory (e2e)', () => {
       await owner.order.deleteMany({ where: { restaurantId: { in: rids } } });
       await owner.product.deleteMany({ where: { restaurantId: { in: rids } } });
     } finally {
-      for (const t of ['orders', 'stock_movements']) {
+      for (const t of ['orders', 'order_events', 'stock_movements']) {
         await owner.$executeRawUnsafe(`ALTER TABLE ${t} ENABLE TRIGGER USER`);
       }
     }
