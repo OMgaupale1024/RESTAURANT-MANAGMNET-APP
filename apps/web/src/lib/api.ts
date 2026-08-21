@@ -688,6 +688,89 @@ export const reorderCategories = (token: string, onNewToken: Retry, ids: string[
     body: JSON.stringify({ ids }),
   });
 
+/* --------------------------------------------------- menu import (AI scanner) */
+
+export type MatchKind = 'new' | 'duplicate' | 'price_change';
+export type ImportAction = 'create' | 'update' | 'skip';
+
+/** One reviewed item. Prices are already paise; match/action drive the import. */
+export type ReviewItem = {
+  id: string;
+  name: string;
+  priceMinor: number | null;
+  description?: string | null;
+  quantity?: string | null;
+  variant?: string | null;
+  veg?: boolean | null;
+  spicy?: boolean | null;
+  confidence: number;
+  action: ImportAction;
+  match: { kind: MatchKind; productId?: string; existingPriceMinor?: number };
+};
+export type ReviewCategory = { name: string; items: ReviewItem[] };
+export type ReviewMenu = { categories: ReviewCategory[] };
+
+export type MenuImportStatus =
+  | 'UPLOADED'
+  | 'PROCESSING'
+  | 'REVIEW_REQUIRED'
+  | 'APPROVED'
+  | 'IMPORTED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type MenuImportSession = {
+  id: string;
+  status: MenuImportStatus;
+  pageCount: number;
+  result: ReviewMenu | null;
+  error: string | null;
+  importedAt: string | null;
+  createdAt: string;
+};
+
+export type ImportResult = {
+  session: MenuImportSession;
+  summary: { created: number; updated: number; skipped: number };
+};
+
+/** Send base64 data-URL images through the vision pipeline. */
+export const extractMenu = (token: string, onNewToken: Retry, images: string[]) =>
+  authedFetch<MenuImportSession>('/menu-import/extract', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ images }),
+  });
+
+export const getImportSession = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<MenuImportSession>(`/menu-import/${id}`, token, onNewToken);
+
+export const saveImportDraft = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  result: ReviewMenu,
+) =>
+  authedFetch<MenuImportSession>(`/menu-import/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify({ result }),
+  });
+
+export const importMenu = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  result: ReviewMenu,
+) =>
+  authedFetch<ImportResult>(`/menu-import/${id}/import`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ result }),
+  });
+
+export const cancelImport = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<MenuImportSession>(`/menu-import/${id}/cancel`, token, onNewToken, {
+    method: 'POST',
+  });
+
 export const createOrder = (
   token: string,
   onNewToken: Retry,

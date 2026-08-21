@@ -18,6 +18,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RestaurantsModule } from './modules/restaurants/restaurants.module';
 import { CatalogueModule } from './modules/catalogue/catalogue.module';
+import { MenuImportModule } from './modules/menu-import/menu-import.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
@@ -105,6 +106,7 @@ import { LoyaltyModule } from './modules/loyalty/loyalty.module';
     AuthModule,
     RestaurantsModule,
     CatalogueModule,
+    MenuImportModule,
     OrdersModule,
     CustomersModule,
     InventoryModule,

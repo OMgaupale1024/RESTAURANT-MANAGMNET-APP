@@ -63,6 +63,20 @@ const envSchema = z
     RESEND_API_KEY: z.string().min(1).optional(),
     // The verified sender, e.g. "OraOS <noreply@oraos.app>" or a bare address.
     MAIL_FROM: z.string().optional(),
+
+    // Menu scanner (OpenAI vision). Optional: with no key,
+    // MenuExtractionService falls back to a deterministic stub extractor, so
+    // local work and tests need no provider and spend nothing. Same pattern as
+    // RESEND_API_KEY above — a missing key degrades the feature, it never
+    // crashes the app.
+    MENU_AI_API_KEY: z.string().min(1).optional(),
+    // Vision model. Left optional so MenuExtractionService can default it per
+    // provider (gpt-4o, or gemini-2.5-flash when the base URL points at Gemini).
+    MENU_AI_MODEL: z.string().min(1).optional(),
+    // Optional OpenAI-COMPATIBLE base URL. Point it at Gemini's OpenAI endpoint
+    // to use Gemini instead of OpenAI — same SDK, no code change:
+    //   https://generativelanguage.googleapis.com/v1beta/openai/
+    MENU_AI_BASE_URL: z.string().url().optional(),
   })
   .superRefine((env, ctx) => {
     // Email config is validated in every environment (not just production): a

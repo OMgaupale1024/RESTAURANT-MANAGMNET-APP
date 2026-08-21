@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   ArrowDown,
   ArrowUp,
@@ -8,6 +9,7 @@ import {
   Coins,
   FolderPlus,
   Plus,
+  ScanLine,
   Search,
   SearchX,
   Tags,
@@ -75,6 +77,7 @@ export function MenuClient() {
   const { accessToken, setAccessToken } = useAuth();
   const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
   const toast = useToast();
+  const router = useRouter();
 
   const [products, setProducts] = useState<Product[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -180,9 +183,13 @@ export function MenuClient() {
             <Gift aria-hidden className="size-4" />
             Combos
           </Button>
-          <Button variant="primary" onClick={() => setCreating(true)}>
+          <Button variant="secondary" onClick={() => setCreating(true)}>
             <Plus aria-hidden className="size-4" />
             New item
+          </Button>
+          <Button variant="primary" onClick={() => router.push('/dashboard/menu/scan')}>
+            <ScanLine aria-hidden className="size-4" />
+            Scan menu
           </Button>
         </div>
       </div>

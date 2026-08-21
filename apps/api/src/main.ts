@@ -10,6 +10,9 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+    // Register the body parsers ourselves (below) so the menu scanner can post
+    // base64 images. Nest's default json parser caps at ~100kb.
+    bodyParser: false,
   });
   app.useLogger(app.get(Logger));
 
@@ -17,6 +20,14 @@ async function bootstrap() {
 
   app.use(helmet());
   app.use(cookieParser());
+
+  // Menu scans post a few downscaled base64 images as JSON, so the default
+  // ~100kb cap is far too small. Every scan route is authenticated, throttled,
+  // and gated behind product.manage, so a raised cap is bounded in practice.
+  // ponytail: one global 12mb cap; a per-route limit would need a second parser
+  // wired to the extract path — revisit only if a large-body abuse shows up.
+  app.useBodyParser('json', { limit: '12mb' });
+  app.useBodyParser('urlencoded', { extended: true, limit: '12mb' });
 
   // Behind a platform proxy (Render/Fly/Vercel), req.ip is the proxy's address
   // unless X-Forwarded-For is trusted. Rate limiting keyed on the wrong IP would

@@ -385,6 +385,64 @@ model Product {
 }
 
 // ---------------------------------------------------------------------------
+// Menu import — the AI scanner
+// ---------------------------------------------------------------------------
+
+enum MenuImportStatus {
+  /// Images received, session created.
+  UPLOADED
+  /// Extraction in flight.
+  PROCESSING
+  /// Extracted and annotated; waiting for the human to review and edit.
+  REVIEW_REQUIRED
+  /// Reviewed and confirmed, not yet written.
+  APPROVED
+  /// Written to the catalogue. Terminal.
+  IMPORTED
+  /// Extraction or a write failed. `error` says why; the session is re-runnable.
+  FAILED
+  /// Abandoned before import. Terminal.
+  CANCELLED
+
+  @@map("menu_import_status")
+}
+
+/// One AI menu-scan session, from photo to POS. Tenant-scoped and MUTABLE (the
+/// review draft changes as the user edits), so like purchase_orders it carries
+/// the tenant policy but no append-only trigger.
+///
+/// Deliberately stores NO source images: there is no blob store (the platform
+/// disk is ephemeral), and the recoverable state that matters is the extracted,
+/// reviewed `result` — a failed import re-runs from it without re-reading the
+/// photos, and re-extraction re-picks images that never left the device.
+///
+/// `result` is the working menu: the AI output, converted to paise and
+/// annotated against the existing catalogue (new / duplicate / price-change),
+/// then overwritten by the user's edits on Save as Draft. Import reads it,
+/// validates it again, and writes the selected items in one transaction — so a
+/// malformed model response can never reach the catalogue unchecked.
+model MenuImportSession {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  restaurantId String           @map("restaurant_id") @db.Uuid
+  status       MenuImportStatus @default(UPLOADED)
+  /// How many source images this session extracted from.
+  pageCount    Int              @map("page_count")
+  /// The working menu — see the model note. Null only before extraction lands.
+  result       Json?
+  /// Last failure reason, surfaced to the retry UI. Null when healthy.
+  error        String?
+  /// Who started it. NO FK — same reasoning as audit_logs.userId: the record
+  /// outlives the staff account.
+  createdBy    String?          @map("created_by") @db.Uuid
+  importedAt   DateTime?        @map("imported_at")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  @@index([restaurantId, createdAt])
+  @@map("menu_import_sessions")
+}
+
+// ---------------------------------------------------------------------------
 // Marketing
 // ---------------------------------------------------------------------------
 
