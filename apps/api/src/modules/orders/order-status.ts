@@ -14,7 +14,11 @@ import type { OrderStatus } from '../../generated/prisma/enums';
  */
 const TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   DRAFT: ['PLACED', 'CANCELLED'],
-  PLACED: ['PREPARING', 'CANCELLED', 'VOIDED'],
+  // COMPLETED is reachable directly from PLACED: the kitchen's one-tap "Handed
+  // Over" action skips the PREPARING/READY bookkeeping (the shopkeeper prepares
+  // the food physically, not on screen). The granular PLACED -> PREPARING ->
+  // READY -> COMPLETED path stays legal for the admin Orders screen.
+  PLACED: ['PREPARING', 'COMPLETED', 'CANCELLED', 'VOIDED'],
   PREPARING: ['READY', 'CANCELLED', 'VOIDED'],
   READY: ['COMPLETED', 'CANCELLED', 'VOIDED'],
   COMPLETED: [], // terminal — refunds are new rows, not a status change

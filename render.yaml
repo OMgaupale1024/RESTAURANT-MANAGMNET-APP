@@ -41,3 +41,10 @@ services:
         sync: false
       - key: MAIL_FROM           # required only when RESEND_API_KEY is set
         sync: false
+      # AI Menu Scanner (optional; unset ⇒ deterministic stub, no spend).
+      - key: MENU_AI_API_KEY     # Gemini (AI Studio) or OpenAI key
+        sync: false
+      - key: MENU_AI_MODEL       # e.g. gemini-2.5-flash, or gpt-4o
+        value: gemini-2.5-flash
+      - key: MENU_AI_BASE_URL    # Gemini's OpenAI-compatible endpoint (blank ⇒ OpenAI)
+        value: https://generativelanguage.googleapis.com/v1beta/openai/

@@ -7,12 +7,23 @@ import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import { EventsService } from '../../events/events.service';
 import { LoyaltyEntryType, OrderStatus } from '../../generated/prisma/enums';
 import {
+  DEFAULT_LOYALTY_CONFIG,
   STATUS_TYPES,
+  availableReward,
+  earnSnapshot,
   nextTierFor,
   pointsForOrder,
+  redeemSnapshot,
   tierFor,
+  validateConfig,
+  type LoyaltyConfig,
 } from './loyalty.rules';
-import type { AdjustPointsDto, RedeemPointsDto } from './dto/loyalty.dto';
+import type {
+  AdjustPointsDto,
+  RedeemPointsDto,
+  UpdateLoyaltySettingsDto,
+} from './dto/loyalty.dto';
+import type { Prisma } from '../../generated/prisma/client';
 
 /**
  * The loyalty ledger's one write path. Every method appends immutable rows and
@@ -43,6 +54,72 @@ export class LoyaltyService {
       await this.assertCustomer(db, customerId);
       return this.summarize(db, customerId);
     });
+  }
+
+  // ---------------------------------------------------------------- settings
+
+  /** The tenant's effective loyalty rules, for the owner/manager settings screen. */
+  getSettings() {
+    return this.prisma.tx((db) => this.getConfig(db));
+  }
+
+  /**
+   * Saves the loyalty rules (M13). One row per tenant, upserted. Validated in
+   * app code for a clear message, then by the DB CHECKs as a backstop. Turning
+   * loyalty off changes only this row — balances and history are never touched.
+   * Every save is audited.
+   */
+  async updateSettings(dto: UpdateLoyaltySettingsDto) {
+    const ctx = this.prisma.requireContext();
+    const config: LoyaltyConfig = {
+      isEnabled: dto.isEnabled,
+      earnAmountMinor: dto.earnAmountMinor,
+      earnPoints: dto.earnPoints,
+      redeemPoints: dto.redeemPoints,
+      redeemAmountMinor: dto.redeemAmountMinor,
+      minimumRedeemPoints: dto.minimumRedeemPoints,
+      maximumRedeemPointsPerOrder: dto.maximumRedeemPointsPerOrder ?? null,
+    };
+    const problem = validateConfig(config);
+    if (problem) throw new BadRequestException(problem);
+
+    return this.prisma.tx(async (db) => {
+      const data = { ...config, updatedBy: ctx.userId };
+      await db.loyaltySettings.upsert({
+        where: { restaurantId: ctx.restaurantId },
+        create: { restaurantId: ctx.restaurantId, ...data },
+        update: data,
+      });
+      await this.events.record(db, {
+        action: 'loyalty.settings_updated',
+        entityType: 'restaurant',
+        entityId: ctx.restaurantId,
+        metadata: { ...config },
+      });
+      return this.getConfig(db);
+    });
+  }
+
+  /**
+   * The effective config: the tenant's row, or DEFAULT_LOYALTY_CONFIG when it has
+   * never been configured (so loyalty behaves exactly as before M13). RLS scopes
+   * the lookup to this tenant. Public so OrdersService can price a redemption
+   * inside its OWN order transaction (the config read and the sale then see one
+   * consistent snapshot).
+   */
+  async getConfig(db: TxClient): Promise<LoyaltyConfig> {
+    const row = await db.loyaltySettings.findFirst({
+      select: {
+        isEnabled: true,
+        earnAmountMinor: true,
+        earnPoints: true,
+        redeemPoints: true,
+        redeemAmountMinor: true,
+        minimumRedeemPoints: true,
+        maximumRedeemPointsPerOrder: true,
+      },
+    });
+    return row ?? DEFAULT_LOYALTY_CONFIG;
   }
 
   // ------------------------------------------------------------------- earn
@@ -79,20 +156,26 @@ export class LoyaltyService {
       );
     }
     const customerId = order.customerId;
-    const points = pointsForOrder(order);
 
     try {
       return await this.prisma.tx(async (db) => {
+        // Rate read INSIDE the tx: points and the snapshot come from one config.
+        const config = await this.getConfig(db);
+        const points = pointsForOrder(order, config);
         const existing = await db.loyaltyLedger.findFirst({
           where: { orderId, type: LoyaltyEntryType.EARN },
           select: { id: true },
         });
-        if (existing || points <= 0) return this.summarize(db, customerId);
+        // Disabled loyalty earns nothing (§6); a zero-point order writes nothing.
+        if (existing || !config.isEnabled || points <= 0) {
+          return this.summarize(db, customerId);
+        }
         await this.append(db, {
           customerId,
           type: LoyaltyEntryType.EARN,
           points,
           orderId,
+          configSnapshot: earnSnapshot(config),
           action: 'loyalty.earned',
         });
         return this.summarize(db, customerId);
@@ -158,6 +241,7 @@ export class LoyaltyService {
     customerId: string,
     orderId: string,
     points: number,
+    configSnapshot?: Prisma.InputJsonValue,
   ): Promise<void> {
     const actorUserId = this.prisma.requireContext().userId ?? null;
     await this.lockCustomer(db, customerId);
@@ -171,6 +255,7 @@ export class LoyaltyService {
       points: -points,
       orderId,
       actorUserId,
+      configSnapshot,
       action: 'loyalty.redeemed',
     });
   }
@@ -227,6 +312,32 @@ export class LoyaltyService {
         const replay = await this.replay(db, customerId, dto.idempotencyKey);
         if (replay) return replay;
 
+        // Honour the configured rules (disabled / floor / block size / ceiling).
+        // Under the default config these are all no-ops, so a plain redeem still
+        // spends any amount the balance covers.
+        const config = await this.getConfig(db);
+        if (!config.isEnabled) {
+          throw new BadRequestException('Loyalty is turned off');
+        }
+        if (dto.points % config.redeemPoints !== 0) {
+          throw new BadRequestException(
+            `Redeem points in multiples of ${config.redeemPoints}`,
+          );
+        }
+        if (dto.points < config.minimumRedeemPoints) {
+          throw new BadRequestException(
+            `Redeem at least ${config.minimumRedeemPoints} points`,
+          );
+        }
+        if (
+          config.maximumRedeemPointsPerOrder !== null &&
+          dto.points > config.maximumRedeemPointsPerOrder
+        ) {
+          throw new BadRequestException(
+            `Redeem at most ${config.maximumRedeemPointsPerOrder} points`,
+          );
+        }
+
         const balance = await this.balance(db, customerId);
         if (dto.points > balance) {
           throw new BadRequestException('Not enough points to redeem');
@@ -238,6 +349,7 @@ export class LoyaltyService {
           reason: dto.reason ?? null,
           actorUserId,
           idempotencyKey: dto.idempotencyKey ?? null,
+          configSnapshot: redeemSnapshot(config),
           action: 'loyalty.redeemed',
         });
         return this.summarize(db, customerId);
@@ -336,6 +448,7 @@ export class LoyaltyService {
       reason?: string | null;
       actorUserId?: string | null;
       idempotencyKey?: string | null;
+      configSnapshot?: Prisma.InputJsonValue;
       action: string;
     },
   ) {
@@ -350,6 +463,9 @@ export class LoyaltyService {
         reason: e.reason ?? null,
         actorUserId: e.actorUserId ?? null,
         idempotencyKey: e.idempotencyKey ?? null,
+        ...(e.configSnapshot !== undefined
+          ? { configSnapshot: e.configSnapshot }
+          : {}),
       },
     });
     // The M0 event seam: loyalty is a tenant activity the Timeline/History will
@@ -392,10 +508,17 @@ export class LoyaltyService {
         points: true,
         orderId: true,
         reason: true,
+        // The rule in force when the row was written — kept so the customer's
+        // history stays explainable under the ORIGINAL rate (§17).
+        configSnapshot: true,
         createdAt: true,
       },
     });
 
+    // One config read means the POS gets balance + reward + enabled + the rates
+    // it needs to explain them, in this single summary call (§32) — no separate
+    // settings fetch on every cart change.
+    const config = await this.getConfig(db);
     const tier = tierFor(lifetimeEarnedPoints);
     return {
       customerId,
@@ -405,6 +528,11 @@ export class LoyaltyService {
       tier: { key: tier.key, label: tier.label, minPoints: tier.minPoints },
       nextTier: nextTierFor(lifetimeEarnedPoints),
       recentEntries,
+      enabled: config.isEnabled,
+      // The customer-facing slice of the rules — never the internal thresholds.
+      redeemPoints: config.redeemPoints,
+      redeemAmountMinor: config.redeemAmountMinor,
+      availableReward: availableReward(balancePoints, config),
     };
   }
 }

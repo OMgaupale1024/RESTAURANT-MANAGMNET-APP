@@ -7,9 +7,13 @@ import {
 import { PrismaService, type TxClient } from '../../prisma/prisma.service';
 import type {
   CreateCategoryDto,
+  CreateModifierGroupDto,
+  CreateModifierOptionDto,
   CreateProductDto,
   ReorderCategoriesDto,
   UpdateCategoryDto,
+  UpdateModifierGroupDto,
+  UpdateModifierOptionDto,
   UpdateProductDto,
 } from './dto/product.dto';
 
@@ -20,6 +24,47 @@ const PRODUCT_SELECT = {
   taxRateBp: true,
   categoryId: true,
   isActive: true,
+  isPopular: true,
+} as const;
+
+/** POS embed: only ACTIVE groups and ACTIVE options, in display order — the
+ *  till may only offer and price what is currently on the menu. Shipped with
+ *  the product list so selection is instant (no per-tap fetch). */
+const POS_MODIFIER_SELECT = {
+  where: { isActive: true },
+  orderBy: { sortOrder: 'asc' },
+  select: {
+    id: true,
+    name: true,
+    minSelect: true,
+    maxSelect: true,
+    sortOrder: true,
+    options: {
+      where: { isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      select: { id: true, name: true, priceAdjustMinor: true, sortOrder: true },
+    },
+  },
+} as const;
+
+/** Management view: every group and option incl. inactive, for editing. */
+const MODIFIER_GROUP_SELECT = {
+  id: true,
+  name: true,
+  minSelect: true,
+  maxSelect: true,
+  sortOrder: true,
+  isActive: true,
+  options: {
+    orderBy: { sortOrder: 'asc' },
+    select: {
+      id: true,
+      name: true,
+      priceAdjustMinor: true,
+      sortOrder: true,
+      isActive: true,
+    },
+  },
 } as const;
 
 @Injectable()
@@ -35,7 +80,7 @@ export class CatalogueService {
     return this.prisma.tx((db) =>
       db.product.findMany({
         where: includeInactive ? undefined : { isActive: true },
-        select: PRODUCT_SELECT,
+        select: { ...PRODUCT_SELECT, modifierGroups: POS_MODIFIER_SELECT },
         orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
       }),
     );
@@ -64,6 +109,9 @@ export class CatalogueService {
               ? { taxRateBp: dto.taxRateBp }
               : {}),
             ...(dto.categoryId ? { categoryId: dto.categoryId } : {}),
+            ...(dto.isPopular !== undefined
+              ? { isPopular: dto.isPopular }
+              : {}),
           },
           select: PRODUCT_SELECT,
         });
@@ -112,6 +160,9 @@ export class CatalogueService {
               ? { categoryId: dto.categoryId }
               : {}),
             ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+            ...(dto.isPopular !== undefined
+              ? { isPopular: dto.isPopular }
+              : {}),
           },
           select: PRODUCT_SELECT,
         });
@@ -124,6 +175,159 @@ export class CatalogueService {
         throw e;
       }
     });
+  }
+
+  // ----------------------------------------------------------- modifiers
+  // Definitions are tenant-scoped by RLS (a cross-tenant productId/groupId/id
+  // simply is not found → 404). Writes need product.manage (controller); the
+  // till only READS these, embedded in the product list.
+
+  /** Every group + option for a product incl. inactive — the management view. */
+  listProductModifierGroups(productId: string) {
+    return this.prisma.tx(async (db) => {
+      await this.assertProduct(db, productId);
+      return db.modifierGroup.findMany({
+        where: { productId },
+        orderBy: { sortOrder: 'asc' },
+        select: MODIFIER_GROUP_SELECT,
+      });
+    });
+  }
+
+  async createModifierGroup(productId: string, dto: CreateModifierGroupDto) {
+    const ctx = this.prisma.requireContext();
+    const minSelect = dto.minSelect ?? 0;
+    const maxSelect = dto.maxSelect ?? 1;
+    if (minSelect > maxSelect) {
+      throw new BadRequestException(
+        'Minimum selections cannot exceed the maximum',
+      );
+    }
+    return this.prisma.tx(async (db) => {
+      await this.assertProduct(db, productId);
+      return db.modifierGroup.create({
+        data: {
+          restaurantId: ctx.restaurantId,
+          productId,
+          name: dto.name,
+          minSelect,
+          maxSelect,
+          ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        },
+        select: MODIFIER_GROUP_SELECT,
+      });
+    });
+  }
+
+  async updateModifierGroup(id: string, dto: UpdateModifierGroupDto) {
+    return this.prisma.tx(async (db) => {
+      const existing = await db.modifierGroup.findFirst({
+        where: { id },
+        select: { minSelect: true, maxSelect: true },
+      });
+      if (!existing) throw new NotFoundException('Modifier group not found');
+      const minSelect = dto.minSelect ?? existing.minSelect;
+      const maxSelect = dto.maxSelect ?? existing.maxSelect;
+      if (minSelect > maxSelect) {
+        throw new BadRequestException(
+          'Minimum selections cannot exceed the maximum',
+        );
+      }
+      return db.modifierGroup.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.minSelect !== undefined ? { minSelect } : {}),
+          ...(dto.maxSelect !== undefined ? { maxSelect } : {}),
+          ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+          ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        },
+        select: MODIFIER_GROUP_SELECT,
+      });
+    });
+  }
+
+  /**
+   * Hard delete is safe: order_items snapshot the modifiers they were sold with
+   * (order_items.modifiers), so removing a definition never makes a historical
+   * order unreadable. Cascade removes the group's options.
+   */
+  async deleteModifierGroup(id: string) {
+    return this.prisma.tx(async (db) => {
+      const existing = await db.modifierGroup.findFirst({
+        where: { id },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundException('Modifier group not found');
+      await db.modifierGroup.delete({ where: { id } });
+      return { deleted: true };
+    });
+  }
+
+  async createModifierOption(groupId: string, dto: CreateModifierOptionDto) {
+    const ctx = this.prisma.requireContext();
+    return this.prisma.tx(async (db) => {
+      const group = await db.modifierGroup.findFirst({
+        where: { id: groupId },
+        select: { id: true },
+      });
+      if (!group) throw new NotFoundException('Modifier group not found');
+      return db.modifierOption.create({
+        data: {
+          restaurantId: ctx.restaurantId,
+          groupId,
+          name: dto.name,
+          ...(dto.priceAdjustMinor !== undefined
+            ? { priceAdjustMinor: dto.priceAdjustMinor }
+            : {}),
+          ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        },
+        select: MODIFIER_GROUP_SELECT.options.select,
+      });
+    });
+  }
+
+  async updateModifierOption(id: string, dto: UpdateModifierOptionDto) {
+    return this.prisma.tx(async (db) => {
+      const existing = await db.modifierOption.findFirst({
+        where: { id },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundException('Modifier option not found');
+      return db.modifierOption.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.priceAdjustMinor !== undefined
+            ? { priceAdjustMinor: dto.priceAdjustMinor }
+            : {}),
+          ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+          ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
+        },
+        select: MODIFIER_GROUP_SELECT.options.select,
+      });
+    });
+  }
+
+  async deleteModifierOption(id: string) {
+    return this.prisma.tx(async (db) => {
+      const existing = await db.modifierOption.findFirst({
+        where: { id },
+        select: { id: true },
+      });
+      if (!existing) throw new NotFoundException('Modifier option not found');
+      await db.modifierOption.delete({ where: { id } });
+      return { deleted: true };
+    });
+  }
+
+  /** 404 when the product does not exist in this tenant (RLS-scoped). */
+  private async assertProduct(db: TxClient, productId: string) {
+    const p = await db.product.findFirst({
+      where: { id: productId },
+      select: { id: true },
+    });
+    if (!p) throw new NotFoundException('Product not found');
   }
 
   async createCategory(dto: CreateCategoryDto) {

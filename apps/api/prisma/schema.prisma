@@ -11,7 +11,7 @@
 generator client {
   provider = "prisma-client"
   // Inside src/ so `nest build` compiles the generated client into dist.
-  output = "../src/generated/prisma"
+  output   = "../src/generated/prisma"
 
   // NestJS compiles to CommonJS; Prisma 7 emits ESM by default and the two do
   // not mix at runtime. Extensionless imports resolve under both ts-node and
@@ -37,27 +37,27 @@ datasource db {
 /// an unregistered stall can run without any of them; the receipt simply
 /// omits the lines it does not have. Never fabricated.
 model Restaurant {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  name      String
-  slug      String   @unique
-  address   String?
+  id            String   @id @default(uuid(7)) @db.Uuid
+  name          String
+  slug          String   @unique
+  address       String?
   /// Digits only, normalised on write (same discipline as customers.phone).
-  phone     String?
+  phone         String?
   /// 15-character GST registration, uppercased. Format-checked at the API.
-  gstin     String?
+  gstin         String?
   /// 14-digit FSSAI licence number.
-  fssai     String?
+  fssai         String?
   /// Free text above the items on a printed receipt (e.g. "Jai Ambe Momos").
-  receiptHeader String? @map("receipt_header")
+  receiptHeader String?  @map("receipt_header")
   /// Free text below the total (e.g. "Thank you! No refunds after billing.").
-  receiptFooter String? @map("receipt_footer")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  receiptFooter String?  @map("receipt_footer")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
-  branches    Branch[]
-  memberships Membership[]
-  orders      Order[]
-  auditLogs   AuditLog[]
+  branches     Branch[]
+  memberships  Membership[]
+  orders       Order[]
+  auditLogs    AuditLog[]
   staffInvites StaffInvite[]
 
   @@map("restaurants")
@@ -88,11 +88,11 @@ model Branch {
 /// Email is stored lowercase; a CHECK constraint enforces it, which makes the
 /// unique index effectively case-insensitive without the citext extension.
 model User {
-  id           String   @id @default(uuid(7)) @db.Uuid
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  name         String
-  isActive     Boolean  @default(true) @map("is_active")
+  id                String    @id @default(uuid(7)) @db.Uuid
+  email             String    @unique
+  passwordHash      String    @map("password_hash")
+  name              String
+  isActive          Boolean   @default(true) @map("is_active")
   /// Session epoch, set by "sign out everywhere". A refresh-token family that
   /// began before this instant can never be used again — which is what stops a
   /// refresh already in flight from minting a session that outlives the
@@ -101,14 +101,14 @@ model User {
   /// When the user proved they own this email. NULL = unverified. A fake
   /// email hurts only the registrant, so this is surfaced, not enforced at
   /// login — an unverified user still works, they just see a nudge.
-  emailVerifiedAt DateTime? @map("email_verified_at")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  emailVerifiedAt   DateTime? @map("email_verified_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  memberships              Membership[]
-  refreshTokens            RefreshToken[]
-  passwordResetTokens      PasswordResetToken[]
-  emailVerificationTokens  EmailVerificationToken[]
+  memberships             Membership[]
+  refreshTokens           RefreshToken[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
 
   @@map("users")
 }
@@ -340,6 +340,7 @@ model Category {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   products Product[]
+  combos   Combo[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId])
@@ -364,16 +365,81 @@ model Product {
   /// Basis points: 500 = 5%, the GST rate on restaurant food in India.
   taxRateBp    Int      @default(500) @map("tax_rate_bp")
   isActive     Boolean  @default(true) @map("is_active")
+  /// Owner-flagged "Popular" — surfaces the item in the POS Popular section and
+  /// on a badge. Purely a merchandising hint; no effect on price or stock.
+  isPopular    Boolean  @default(false) @map("is_popular")
   sortOrder    Int      @default(0) @map("sort_order")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  category    Category?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  recipeItems RecipeItem[]
+  category          Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  recipeItems       RecipeItem[]
+  modifierGroups    ModifierGroup[]
+  comboItems        ComboItem[]
+  upsellTriggers    UpsellRule[]    @relation("UpsellTrigger")
+  upsellSuggestions UpsellRule[]    @relation("UpsellSuggested")
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
   @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// Menu import — the AI scanner
+// ---------------------------------------------------------------------------
+
+enum MenuImportStatus {
+  /// Images received, session created.
+  UPLOADED
+  /// Extraction in flight.
+  PROCESSING
+  /// Extracted and annotated; waiting for the human to review and edit.
+  REVIEW_REQUIRED
+  /// Reviewed and confirmed, not yet written.
+  APPROVED
+  /// Written to the catalogue. Terminal.
+  IMPORTED
+  /// Extraction or a write failed. `error` says why; the session is re-runnable.
+  FAILED
+  /// Abandoned before import. Terminal.
+  CANCELLED
+
+  @@map("menu_import_status")
+}
+
+/// One AI menu-scan session, from photo to POS. Tenant-scoped and MUTABLE (the
+/// review draft changes as the user edits), so like purchase_orders it carries
+/// the tenant policy but no append-only trigger.
+///
+/// Deliberately stores NO source images: there is no blob store (the platform
+/// disk is ephemeral), and the recoverable state that matters is the extracted,
+/// reviewed `result` — a failed import re-runs from it without re-reading the
+/// photos, and re-extraction re-picks images that never left the device.
+///
+/// `result` is the working menu: the AI output, converted to paise and
+/// annotated against the existing catalogue (new / duplicate / price-change),
+/// then overwritten by the user's edits on Save as Draft. Import reads it,
+/// validates it again, and writes the selected items in one transaction — so a
+/// malformed model response can never reach the catalogue unchecked.
+model MenuImportSession {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  restaurantId String           @map("restaurant_id") @db.Uuid
+  status       MenuImportStatus @default(UPLOADED)
+  /// How many source images this session extracted from.
+  pageCount    Int              @map("page_count")
+  /// The working menu — see the model note. Null only before extraction lands.
+  result       Json?
+  /// Last failure reason, surfaced to the retry UI. Null when healthy.
+  error        String?
+  /// Who started it. NO FK — same reasoning as audit_logs.userId: the record
+  /// outlives the staff account.
+  createdBy    String?          @map("created_by") @db.Uuid
+  importedAt   DateTime?        @map("imported_at")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  @@index([restaurantId, createdAt])
+  @@map("menu_import_sessions")
 }
 
 // ---------------------------------------------------------------------------
@@ -393,26 +459,26 @@ enum CouponType {
 /// coupon never lets a client choose its own discount, and every redemption is
 /// recomputed from the coupon and the order, never trusted from input.
 model Coupon {
-  id           String     @id @default(uuid(7)) @db.Uuid
-  restaurantId String     @map("restaurant_id") @db.Uuid
+  id               String     @id @default(uuid(7)) @db.Uuid
+  restaurantId     String     @map("restaurant_id") @db.Uuid
   /// Uppercased, unique per tenant. Two restaurants may both have "DIWALI10".
-  code         String
-  type         CouponType
+  code             String
+  type             CouponType
   /// PERCENT only, basis points (1000 = 10%). Null for FIXED.
-  percentBp    Int?       @map("percent_bp")
+  percentBp        Int?       @map("percent_bp")
   /// FIXED only, paise. Null for PERCENT.
-  amountMinor  Int?       @map("amount_minor")
+  amountMinor      Int?       @map("amount_minor")
   /// Optional cap on a PERCENT discount, paise.
-  maxDiscountMinor Int?   @map("max_discount_minor")
+  maxDiscountMinor Int?       @map("max_discount_minor")
   /// The order subtotal must reach this for the coupon to apply. 0 = no minimum.
-  minSubtotalMinor Int    @default(0) @map("min_subtotal_minor")
+  minSubtotalMinor Int        @default(0) @map("min_subtotal_minor")
   /// Total times this code may be redeemed across the restaurant. Null = unlimited.
-  maxRedemptions Int?     @map("max_redemptions")
-  validFrom    DateTime?  @map("valid_from")
-  validUntil   DateTime?  @map("valid_until")
-  isActive     Boolean    @default(true) @map("is_active")
-  createdAt    DateTime   @default(now()) @map("created_at")
-  updatedAt    DateTime   @updatedAt @map("updated_at")
+  maxRedemptions   Int?       @map("max_redemptions")
+  validFrom        DateTime?  @map("valid_from")
+  validUntil       DateTime?  @map("valid_until")
+  isActive         Boolean    @default(true) @map("is_active")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
 
   redemptions CouponRedemption[]
 
@@ -538,6 +604,12 @@ enum StockMovementType {
   WASTE
   /// A stock count correcting reality. Signed.
   ADJUSTMENT
+  /// A raw component consumed to prepare a batch. Negative. Distinct from
+  /// CONSUMPTION (sold) so "used in the kitchen" and "sold to a customer" stay
+  /// separable in reports. Carries prepBatchId.
+  PREP_BATCH
+  /// Prepared stock produced by a batch. Positive. Carries prepBatchId.
+  PREP_OUTPUT
 
   @@map("stock_movement_type")
 }
@@ -565,20 +637,41 @@ model Supplier {
   @@map("suppliers")
 }
 
+/// A stock item. Raw by default (bought via purchases); a PREPARED one
+/// (isPrepared) is made in the kitchen from other ingredients via a prep recipe
+/// and stocked in batches — but it is still just a stock item on the SAME ledger
+/// (stock = SUM(movements)), so a product recipe can consume it exactly like any
+/// raw ingredient. That is why prep needs no second inventory: a prepared item
+/// IS an ingredient whose supply comes from PREP_OUTPUT instead of PURCHASE.
 model Ingredient {
-  id           String    @id @default(uuid(7)) @db.Uuid
-  restaurantId String    @map("restaurant_id") @db.Uuid
-  name         String
-  unit         StockUnit
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  restaurantId       String    @map("restaurant_id") @db.Uuid
+  name               String
+  unit               StockUnit
   /// Below this, the ingredient is flagged low. Null means "do not track".
-  reorderLevel Int?      @map("reorder_level")
-  isActive     Boolean   @default(true) @map("is_active")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  reorderLevel       Int?      @map("reorder_level")
+  isActive           Boolean   @default(true) @map("is_active")
+  /// True = made in the kitchen (has a prep recipe + batches), not purchased.
+  isPrepared         Boolean   @default(false) @map("is_prepared")
+  /// Prepared only: the output one standard batch of the prep recipe yields, in
+  /// THIS item's base unit. The recipe's component quantities are "per this
+  /// yield"; a batch scales both together. Null until a recipe is set.
+  prepBatchYield     Int?      @map("prep_batch_yield")
+  /// Prepared only: default shelf life; a new batch's expiry = preparedAt + this
+  /// when the user does not set one. Null = no default (batch expiry optional).
+  prepShelfLifeHours Int?      @map("prep_shelf_life_hours")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   movements          StockMovement[]
   recipeItems        RecipeItem[]
   purchaseOrderItems PurchaseOrderItem[]
+  /// The prep recipe of THIS item (only when isPrepared): its raw components.
+  prepRecipe         PrepRecipeItem[]    @relation("PrepItem")
+  /// Prep recipes that consume THIS item as a component.
+  usedInPrep         PrepRecipeItem[]    @relation("PrepComponent")
+  prepBatches        PrepBatch[]
+  stockCountLines    StockCountLine[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, isActive])
@@ -599,38 +692,45 @@ model Ingredient {
 ///
 /// quantity is signed: PURCHASE is positive, CONSUMPTION and WASTE negative.
 model StockMovement {
-  id           String            @id @default(uuid(7)) @db.Uuid
-  restaurantId String            @map("restaurant_id") @db.Uuid
-  ingredientId String            @map("ingredient_id") @db.Uuid
-  type         StockMovementType
+  id             String            @id @default(uuid(7)) @db.Uuid
+  restaurantId   String            @map("restaurant_id") @db.Uuid
+  ingredientId   String            @map("ingredient_id") @db.Uuid
+  type           StockMovementType
   /// Signed, in the ingredient's base unit.
-  quantity     Int
+  quantity       Int
   /// Set on CONSUMPTION so a depletion can be traced back to the sale that
   /// caused it. No FK: the movement must outlive any order tidy-up, same
   /// reasoning as order_items.productId.
-  orderId      String?           @map("order_id") @db.Uuid
+  orderId        String?           @map("order_id") @db.Uuid
   /// PURCHASE only: who it was bought from and what the whole receipt cost.
   /// The TOTAL, not a per-unit price — sub-paise unit costs (cheap staples by
   /// the gram) would lose precision. Weighted-average unit cost is
   /// SUM(total_cost) / SUM(quantity) over purchases. supplierId carries no FK
   /// (append-only ledger), same as actorUserId.
-  supplierId     String?         @map("supplier_id") @db.Uuid
-  totalCostMinor Int?            @map("total_cost_minor")
-  note         String?
-  actorUserId  String?           @map("actor_user_id") @db.Uuid
+  supplierId     String?           @map("supplier_id") @db.Uuid
+  totalCostMinor Int?              @map("total_cost_minor")
+  note           String?
+  actorUserId    String?           @map("actor_user_id") @db.Uuid
   /// Supplied by the client on a MANUAL movement (receive/waste/count) so a
   /// double-click or retry cannot apply the same movement twice. Same contract
   /// as Order.idempotencyKey. Unique per tenant; NULLs do not collide, so the
   /// server-written CONSUMPTION and reversal rows (which carry no key) are
   /// unaffected.
-  idempotencyKey String?         @map("idempotency_key")
-  createdAt    DateTime          @default(now()) @map("created_at")
+  idempotencyKey String?           @map("idempotency_key")
+  /// Set on the movements of a prep batch — the PREP_BATCH (raw out) and
+  /// PREP_OUTPUT (prep in) rows a batch writes, and the CONSUMPTION/WASTE rows
+  /// that later draw that batch down. A batch's remaining stock is
+  /// SUM(quantity) over its rows, which is how FEFO knows what is left. No FK:
+  /// the ledger outlives everything, same as orderId.
+  prepBatchId    String?           @map("prep_batch_id") @db.Uuid
+  createdAt      DateTime          @default(now()) @map("created_at")
 
   ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
 
   @@unique([restaurantId, idempotencyKey])
   @@index([restaurantId, ingredientId, createdAt])
   @@index([orderId])
+  @@index([prepBatchId])
   @@map("stock_movements")
 }
 
@@ -715,6 +815,164 @@ model PurchaseOrderItem {
   @@unique([purchaseOrderId, ingredientId])
   @@index([restaurantId])
   @@map("purchase_order_items")
+}
+
+// ---------------------------------------------------------------------------
+// Prep inventory — the kitchen makes a prepared ingredient (Veg Filling) from
+// raw ones. A PrepRecipeItem is one raw component of a prepared item (the prep
+// counterpart of RecipeItem). A PrepBatch is one preparation event: it consumes
+// the raw components (PREP_BATCH movements) and produces prepared stock
+// (PREP_OUTPUT), all on the existing ledger. Prepared stock is then consumed by
+// product sales exactly like any ingredient (FEFO across batches). No second
+// inventory, no separate stock engine — see the Ingredient note.
+// ---------------------------------------------------------------------------
+
+/// One raw component of a prepared ingredient's recipe. Quantity is per one
+/// standard batch (the prep item's prepBatchYield). Replace-wholesale, like a
+/// product recipe. A prep item may never list itself (DB CHECK).
+model PrepRecipeItem {
+  id                    String   @id @default(uuid(7)) @db.Uuid
+  restaurantId          String   @map("restaurant_id") @db.Uuid
+  prepIngredientId      String   @map("prep_ingredient_id") @db.Uuid
+  componentIngredientId String   @map("component_ingredient_id") @db.Uuid
+  /// Per one standard batch, in the COMPONENT's base unit (never converted).
+  quantity              Int
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  prepIngredient      Ingredient @relation("PrepItem", fields: [prepIngredientId], references: [id], onDelete: Cascade)
+  // Restrict: a raw ingredient used by a prep recipe cannot be hard-deleted out
+  // from under it. Ingredients are deactivated, never deleted, so this never
+  // bites in practice — same discipline as recipe_items.ingredientId.
+  componentIngredient Ingredient @relation("PrepComponent", fields: [componentIngredientId], references: [id], onDelete: Restrict)
+
+  @@unique([prepIngredientId, componentIngredientId], map: "prep_recipe_items_prep_component_key")
+  @@index([restaurantId, prepIngredientId])
+  @@map("prep_recipe_items")
+}
+
+/// One preparation event. Its raw consumption (PREP_BATCH) and prepared output
+/// (PREP_OUTPUT) are stock_movements tagged with this id; the batch row itself
+/// records the human context (code, expected vs actual yield, expiry, cost
+/// snapshot, who). Remaining stock of a batch is SUM(movement.quantity) over
+/// its tagged rows — no cached counter, same discipline as the ingredient ledger.
+model PrepBatch {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  restaurantId     String    @map("restaurant_id") @db.Uuid
+  prepIngredientId String    @map("prep_ingredient_id") @db.Uuid
+  /// Human-friendly and unique per tenant (PB-YYMMDD-XXXX). The uuid is the key.
+  code             String
+  /// Planned yield — the recipe scaled to this batch, in the prep item's unit.
+  expectedQuantity Int       @map("expected_quantity")
+  /// What was actually produced: the amount added to prepared stock.
+  actualQuantity   Int       @map("actual_quantity")
+  /// Null = no expiry tracked; FEFO then falls back to FIFO by createdAt.
+  expiresAt        DateTime? @map("expires_at")
+  /// Raw cost snapshot at prep time (paise). Null if any component had no cost
+  /// basis — the honest "cannot cost this", never a fabricated zero.
+  costMinor        Int?      @map("cost_minor")
+  note             String?
+  /// Who prepared it. No FK — same reasoning as stock_movements.actorUserId.
+  actorUserId      String?   @map("actor_user_id") @db.Uuid
+  /// Double-tap / retry guard, same contract as stock_movements.idempotencyKey.
+  idempotencyKey   String?   @map("idempotency_key")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  prepIngredient Ingredient @relation(fields: [prepIngredientId], references: [id], onDelete: Restrict)
+
+  @@unique([restaurantId, code])
+  @@unique([restaurantId, idempotencyKey])
+  @@index([restaurantId, prepIngredientId, createdAt])
+  @@map("prep_batches")
+}
+
+// ---------------------------------------------------------------------------
+// Stock counts — a physical count reconciled into the SAME ledger. A count
+// snapshots system stock when it starts, staff enter what they physically
+// counted, and on submit each non-zero discrepancy becomes ONE signed
+// ADJUSTMENT stock_movement — the movement type that already exists precisely
+// for "a stock count correcting reality". No second adjustment ledger, no
+// mutable stock counter: the count is the workflow around the existing
+// primitive. The adjustment reconciles against LIVE stock at submit time, so a
+// sale during the count is never double-counted (see stock-count.ts). Mutable
+// (OPEN → COMPLETED), so like purchase_orders it carries the tenant RLS policy
+// but no append-only trigger; the immutable record is the ADJUSTMENT rows it
+// writes plus the stockcount.* audit-log event.
+// ---------------------------------------------------------------------------
+
+enum StockCountStatus {
+  /// Started; staff are entering physical counts.
+  OPEN
+  /// Submitted and applied; the adjustments are written. Terminal, read-only.
+  COMPLETED
+  /// Abandoned before submit; wrote nothing. Terminal.
+  CANCELLED
+
+  @@map("stock_count_status")
+}
+
+/// Why a counted quantity differs from the system. Required for any non-zero
+/// discrepancy (§12). A controlled enum, not free text — the distinction
+/// between "wasted" and "miscounted" is exactly what a discrepancy report is for.
+enum StockCountReason {
+  WASTE_SPOILAGE
+  COUNTING_ERROR
+  DAMAGED
+  THEFT
+  UNRECORDED_USAGE
+  RECEIVING_DISCREPANCY
+  OTHER
+
+  @@map("stock_count_reason")
+}
+
+/// One physical-count session. Human-friendly `code` (SC-YYMMDD-XXXX) like a
+/// prep batch; the uuid is the key.
+model StockCount {
+  id           String           @id @default(uuid(7)) @db.Uuid
+  restaurantId String           @map("restaurant_id") @db.Uuid
+  code         String
+  status       StockCountStatus @default(OPEN)
+  notes        String?
+  /// Who started / submitted it. No FK — same reasoning as audit_logs.userId:
+  /// the record outlives the staff account.
+  createdBy    String?          @map("created_by") @db.Uuid
+  submittedBy  String?          @map("submitted_by") @db.Uuid
+  startedAt    DateTime         @default(now()) @map("started_at")
+  completedAt  DateTime?        @map("completed_at")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  lines StockCountLine[]
+
+  @@unique([restaurantId, code])
+  @@index([restaurantId, status])
+  @@map("stock_counts")
+}
+
+/// One ingredient on a count. `systemQuantity` is the snapshot taken when the
+/// count started (for display and the record); `difference` is what was
+/// actually applied — counted minus LIVE stock at submit — which can differ from
+/// counted minus systemQuantity when stock moved during the count. Both are
+/// kept: the snapshot is what staff saw, the difference is what the ledger did.
+/// countedQuantity/difference/reason are null until the count is submitted (and
+/// stay null for a line left uncounted).
+model StockCountLine {
+  id              String            @id @default(uuid(7)) @db.Uuid
+  restaurantId    String            @map("restaurant_id") @db.Uuid
+  stockCountId    String            @map("stock_count_id") @db.Uuid
+  ingredientId    String            @map("ingredient_id") @db.Uuid
+  systemQuantity  Int               @map("system_quantity")
+  countedQuantity Int?              @map("counted_quantity")
+  difference      Int?
+  reason          StockCountReason?
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  stockCount StockCount @relation(fields: [stockCountId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@unique([stockCountId, ingredientId])
+  @@index([restaurantId, stockCountId])
+  @@map("stock_count_lines")
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +1076,12 @@ model LoyaltyLedger {
   /// Client-supplied so a retried redeem/adjust cannot double-apply. Unique per
   /// tenant; NULLs do not collide. Same contract as Payment.idempotencyKey.
   idempotencyKey String?          @map("idempotency_key")
+  /// The loyalty rule in force when this row was written, for EARN and REDEEM —
+  /// e.g. {earnAmountMinor, earnPoints} or {redeemPoints, redeemAmountMinor}.
+  /// Immutable with the row (append-only), so a transaction stays explainable
+  /// under YESTERDAY's rules even after the owner changes the settings (M13
+  /// §17). Null for adjustments/reversals, which reference the original.
+  configSnapshot Json?            @map("config_snapshot")
   createdAt      DateTime         @default(now()) @map("created_at")
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -826,6 +1090,41 @@ model LoyaltyLedger {
   @@index([restaurantId, customerId, createdAt])
   @@index([orderId])
   @@map("loyalty_ledger")
+}
+
+/// Per-tenant loyalty rules — the configurable earn/redeem ratios, thresholds and
+/// the master on/off switch (M13). Exactly one row per restaurant; absence means
+/// "never configured", and the service falls back to DEFAULT_LOYALTY_CONFIG (the
+/// legacy hardcoded rates), so loyalty behaves identically until an owner edits
+/// it. Turning loyalty off stops earning and redeeming but NEVER touches the
+/// ledger — existing balances and history are preserved. Mutable (owner-editable);
+/// every change is audited via a loyalty.settings_updated event, and each ledger
+/// row keeps its own configSnapshot, so history stays explainable independently.
+model LoyaltySettings {
+  id           String  @id @default(uuid(7)) @db.Uuid
+  restaurantId String  @unique @map("restaurant_id") @db.Uuid
+  isEnabled    Boolean @default(true) @map("is_enabled")
+
+  /// Spend (paise) that earns `earnPoints`. e.g. 10000 (₹100) → 10 points.
+  earnAmountMinor Int @default(1000) @map("earn_amount_minor")
+  earnPoints      Int @default(1) @map("earn_points")
+
+  /// `redeemPoints` are worth `redeemAmountMinor` off. e.g. 100 pts → 5000 (₹50).
+  redeemPoints      Int @default(1) @map("redeem_points")
+  redeemAmountMinor Int @default(100) @map("redeem_amount_minor")
+
+  /// Fewest points a single redemption may spend (0 = no floor).
+  minimumRedeemPoints Int @default(0) @map("minimum_redeem_points")
+  /// Most points one order may redeem, or null for no ceiling.
+  maximumRedeemPointsPerOrder Int? @map("maximum_redeem_points_per_order")
+
+  /// Who last saved these rules. NO FK — the record outlives a staff account,
+  /// same reasoning as loyalty_ledger.actor_user_id.
+  updatedBy String?  @map("updated_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("loyalty_settings")
 }
 
 // ---------------------------------------------------------------------------
@@ -964,31 +1263,31 @@ enum PaymentStatus {
 /// Totals are DB-enforced: a CHECK asserts total = subtotal - discount + tax.
 /// Arithmetic bugs fail at write time instead of surfacing in a month-end report.
 model Order {
-  id            String      @id @default(uuid(7)) @db.Uuid
-  restaurantId  String      @map("restaurant_id") @db.Uuid
-  branchId      String      @map("branch_id") @db.Uuid
+  id             String      @id @default(uuid(7)) @db.Uuid
+  restaurantId   String      @map("restaurant_id") @db.Uuid
+  branchId       String      @map("branch_id") @db.Uuid
   /// Nullable and always will be: most restaurant orders are anonymous
   /// walk-ins. Restrict on delete — a customer with order history cannot be
   /// erased without deciding what happens to the money.
-  customerId    String?     @map("customer_id") @db.Uuid
-  orderNumber   Int         @map("order_number")
-  status        OrderStatus @default(DRAFT)
-  orderType     OrderType   @default(TAKEAWAY) @map("order_type")
-  subtotalMinor Int         @map("subtotal_minor")
-  discountMinor Int         @default(0) @map("discount_minor")
-  taxMinor      Int         @map("tax_minor")
-  totalMinor    Int         @map("total_minor")
-  currency      String      @default("INR") @db.Char(3)
-  notes         String?
+  customerId     String?     @map("customer_id") @db.Uuid
+  orderNumber    Int         @map("order_number")
+  status         OrderStatus @default(DRAFT)
+  orderType      OrderType   @default(TAKEAWAY) @map("order_type")
+  subtotalMinor  Int         @map("subtotal_minor")
+  discountMinor  Int         @default(0) @map("discount_minor")
+  taxMinor       Int         @map("tax_minor")
+  totalMinor     Int         @map("total_minor")
+  currency       String      @default("INR") @db.Char(3)
+  notes          String?
   /// Supplied by the client so a retry cannot create a second sale. Lives on
   /// the ORDER, not just the payment: an order without a payment method used
   /// to store no key at all, so a double-tapped Charge produced two orders.
   /// Unique per tenant; NULLs do not collide, so orders sent without a key are
   /// unaffected.
-  idempotencyKey String?    @map("idempotency_key")
-  placedAt      DateTime?   @map("placed_at")
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @updatedAt @map("updated_at")
+  idempotencyKey String?     @map("idempotency_key")
+  placedAt       DateTime?   @map("placed_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
 
   restaurant Restaurant   @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   branch     Branch       @relation(fields: [branchId], references: [id])
@@ -1021,6 +1320,18 @@ model OrderItem {
   taxRateBp      Int      @map("tax_rate_bp")
   taxMinor       Int      @map("tax_minor")
   notes          String?
+  /// Immutable snapshot of the modifiers chosen at sale time — an array of
+  /// { optionId, groupName, optionName, priceAdjustMinor }. Their cost is
+  /// already baked into unitPriceMinor (so line_total = unit_price * quantity
+  /// still holds); this preserves the human-readable breakdown for receipts,
+  /// the kitchen and history even after the definitions change. NULL = none.
+  modifiers      Json?    @map("modifiers")
+  /// Set when this line IS a combo: an immutable snapshot of its components —
+  /// an array of { productId, name, quantity }. The line's nameSnapshot is the
+  /// combo name and unitPriceMinor is the combo's own price, so the customer is
+  /// billed the combo price (never the component sum) and history never
+  /// re-prices. NULL for an ordinary product line.
+  comboItems     Json?    @map("combo_items")
   createdAt      DateTime @default(now()) @map("created_at")
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1099,4 +1410,120 @@ model Payment {
   @@index([orderId])
   @@index([restaurantId, createdAt])
   @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Product modifiers — configurable options a cashier picks at the till
+// (Style / Quantity / Add-ons). Generic: the app hard-codes no momo options.
+// Definitions live here and are MUTABLE; what a customer actually ordered is
+// snapshotted onto order_items.modifiers, so editing a definition never
+// rewrites history. Tenant-scoped via RLS, no append-only trigger.
+// ---------------------------------------------------------------------------
+
+model ModifierGroup {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  name         String
+  /// Selection rule. required = minSelect >= 1; "choose exactly 1" is 1/1;
+  /// "up to 3" is 0/3. The DB CHECK enforces 0 <= minSelect <= maxSelect and
+  /// maxSelect >= 1, and the backend re-validates every selection.
+  minSelect    Int      @default(0) @map("min_select")
+  maxSelect    Int      @default(1) @map("max_select")
+  sortOrder    Int      @default(0) @map("sort_order")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  product Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  options ModifierOption[]
+
+  @@index([restaurantId, productId])
+  @@map("modifier_groups")
+}
+
+model ModifierOption {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  restaurantId     String   @map("restaurant_id") @db.Uuid
+  groupId          String   @map("group_id") @db.Uuid
+  name             String
+  /// Paise added to the base unit price when chosen. >= 0 (the DB CHECK holds
+  /// the line; negative "discount" modifiers are out of scope for v1).
+  priceAdjustMinor Int      @default(0) @map("price_adjust_minor")
+  sortOrder        Int      @default(0) @map("sort_order")
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  group ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId, groupId])
+  @@map("modifier_options")
+}
+
+// ---------------------------------------------------------------------------
+// Combos & upsells — bundles a cashier sells as one line, and one suggestion
+// shown after a trigger product is added. A combo has its OWN price (not the
+// component sum); order_items snapshot the components + price, so history never
+// re-prices. Component product relationships are kept so the kitchen sees what
+// to make and inventory depletes the real recipes. Tenant-scoped via RLS.
+// ---------------------------------------------------------------------------
+
+model Combo {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  categoryId   String?  @map("category_id") @db.Uuid
+  name         String
+  description  String?
+  /// The combo's own selling price in paise — set by the owner, NOT derived.
+  priceMinor   Int      @map("price_minor")
+  taxRateBp    Int      @default(500) @map("tax_rate_bp")
+  isActive     Boolean  @default(true) @map("is_active")
+  isPopular    Boolean  @default(false) @map("is_popular")
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  category Category?   @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  items    ComboItem[]
+
+  @@unique([restaurantId, name])
+  @@index([restaurantId, isActive])
+  @@map("combos")
+}
+
+model ComboItem {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  restaurantId String   @map("restaurant_id") @db.Uuid
+  comboId      String   @map("combo_id") @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  quantity     Int      @default(1)
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  combo   Combo   @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  // Restrict: a product used in a combo cannot be hard-deleted out from under
+  // it. Products are deactivated, never deleted, so this never bites in practice.
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([restaurantId, comboId])
+  @@map("combo_items")
+}
+
+model UpsellRule {
+  id                 String   @id @default(uuid(7)) @db.Uuid
+  restaurantId       String   @map("restaurant_id") @db.Uuid
+  triggerProductId   String   @map("trigger_product_id") @db.Uuid
+  suggestedProductId String   @map("suggested_product_id") @db.Uuid
+  sortOrder          Int      @default(0) @map("sort_order")
+  isActive           Boolean  @default(true) @map("is_active")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  triggerProduct   Product @relation("UpsellTrigger", fields: [triggerProductId], references: [id], onDelete: Cascade)
+  suggestedProduct Product @relation("UpsellSuggested", fields: [suggestedProductId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, triggerProductId, suggestedProductId])
+  @@index([restaurantId, triggerProductId])
+  @@map("upsell_rules")
 }

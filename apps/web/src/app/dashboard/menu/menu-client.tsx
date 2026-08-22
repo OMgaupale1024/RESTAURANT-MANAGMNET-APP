@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   ArrowDown,
   ArrowUp,
@@ -8,6 +9,7 @@ import {
   Coins,
   FolderPlus,
   Plus,
+  ScanLine,
   Search,
   SearchX,
   Tags,
@@ -41,6 +43,12 @@ import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, Td, Th, Tr } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
+import { PopularToggle } from './popular-toggle';
+import { ProductModifiers } from './product-modifiers';
+import { CombosManager } from './combos-manager';
+// Its own import rather than added to the shared lucide block above, to keep
+// this change isolated from other in-flight edits to that block.
+import { Gift } from 'lucide-react';
 
 /**
  * Menu — where the catalogue is actually managed. POS sells it; this screen
@@ -69,6 +77,7 @@ export function MenuClient() {
   const { accessToken, setAccessToken } = useAuth();
   const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
   const toast = useToast();
+  const router = useRouter();
 
   const [products, setProducts] = useState<Product[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -78,6 +87,7 @@ export function MenuClient() {
   const [editing, setEditing] = useState<Product | null>(null);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [costsOpen, setCostsOpen] = useState(false);
+  const [combosOpen, setCombosOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -169,9 +179,17 @@ export function MenuClient() {
             <Tags aria-hidden className="size-4" />
             Categories
           </Button>
-          <Button variant="primary" onClick={() => setCreating(true)}>
+          <Button variant="secondary" onClick={() => setCombosOpen(true)}>
+            <Gift aria-hidden className="size-4" />
+            Combos
+          </Button>
+          <Button variant="secondary" onClick={() => setCreating(true)}>
             <Plus aria-hidden className="size-4" />
             New item
+          </Button>
+          <Button variant="primary" onClick={() => router.push('/dashboard/menu/scan')}>
+            <ScanLine aria-hidden className="size-4" />
+            Scan menu
           </Button>
         </div>
       </div>
@@ -266,16 +284,19 @@ export function MenuClient() {
                   )}
                 >
                   <Td>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEditing(p);
-                      }}
-                      className="rounded font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
-                    >
-                      {p.name}
-                    </button>
+                    <span className="flex items-center gap-2">
+                      <PopularToggle product={p} onChanged={reload} />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditing(p);
+                        }}
+                        className="rounded font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                      >
+                        {p.name}
+                      </button>
+                    </span>
                   </Td>
                   <Td className="hidden max-w-40 truncate text-ink-2 sm:table-cell">
                     {p.categoryId ? (
@@ -360,6 +381,8 @@ export function MenuClient() {
       />
 
       <FoodCostSheet open={costsOpen} onClose={() => setCostsOpen(false)} />
+
+      <CombosManager open={combosOpen} onClose={() => setCombosOpen(false)} />
     </div>
   );
 }
@@ -716,6 +739,15 @@ function EditProduct({
       <Button variant="primary" type="submit" disabled={!valid || busy} className="w-full">
         {busy ? 'Saving…' : 'Save changes'}
       </Button>
+
+      <div className="border-t border-line pt-4">
+        <p className="mb-2 text-[13px] font-semibold">Modifiers</p>
+        <p className="mb-3 text-[12px] text-ink-3">
+          Options the cashier picks at the till — Style, Quantity, Add-ons. Each
+          option can add to the price.
+        </p>
+        <ProductModifiers productId={product.id} />
+      </div>
 
       <div className="border-t border-line pt-4">
         <p className="mb-2 text-[12px] text-ink-3">

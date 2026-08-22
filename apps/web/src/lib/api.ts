@@ -246,6 +246,22 @@ export const updateRestaurantProfile = (
     body: JSON.stringify(body),
   });
 
+/** POS-facing modifier config (active groups/options only), embedded on Product. */
+export type ModifierOption = {
+  id: string;
+  name: string;
+  priceAdjustMinor: number;
+  sortOrder: number;
+};
+export type ModifierGroup = {
+  id: string;
+  name: string;
+  minSelect: number;
+  maxSelect: number;
+  sortOrder: number;
+  options: ModifierOption[];
+};
+
 export type Product = {
   id: string;
   name: string;
@@ -253,6 +269,71 @@ export type Product = {
   taxRateBp: number;
   categoryId: string | null;
   isActive: boolean;
+  isPopular: boolean;
+  /** Active modifier groups, shipped with the product so the till needs no
+   *  per-tap fetch. Empty for a plain product (keeps one-tap add fast). */
+  modifierGroups: ModifierGroup[];
+};
+
+/** Management view (incl. inactive) returned by the modifier-groups endpoints. */
+export type ModifierOptionAdmin = ModifierOption & { isActive: boolean };
+export type ModifierGroupAdmin = {
+  id: string;
+  name: string;
+  minSelect: number;
+  maxSelect: number;
+  sortOrder: number;
+  isActive: boolean;
+  options: ModifierOptionAdmin[];
+};
+
+/** Snapshot of what was actually ordered, stored on the order line. */
+export type OrderItemModifier = {
+  optionId: string;
+  groupName: string;
+  optionName: string;
+  priceAdjustMinor: number;
+};
+
+/* -------------------------------------------------------- combos & upsells */
+
+export type ComboComponent = {
+  productId: string;
+  quantity: number;
+  sortOrder: number;
+  product: { name: string; priceMinor: number; isActive: boolean };
+};
+
+export type Combo = {
+  id: string;
+  name: string;
+  description: string | null;
+  priceMinor: number;
+  taxRateBp: number;
+  categoryId: string | null;
+  isActive: boolean;
+  isPopular: boolean;
+  sortOrder: number;
+  items: ComboComponent[];
+  /** False when a component product has been deactivated — the till blocks it. */
+  available: boolean;
+};
+
+export type UpsellRule = {
+  id: string;
+  triggerProductId: string;
+  suggestedProductId: string;
+  sortOrder: number;
+  isActive: boolean;
+  triggerProduct: { name: string };
+  suggestedProduct: { name: string; priceMinor: number; isActive: boolean };
+};
+
+/** Snapshot of a combo's components on the order line (what was actually sold). */
+export type OrderItemCombo = {
+  productId: string;
+  name: string;
+  quantity: number;
 };
 
 /* ------------------------------------------------------------ cash drawer */
@@ -366,6 +447,8 @@ export type Order = {
     taxRateBp: number;
     taxMinor: number;
     notes: string | null;
+    modifiers: OrderItemModifier[] | null;
+    comboItems: OrderItemCombo[] | null;
   }>;
   payments: Array<{ id: string; method: string; status: string; amountMinor: number }>;
   refunds: Array<{
@@ -396,6 +479,7 @@ export const createProduct = (
     priceMinor: number;
     taxRateBp?: number;
     categoryId?: string;
+    isPopular?: boolean;
   },
 ) =>
   authedFetch<Product>('/products', token, onNewToken, {
@@ -413,11 +497,166 @@ export const updateProduct = (
     taxRateBp?: number;
     categoryId?: string | null;
     isActive?: boolean;
+    isPopular?: boolean;
   },
 ) =>
   authedFetch<Product>(`/products/${id}`, token, onNewToken, {
     method: 'PATCH',
     body: JSON.stringify(body),
+  });
+
+/* --------------------------------------------------------- modifiers (admin) */
+export const listModifierGroups = (
+  token: string,
+  onNewToken: Retry,
+  productId: string,
+) =>
+  authedFetch<ModifierGroupAdmin[]>(
+    `/products/${productId}/modifier-groups`,
+    token,
+    onNewToken,
+  );
+
+export const createModifierGroup = (
+  token: string,
+  onNewToken: Retry,
+  productId: string,
+  body: { name: string; minSelect?: number; maxSelect?: number; sortOrder?: number },
+) =>
+  authedFetch<ModifierGroupAdmin>(
+    `/products/${productId}/modifier-groups`,
+    token,
+    onNewToken,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+
+export const updateModifierGroup = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    minSelect?: number;
+    maxSelect?: number;
+    sortOrder?: number;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<ModifierGroupAdmin>(`/modifier-groups/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteModifierGroup = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/modifier-groups/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
+export const createModifierOption = (
+  token: string,
+  onNewToken: Retry,
+  groupId: string,
+  body: { name: string; priceAdjustMinor?: number; sortOrder?: number },
+) =>
+  authedFetch<ModifierOptionAdmin>(
+    `/modifier-groups/${groupId}/options`,
+    token,
+    onNewToken,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+
+export const updateModifierOption = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { name?: string; priceAdjustMinor?: number; sortOrder?: number; isActive?: boolean },
+) =>
+  authedFetch<ModifierOptionAdmin>(`/modifier-options/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteModifierOption = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/modifier-options/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
+/* --------------------------------------------------------- combos & upsells */
+export type ComboItemInput = { productId: string; quantity: number; sortOrder?: number };
+
+export const listCombos = (token: string, onNewToken: Retry, all?: boolean) =>
+  authedFetch<Combo[]>(`/combos${all ? '?include=all' : ''}`, token, onNewToken);
+
+export const createCombo = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    name: string;
+    description?: string;
+    priceMinor: number;
+    taxRateBp?: number;
+    categoryId?: string;
+    isPopular?: boolean;
+    items: ComboItemInput[];
+  },
+) =>
+  authedFetch<Combo>('/combos', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updateCombo = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    description?: string;
+    priceMinor?: number;
+    categoryId?: string | null;
+    isPopular?: boolean;
+    sortOrder?: number;
+    isActive?: boolean;
+    items?: ComboItemInput[];
+  },
+) =>
+  authedFetch<Combo>(`/combos/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteCombo = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/combos/${id}`, token, onNewToken, {
+    method: 'DELETE',
+  });
+
+export const listUpsellRules = (token: string, onNewToken: Retry) =>
+  authedFetch<UpsellRule[]>('/upsell-rules', token, onNewToken);
+
+export const createUpsellRule = (
+  token: string,
+  onNewToken: Retry,
+  body: { triggerProductId: string; suggestedProductId: string; sortOrder?: number },
+) =>
+  authedFetch<UpsellRule>('/upsell-rules', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updateUpsellRule = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: { isActive?: boolean; sortOrder?: number },
+) =>
+  authedFetch<UpsellRule>(`/upsell-rules/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const deleteUpsellRule = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<{ deleted: boolean }>(`/upsell-rules/${id}`, token, onNewToken, {
+    method: 'DELETE',
   });
 
 export const createCategory = (token: string, onNewToken: Retry, name: string) =>
@@ -449,11 +688,102 @@ export const reorderCategories = (token: string, onNewToken: Retry, ids: string[
     body: JSON.stringify({ ids }),
   });
 
+/* --------------------------------------------------- menu import (AI scanner) */
+
+export type MatchKind = 'new' | 'duplicate' | 'price_change';
+export type ImportAction = 'create' | 'update' | 'skip';
+
+/** One reviewed item. Prices are already paise; match/action drive the import. */
+export type ReviewItem = {
+  id: string;
+  name: string;
+  priceMinor: number | null;
+  description?: string | null;
+  quantity?: string | null;
+  variant?: string | null;
+  veg?: boolean | null;
+  spicy?: boolean | null;
+  confidence: number;
+  action: ImportAction;
+  match: { kind: MatchKind; productId?: string; existingPriceMinor?: number };
+};
+export type ReviewCategory = { name: string; items: ReviewItem[] };
+export type ReviewMenu = { categories: ReviewCategory[] };
+
+export type MenuImportStatus =
+  | 'UPLOADED'
+  | 'PROCESSING'
+  | 'REVIEW_REQUIRED'
+  | 'APPROVED'
+  | 'IMPORTED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type MenuImportSession = {
+  id: string;
+  status: MenuImportStatus;
+  pageCount: number;
+  result: ReviewMenu | null;
+  error: string | null;
+  importedAt: string | null;
+  createdAt: string;
+};
+
+export type ImportResult = {
+  session: MenuImportSession;
+  summary: { created: number; updated: number; skipped: number };
+};
+
+/** Send base64 data-URL images through the vision pipeline. */
+export const extractMenu = (token: string, onNewToken: Retry, images: string[]) =>
+  authedFetch<MenuImportSession>('/menu-import/extract', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ images }),
+  });
+
+export const getImportSession = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<MenuImportSession>(`/menu-import/${id}`, token, onNewToken);
+
+export const saveImportDraft = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  result: ReviewMenu,
+) =>
+  authedFetch<MenuImportSession>(`/menu-import/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify({ result }),
+  });
+
+export const importMenu = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  result: ReviewMenu,
+) =>
+  authedFetch<ImportResult>(`/menu-import/${id}/import`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify({ result }),
+  });
+
+export const cancelImport = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<MenuImportSession>(`/menu-import/${id}/cancel`, token, onNewToken, {
+    method: 'POST',
+  });
+
 export const createOrder = (
   token: string,
   onNewToken: Retry,
   body: {
-    items: Array<{ productId: string; quantity: number; notes?: string }>;
+    items: Array<{
+      /** Exactly one of productId / comboId. The server prices both. */
+      productId?: string;
+      comboId?: string;
+      quantity: number;
+      notes?: string;
+      /** Chosen modifier option ids — server prices and validates them. */
+      modifierOptionIds?: string[];
+    }>;
     paymentMethod?: string;
     orderType?: string;
     /** Park as DRAFT: no kitchen, no stock, no payment until resumed. */
@@ -487,7 +817,13 @@ export type OrderSummary = {
   _count: { items: number };
   customer: { name: string } | null;
   payments: Array<{ method: string; status: string }>;
-  items: Array<{ nameSnapshot: string; quantity: number; notes: string | null }>;
+  items: Array<{
+    nameSnapshot: string;
+    quantity: number;
+    notes: string | null;
+    modifiers: OrderItemModifier[] | null;
+    comboItems: OrderItemCombo[] | null;
+  }>;
 };
 
 export type TimelineEvent = {
@@ -639,6 +975,13 @@ export type LoyaltySummary = {
   redeemedPoints: number;
   tier: { key: string; label: string; minPoints: number };
   nextTier: { key: string; label: string; minPoints: number; pointsToGo: number } | null;
+  /** Whether the tenant's loyalty program is currently on (M13). */
+  enabled: boolean;
+  /** The redeem rate, so the POS can explain a reward without a second call. */
+  redeemPoints: number;
+  redeemAmountMinor: number;
+  /** The smallest reward this balance can claim now, or null (off/too few). */
+  availableReward: { points: number; discountMinor: number } | null;
   /** Most recent ledger entries — the points history. */
   recentEntries: Array<{
     id: string;
@@ -646,6 +989,8 @@ export type LoyaltySummary = {
     points: number;
     orderId: string | null;
     reason: string | null;
+    /** The rule in force when the row was written (M13 historical integrity). */
+    configSnapshot: Record<string, number> | null;
     createdAt: string;
   }>;
 };
@@ -653,6 +998,30 @@ export type LoyaltySummary = {
 /** Needs loyalty.read; callers treat a failure as "no loyalty" and omit it. */
 export const getLoyaltySummary = (token: string, onNewToken: Retry, customerId: string) =>
   authedFetch<LoyaltySummary>(`/customers/${customerId}/loyalty`, token, onNewToken);
+
+/** Tenant loyalty rules (M13). Needs loyalty.adjust (owner/manager). */
+export type LoyaltySettings = {
+  isEnabled: boolean;
+  earnAmountMinor: number;
+  earnPoints: number;
+  redeemPoints: number;
+  redeemAmountMinor: number;
+  minimumRedeemPoints: number;
+  maximumRedeemPointsPerOrder: number | null;
+};
+
+export const getLoyaltySettings = (token: string, onNewToken: Retry) =>
+  authedFetch<LoyaltySettings>('/loyalty/settings', token, onNewToken);
+
+export const updateLoyaltySettings = (
+  token: string,
+  onNewToken: Retry,
+  body: LoyaltySettings,
+) =>
+  authedFetch<LoyaltySettings>('/loyalty/settings', token, onNewToken, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
 
 export const createCustomer = (
   token: string,
@@ -983,6 +1352,240 @@ export const setRecipe = (
   authedFetch<unknown>(`/products/${productId}/recipe`, token, onNewToken, {
     method: 'PUT',
     body: JSON.stringify({ items }),
+  });
+
+/* --------------------------------------------------------------- prep inventory */
+
+/** A prepared ingredient on the prep board — stock made in the kitchen. */
+export type PrepItemRow = {
+  id: string;
+  name: string;
+  unit: StockUnit;
+  reorderLevel: number | null;
+  prepBatchYield: number | null;
+  prepShelfLifeHours: number | null;
+  hasRecipe: boolean;
+  available: number;
+  isLow: boolean;
+  /** Base units produced (PREP_OUTPUT) today. */
+  preparedToday: number;
+  /** Base units wasted today. */
+  wasteToday: number;
+  /** Live batches expiring within 24h, and already expired (with stock left). */
+  expiringSoon: number;
+  expired: number;
+};
+
+export type PrepComponent = {
+  ingredientId: string;
+  name: string;
+  unit: StockUnit;
+  isActive: boolean;
+  /** Per one standard batch (prepBatchYield), in the component's unit. */
+  quantity: number;
+  /** Current stock of this component — lets the prepare form preview shortfalls. */
+  available: number;
+};
+
+export type YieldVariance = { delta: number; pct: number | null };
+
+export type PrepBatchRow = {
+  id: string;
+  code: string;
+  expectedQuantity: number;
+  actualQuantity: number;
+  expiresAt: string | null;
+  costMinor: number | null;
+  note?: string | null;
+  createdAt: string;
+  remaining: number;
+  expired: boolean;
+  variance: YieldVariance;
+};
+
+export type PrepItemDetail = {
+  id: string;
+  name: string;
+  unit: StockUnit;
+  reorderLevel: number | null;
+  isActive: boolean;
+  prepBatchYield: number | null;
+  prepShelfLifeHours: number | null;
+  available: number;
+  isLow: boolean;
+  /** Standard-batch recipe cost (paise), and per-unit — null if uncosted. */
+  recipeCostMinor: number | null;
+  costPerUnitMinor: number | null;
+  recipe: PrepComponent[];
+  batches: PrepBatchRow[];
+};
+
+export const listPrepItems = (token: string, onNewToken: Retry) =>
+  authedFetch<PrepItemRow[]>('/prep/items', token, onNewToken);
+
+export const getPrepItem = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<PrepItemDetail>(`/prep/items/${id}`, token, onNewToken);
+
+export const createPrepItem = (
+  token: string,
+  onNewToken: Retry,
+  body: {
+    name: string;
+    unit: StockUnit;
+    shelfLifeHours?: number;
+    reorderLevel?: number;
+  },
+) =>
+  authedFetch<PrepItemRow>('/prep/items', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const updatePrepItem = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    name?: string;
+    shelfLifeHours?: number | null;
+    reorderLevel?: number | null;
+    isActive?: boolean;
+  },
+) =>
+  authedFetch<PrepItemRow>(`/prep/items/${id}`, token, onNewToken, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
+
+export const setPrepRecipe = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    batchYield: number;
+    items: Array<{ ingredientId: string; quantity: number }>;
+  },
+) =>
+  authedFetch<PrepItemDetail>(`/prep/items/${id}/recipe`, token, onNewToken, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+
+export const createPrepBatch = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    quantity: number;
+    actualQuantity?: number;
+    expiresAt?: string;
+    note?: string;
+    idempotencyKey?: string;
+  },
+) =>
+  authedFetch<PrepBatchRow>(`/prep/items/${id}/batches`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const wastePrepBatch = (
+  token: string,
+  onNewToken: Retry,
+  batchId: string,
+  body: { quantity: number; note?: string; idempotencyKey?: string },
+) =>
+  authedFetch<{ id: string }>(
+    `/prep/batches/${batchId}/waste`,
+    token,
+    onNewToken,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+
+// -- stock counts ----------------------------------------------------------
+
+export type StockCountStatus = 'OPEN' | 'COMPLETED' | 'CANCELLED';
+
+export type StockCountReason =
+  | 'WASTE_SPOILAGE'
+  | 'COUNTING_ERROR'
+  | 'DAMAGED'
+  | 'THEFT'
+  | 'UNRECORDED_USAGE'
+  | 'RECEIVING_DISCREPANCY'
+  | 'OTHER';
+
+export type StockCountRow = {
+  id: string;
+  code: string;
+  status: StockCountStatus;
+  notes: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  _count: { lines: number };
+};
+
+export type StockCountLine = {
+  id: string;
+  ingredientId: string;
+  name: string;
+  unit: StockUnit;
+  /** System stock snapshotted when the count started. */
+  systemQuantity: number;
+  /** Live stock now (may differ from the snapshot if stock moved since). */
+  currentStock: number;
+  countedQuantity: number | null;
+  /** The signed adjustment applied on submit (counted − live). Null while open. */
+  difference: number | null;
+  reason: StockCountReason | null;
+};
+
+export type StockCountDetail = {
+  id: string;
+  code: string;
+  status: StockCountStatus;
+  notes: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  lines: StockCountLine[];
+};
+
+export const listStockCounts = (token: string, onNewToken: Retry) =>
+  authedFetch<StockCountRow[]>('/stock-counts', token, onNewToken);
+
+export const getStockCount = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<StockCountDetail>(`/stock-counts/${id}`, token, onNewToken);
+
+export const startStockCount = (
+  token: string,
+  onNewToken: Retry,
+  body: { ingredientIds?: string[]; lowStockOnly?: boolean; notes?: string } = {},
+) =>
+  authedFetch<StockCountDetail>('/stock-counts', token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const submitStockCount = (
+  token: string,
+  onNewToken: Retry,
+  id: string,
+  body: {
+    lines: Array<{
+      ingredientId: string;
+      countedQuantity: number;
+      reason?: StockCountReason;
+    }>;
+    notes?: string;
+  },
+) =>
+  authedFetch<StockCountDetail>(`/stock-counts/${id}/submit`, token, onNewToken, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const cancelStockCount = (token: string, onNewToken: Retry, id: string) =>
+  authedFetch<StockCountDetail>(`/stock-counts/${id}/cancel`, token, onNewToken, {
+    method: 'POST',
   });
 
 export type StaffMember = {

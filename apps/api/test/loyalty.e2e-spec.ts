@@ -573,15 +573,25 @@ describe('Loyalty foundation (e2e)', () => {
       expect(redeems[0].points).toBe(-30);
     });
 
-    it('caps the redemption at the subtotal, never wasting points beyond it', async () => {
+    it('refuses a redemption larger than the order can use (M13: no silent cap)', async () => {
       const t = await newTenant();
       await seed(t, 500).expect(201);
-      // Redeem 150 pts (₹150) on a ₹100 subtotal → capped to 100 pts (₹100 = subtotal).
-      const order = await t.placeOrder({ redeemPoints: 150 });
-      expect(order.discountMinor).toBe(10000); // subtotal, not 15000
-      expect(order.totalMinor).toBe(500); // only tax remains
+      const pid = await productId(t.token);
+      // Redeem 150 pts (₹150) on a ₹100 subtotal. M13 rejects rather than
+      // silently spending only what fits — the cashier must pick a valid reward.
+      await api()
+        .post('/api/v1/orders')
+        .set(auth(t.token))
+        .send({
+          items: [{ productId: pid, quantity: 1 }],
+          customerId: t.customerId,
+          redeemPoints: 150,
+          paymentMethod: 'CASH',
+        })
+        .expect(400);
+      // Nothing was spent — the balance is intact.
       const s = await t.summary().expect(200);
-      expect(s.body.balancePoints).toBe(400); // 500 − 100 (only what fit)
+      expect(s.body.balancePoints).toBe(500);
     });
 
     it('cannot overspend the balance', async () => {

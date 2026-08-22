@@ -15,12 +15,15 @@ import {
   VOID_STATUSES,
   canTransition,
 } from './order-status';
+import { resolveModifierSelection, type ModifierGroupDef } from './modifiers';
+import { buildComboLine } from './combos';
 import { InventoryService } from '../inventory/inventory.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { MarketingService } from '../marketing/marketing.service';
 import { EventsService } from '../../events/events.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
-import { redemptionFor } from '../loyalty/loyalty.rules';
+import { redeemSnapshot, redemptionFor } from '../loyalty/loyalty.rules';
+import type { Prisma } from '../../generated/prisma/client';
 
 @Injectable()
 export class OrdersService {
@@ -146,20 +149,68 @@ export class OrdersService {
     dto: CreateOrderDto,
   ) {
     return this.prisma.tx(async (db) => {
-      // RLS scopes this to the tenant, so a productId belonging to another
+      // Every line is exactly one of a product or a combo. Modifiers belong to
+      // a product line only.
+      for (const item of dto.items) {
+        if (!item.productId === !item.comboId) {
+          throw new BadRequestException(
+            'Each line must be either a product or a combo',
+          );
+        }
+        if (item.comboId && item.modifierOptionIds?.length) {
+          throw new BadRequestException('A combo does not take modifiers');
+        }
+      }
+
+      // RLS scopes these to the tenant, so an id belonging to another
       // restaurant simply is not found — cross-tenant ordering fails as
-      // "unknown product" rather than needing a check we might forget.
-      const ids = [...new Set(dto.items.map((i) => i.productId))];
+      // "unavailable" rather than needing a check we might forget.
+      const productIds = [
+        ...new Set(
+          dto.items.map((i) => i.productId).filter((v): v is string => !!v),
+        ),
+      ];
+      const comboIds = [
+        ...new Set(
+          dto.items.map((i) => i.comboId).filter((v): v is string => !!v),
+        ),
+      ];
       const products = await db.product.findMany({
-        where: { id: { in: ids }, isActive: true },
+        where: { id: { in: productIds }, isActive: true },
         select: { id: true, name: true, priceMinor: true, taxRateBp: true },
       });
 
       const byId = new Map(products.map((p) => [p.id, p]));
-      const missing = ids.filter((id) => !byId.has(id));
+      const missing = productIds.filter((id) => !byId.has(id));
       if (missing.length) {
         // Deliberately vague: do not confirm whether an id exists elsewhere.
         throw new BadRequestException('One or more products are unavailable');
+      }
+
+      // Active combos with their components (each component's current name +
+      // active flag), one query. An unknown / other-tenant / inactive combo is
+      // simply not found here.
+      const combos = await db.combo.findMany({
+        where: { id: { in: comboIds }, isActive: true },
+        select: {
+          id: true,
+          name: true,
+          priceMinor: true,
+          taxRateBp: true,
+          items: {
+            orderBy: { sortOrder: 'asc' },
+            select: {
+              productId: true,
+              quantity: true,
+              product: { select: { name: true, isActive: true } },
+            },
+          },
+        },
+      });
+      const comboById = new Map(combos.map((c) => [c.id, c]));
+      const missingCombo = comboIds.filter((id) => !comboById.has(id));
+      if (missingCombo.length) {
+        throw new BadRequestException('One or more combos are unavailable');
       }
 
       // A customerId from the client is verified, never trusted. RLS scopes
@@ -181,21 +232,75 @@ export class OrdersService {
         orderBy: { createdAt: 'asc' },
       });
 
-      // --- money, in integer paise throughout
+      // Active modifier config for every product on this order, in ONE query —
+      // no per-item round trip (perf) and no per-item trust (each selection is
+      // re-validated server-side below).
+      const groupRows = await db.modifierGroup.findMany({
+        where: { productId: { in: productIds }, isActive: true },
+        orderBy: { sortOrder: 'asc' },
+        select: {
+          id: true,
+          productId: true,
+          name: true,
+          minSelect: true,
+          maxSelect: true,
+          options: {
+            where: { isActive: true },
+            orderBy: { sortOrder: 'asc' },
+            select: { id: true, name: true, priceAdjustMinor: true },
+          },
+        },
+      });
+      const groupsByProduct = new Map<string, ModifierGroupDef[]>();
+      for (const g of groupRows) {
+        const arr = groupsByProduct.get(g.productId) ?? [];
+        arr.push(g);
+        groupsByProduct.set(g.productId, arr);
+      }
+
+      // --- money, in integer paise throughout. A line is a combo (priced at
+      // the combo's own price, components snapshotted) or a product (priced from
+      // the product + its modifiers). Either way line_total = unit_price * qty,
+      // so the DB CHECK holds and analytics reconcile with no special case.
       const lines = dto.items.map((item) => {
-        const p = byId.get(item.productId)!;
-        const lineTotal = p.priceMinor * item.quantity;
+        if (item.comboId) {
+          const c = buildComboLine(comboById.get(item.comboId)!, item.quantity);
+          const lineTotal = c.unitPriceMinor * item.quantity;
+          const tax = Math.round((lineTotal * c.taxRateBp) / 10_000);
+          return {
+            productId: null,
+            nameSnapshot: c.nameSnapshot,
+            unitPriceMinor: c.unitPriceMinor,
+            quantity: item.quantity,
+            lineTotalMinor: lineTotal,
+            taxRateBp: c.taxRateBp,
+            taxMinor: tax,
+            notes: item.notes ?? null,
+            modifiers: undefined,
+            comboItems: c.comboItems,
+          };
+        }
+        const p = byId.get(item.productId!)!;
+        const { perUnitAdjustMinor, snapshot } = resolveModifierSelection(
+          groupsByProduct.get(item.productId!) ?? [],
+          item.modifierOptionIds ?? [],
+        );
+        const unitPrice = p.priceMinor + perUnitAdjustMinor;
+        const lineTotal = unitPrice * item.quantity;
         // Round half-up at the line, matching how a printed receipt reads.
         const tax = Math.round((lineTotal * p.taxRateBp) / 10_000);
         return {
           productId: p.id,
           nameSnapshot: p.name,
-          unitPriceMinor: p.priceMinor,
+          unitPriceMinor: unitPrice,
           quantity: item.quantity,
           lineTotalMinor: lineTotal,
           taxRateBp: p.taxRateBp,
           taxMinor: tax,
           notes: item.notes ?? null,
+          // undefined (not null) leaves the Json column NULL for plain lines.
+          modifiers: snapshot.length ? snapshot : undefined,
+          comboItems: undefined,
         };
       });
 
@@ -207,7 +312,10 @@ export class OrdersService {
       // the discount. A bad/expired/exhausted code is rejected, not silently
       // ignored, so the cashier knows it did not apply.
       let discount = 0;
-      let redeemPoints = 0; // points actually spent, after the subtotal cap
+      let redeemPoints = 0; // points actually spent
+      // The redeem rate in force, frozen onto the REDEEM row for historical
+      // integrity (M13 §17) — set only when points are redeemed.
+      let redeemConfigSnapshot: Prisma.InputJsonValue | undefined;
       let couponRedemption: { couponId: string; discountMinor: number } | null =
         null;
       if (dto.couponCode) {
@@ -232,17 +340,19 @@ export class OrdersService {
         }
         discount = dto.manualDiscountMinor;
       } else if (dto.redeemPoints) {
-        // Points fund the discount at ₹1/point, capped at the subtotal. The
-        // debit itself happens after the order row exists (below), so the ledger
-        // entry carries the order id; the balance is enforced there under a lock.
-        const r = redemptionFor(dto.redeemPoints, subtotal);
-        if (r.discountMinor <= 0) {
-          throw new BadRequestException(
-            'The subtotal is too small to redeem points',
-          );
-        }
+        // Points fund the discount at the tenant's configured rate (M13), read
+        // inside this transaction so the price and the debit share one snapshot.
+        // The client sends only a point count — never a discount; the server
+        // prices it, enforces the rules (enabled, block size, min/max) and
+        // refuses an over-large redemption rather than silently capping it. The
+        // debit happens after the order row exists (below); the balance is
+        // enforced there under a lock.
+        const config = await this.loyalty.getConfig(db);
+        const r = redemptionFor(dto.redeemPoints, subtotal, config);
+        if (!r.ok) throw new BadRequestException(r.reason);
         discount = r.discountMinor;
         redeemPoints = r.points;
+        redeemConfigSnapshot = redeemSnapshot(config);
       }
 
       // total = subtotal - discount + tax. The DB CHECK enforces this exact
@@ -305,6 +415,7 @@ export class OrdersService {
           dto.customerId!,
           order.id,
           redeemPoints,
+          redeemConfigSnapshot,
         );
       }
 
@@ -347,15 +458,30 @@ export class OrdersService {
       //
       // This does NOT block on insufficient stock — see depleteForOrder.
       if (!held) {
+        // Expand combos into their component products so the existing recipe
+        // consumption depletes the real ingredients — no second inventory path.
+        const depletion: Array<{ productId: string; quantity: number }> = [];
+        for (const item of dto.items) {
+          if (item.comboId) {
+            for (const ci of comboById.get(item.comboId)!.items) {
+              depletion.push({
+                productId: ci.productId,
+                quantity: ci.quantity * item.quantity,
+              });
+            }
+          } else {
+            depletion.push({
+              productId: item.productId!,
+              quantity: item.quantity,
+            });
+          }
+        }
         await this.inventory.depleteForOrder(
           db,
           restaurantId,
           userId,
           order.id,
-          dto.items.map((i) => ({
-            productId: i.productId,
-            quantity: i.quantity,
-          })),
+          depletion,
         );
       }
 
@@ -409,7 +535,15 @@ export class OrdersService {
           customer: { select: { name: true } },
           payments: { select: { method: true, status: true } },
           items: {
-            select: { nameSnapshot: true, quantity: true, notes: true },
+            select: {
+              nameSnapshot: true,
+              quantity: true,
+              notes: true,
+              // The kitchen board needs to see what to prepare, modifiers and
+              // combo components and all.
+              modifiers: true,
+              comboItems: true,
+            },
           },
         },
       }),
@@ -457,9 +591,9 @@ export class OrdersService {
    *   1. The state machine (order-status.ts) — is this move legal at all?
    *   2. The permission (checked in the controller) — may THIS user make it?
    *
-   * Both are needed. A cashier with order.update must not be able to jump
-   * PLACED -> COMPLETED and skip payment; a manager with order.void must still
-   * not be able to un-void.
+   * Both are needed. The state machine refuses illegal jumps (CANCELLED ->
+   * COMPLETED to resurrect a refunded order); the permission gate stops a
+   * manager with order.void from, say, un-voiding.
    */
   async updateStatus(
     orderId: string,
@@ -910,6 +1044,8 @@ export class OrdersService {
             taxRateBp: true,
             taxMinor: true,
             notes: true,
+            modifiers: true,
+            comboItems: true,
           },
         },
         payments: {

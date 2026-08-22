@@ -25,8 +25,18 @@ import { OrderType, PaymentMethod } from '../../../generated/prisma/enums';
  * depressingly common one.
  */
 export class OrderItemDto {
+  /**
+   * Exactly one of productId / comboId identifies the line (the service
+   * enforces the xor). A combo is priced and snapshotted server-side from its
+   * own definition — the client never sends a price.
+   */
+  @IsOptional()
   @IsUUID()
-  productId!: string;
+  productId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  comboId?: string;
 
   @IsInt()
   @Min(1)
@@ -37,6 +47,18 @@ export class OrderItemDto {
   @IsString()
   @MaxLength(200)
   notes?: string;
+
+  /**
+   * Chosen modifier OPTION ids — never prices. The server looks each one up,
+   * checks it belongs to an active group of this product, enforces the group's
+   * min/max, and computes the price adjustment itself. An empty/absent list is
+   * a plain product (fast path). Duplicates are rejected server-side.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsUUID(undefined, { each: true })
+  modifierOptionIds?: string[];
 }
 
 export class CreateOrderDto {
