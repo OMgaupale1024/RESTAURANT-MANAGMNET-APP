@@ -18,7 +18,6 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import {
-  ApiRequestError,
   getAnalytics,
   getInsights,
   getMe,
@@ -28,6 +27,7 @@ import {
   type AnalyticsOverview,
   type OrderSummary,
 } from '@/lib/api';
+import { reconcileDashboardLoad } from './dashboard-data';
 import { useAuth } from '@/lib/auth-context';
 import { cn } from '@/lib/cn';
 import { formatMinor, formatMinorCompact } from '@/lib/money';
@@ -57,8 +57,6 @@ const QUICK_ACTIONS: Array<{ label: string; href: string; icon: LucideIcon }> = 
   { label: 'Reports', href: '/dashboard/reports', icon: FileText },
   { label: 'Coupons', href: '/dashboard/marketing', icon: Megaphone },
 ];
-
-const ACTIVE_STATUSES = ['PLACED', 'PREPARING', 'READY'];
 
 /** What a status change means in feed language. Only real socket events land here. */
 const STATUS_TEXT: Record<string, string> = {
@@ -94,7 +92,7 @@ export function DashboardClient() {
   const [range, setRange] = useState<RangeKey>('7d');
   const [insights, setInsights] = useState<AiInsight[]>([]);
   const [lowStock, setLowStock] = useState<number | null>(null);
-  const [active, setActive] = useState<OrderSummary[]>([]);
+  const [active, setActive] = useState<OrderSummary[] | null>([]);
   const [firstName, setFirstName] = useState('');
   const [feed, setFeed] = useState<FeedEntry[]>([]);
   const [live, setLive] = useState(false);
@@ -102,43 +100,52 @@ export function DashboardClient() {
 
   const feedUid = useRef(0);
 
-  // One load, all existing endpoints, in parallel.
+  // One load, all existing endpoints, in parallel. allSettled (not all) so a
+  // single failing endpoint degrades its own widget instead of blanking the
+  // whole page — a 500 on /orders must not discard the analytics that loaded.
   useEffect(() => {
     if (!accessToken) return;
     let cancelled = false;
     void (async () => {
-      try {
-        const [t, w, ins, low, act, me] = await Promise.all([
-          getAnalytics(accessToken, onNewToken, 'today'),
-          getAnalytics(accessToken, onNewToken, '7d'),
-          getInsights(accessToken, onNewToken),
-          listIngredients(accessToken, onNewToken, { lowOnly: true }),
-          listActiveOrders(accessToken, onNewToken),
-          getMe(accessToken),
-        ]);
-        if (cancelled) return;
-        setToday(t);
-        setWeek(fillSeries(w));
-        setInsights(
-          [...ins.insights].sort((a, b) =>
-            a.severity === b.severity ? 0 : a.severity === 'warning' ? -1 : 1,
-          ),
-        );
-        setLowStock(low.length);
-        setActive(act.filter((o) => ACTIVE_STATUSES.includes(o.status)));
-        setFirstName(me.user.name.split(' ')[0]);
+      const [todayR, weekR, insightsR, ingredientsR, activeR, meR] = await Promise.allSettled([
+        getAnalytics(accessToken, onNewToken, 'today'),
+        getAnalytics(accessToken, onNewToken, '7d'),
+        getInsights(accessToken, onNewToken),
+        listIngredients(accessToken, onNewToken, { lowOnly: true }),
+        listActiveOrders(accessToken, onNewToken),
+        getMe(accessToken),
+      ]);
+      if (cancelled) return;
+
+      const load = reconcileDashboardLoad({
+        today: todayR,
+        week: weekR,
+        insights: insightsR,
+        ingredients: ingredientsR,
+        active: activeR,
+        me: meR,
+      });
+      if (!load.ok) {
+        setError(load.error);
+        return;
+      }
+      setToday(load.today);
+      setWeek(fillSeries(load.week));
+      setInsights(load.insights);
+      setLowStock(load.lowStock);
+      setActive(load.active);
+      setFirstName(load.firstName);
+      // Seed the feed only from orders we actually loaded; the live socket keeps
+      // it current either way, so a failed seed still recovers on the next event.
+      if (load.active) {
         setFeed(
-          act.slice(0, 6).map((o) => ({
+          load.active.slice(0, 6).map((o) => ({
             uid: feedUid.current++,
             icon: Receipt,
             text: `Order #${o.orderNumber} · ${o.status.toLowerCase()}`,
             at: new Date(o.createdAt),
           })),
         );
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof ApiRequestError ? e.message : 'Could not load the dashboard');
-        }
       }
     })();
     return () => {
@@ -226,10 +233,13 @@ export function DashboardClient() {
     ? heroData.revenueSeries.reduce((s, d) => s + d.revenueMinor, 0)
     : 0;
 
+  // active === null means the orders call failed (rendered as an explicit
+  // widget error below); treat it as empty for the count math either way.
+  const activeList = active ?? [];
   const counts = {
-    placed: active.filter((o) => o.status === 'PLACED').length,
-    preparing: active.filter((o) => o.status === 'PREPARING').length,
-    ready: active.filter((o) => o.status === 'READY').length,
+    placed: activeList.filter((o) => o.status === 'PLACED').length,
+    preparing: activeList.filter((o) => o.status === 'PREPARING').length,
+    ready: activeList.filter((o) => o.status === 'READY').length,
   };
 
   const bestDay = series.reduce<(typeof series)[number] | null>(
@@ -350,17 +360,27 @@ export function DashboardClient() {
               body={lowStock > 0 ? 'Review and reorder before service.' : 'Nothing under its reorder level right now.'}
             />
           )}
-          <BriefCard
-            href="/dashboard/kitchen"
-            icon={ChefHat}
-            iconCls={counts.ready > 0 ? 'text-success-text' : 'text-ink-3'}
-            title={
-              active.length === 0
-                ? 'Kitchen is clear'
-                : `${counts.placed + counts.preparing} in progress · ${counts.ready} ready`
-            }
-            body={active.length === 0 ? 'No active orders on the board.' : 'Open the live board.'}
-          />
+          {active === null ? (
+            <BriefCard
+              href="/dashboard/kitchen"
+              icon={ChefHat}
+              iconCls="text-warning-text"
+              title="Couldn't load active orders"
+              body="The rest of your dashboard is up to date — open the board to retry."
+            />
+          ) : (
+            <BriefCard
+              href="/dashboard/kitchen"
+              icon={ChefHat}
+              iconCls={counts.ready > 0 ? 'text-success-text' : 'text-ink-3'}
+              title={
+                active.length === 0
+                  ? 'Kitchen is clear'
+                  : `${counts.placed + counts.preparing} in progress · ${counts.ready} ready`
+              }
+              body={active.length === 0 ? 'No active orders on the board.' : 'Open the live board.'}
+            />
+          )}
           {bestDay && (
             <BriefCard
               href="/dashboard/analytics"
