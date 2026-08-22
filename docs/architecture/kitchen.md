@@ -6,8 +6,8 @@ order state machine, or the realtime feed.
 
 ## What it is
 
-A **kanban board over the order state machine**, one column per active stage,
-live over the existing per-tenant socket. It is always dark (a wall screen /
+A **two-section board over the order state machine** — **New orders** and
+**Handed over** — live over the existing per-tenant socket. It is always dark (a wall screen /
 tablet in a hot kitchen, DESIGN.md §6) and is built for speed, glanceability,
 and touch. The board holds one list of orders in React state; socket events
 **patch that list** — a status change rewrites one ticket in place, and only
@@ -19,32 +19,42 @@ and cards reuse `orders/order-detail.tsx` (status meta, the detail sheet).
 
 ## Workflow & state machine
 
-The kitchen vocabulary maps onto the order lifecycle:
+One manual action, to minimise work at the counter. The shopkeeper prepares
+the food **physically**; OraOS does not ask them to track "Preparing" or
+"Ready". When the order is handed to the customer, rider or pickup person, the
+one required software action is **Handed Over**:
 
 ```
-NEW ──Start──▶ PREPARING ──Ready──▶ READY ──Deliver──▶ DELIVERED
- (PLACED)                                                (COMPLETED)
-   └───────────────── Cancel / Void ─────────────────▶ CANCELLED / VOIDED
+NEW ──Handed Over──▶ HANDED OVER
+ (PLACED)             (COMPLETED)
+   └──── Cancel / Void ────▶ CANCELLED / VOIDED
 ```
 
-The line cook's verbs (**Start · Ready · Deliver**) relabel the same
-transitions the admin Orders screen calls Start/Ready/Complete; the underlying
-target states are `PLACED → PREPARING → READY → COMPLETED`. Only relabelled,
-never a different flow.
+"Handed over" is a **unified final handoff** for every order type — Takeaway
+handed to the customer, Dine-in served, Delivery handed to the rider, QR order
+handed over. It reuses the existing terminal `COMPLETED` state (so payment
+settlement, loyalty and analytics are unchanged); the kitchen simply relabels
+it. The granular `PLACED → PREPARING → READY → COMPLETED` path stays legal for
+the admin Orders screen and older records — the kitchen just doesn't surface
+those intermediate stages.
 
 The machine is a **server-enforced whitelist** (`apps/api/src/modules/orders/order-status.ts`),
 mirrored on the client only to decide which button to show:
 
 | from | allowed |
 | --- | --- |
-| PLACED | PREPARING · CANCELLED · VOIDED |
+| PLACED | COMPLETED · PREPARING · CANCELLED · VOIDED |
 | PREPARING | READY · CANCELLED · VOIDED |
 | READY | COMPLETED · CANCELLED · VOIDED |
 | COMPLETED / CANCELLED / VOIDED | — (terminal) |
 
+`PLACED → COMPLETED` is the one-tap handoff. It is **not** an auto-transition:
+a new order is never marked handed-over on arrival — the food still has to be
+made; the state moves only when someone presses **Handed Over**.
+
 **No hidden transitions.** Anything not listed is refused with a 409 — the
-interesting attacks are the skips (PLACED → COMPLETED without paying,
-CANCELLED → COMPLETED to resurrect a refund). Terminal states are dead ends: a
+interesting attacks are the skips (CANCELLED → COMPLETED to resurrect a
+refund). Terminal states are dead ends: a
 completed/cancelled/voided order is a financial record, corrected by a new row
 (a refund), never by moving it back. **CANCELLED vs VOIDED** is a money
 distinction — VOID reverses a rung-up sale and needs `order.void` (which a
@@ -97,10 +107,10 @@ own data (no extra fetch):
   note, the order note highlighted).
 - **Current status** is the column; the detail sheet shows the badge.
 
-The one primary **action button** is full-width and large (`size="lg"`) — the
-stage's next step (Start / Ready / Deliver). Cancel and Void live in the ticket
-detail behind a typed-reason confirm, because reversing an order is deliberate,
-not a fast-repeated tap.
+The one primary **action button** is full-width and large (`size="lg"`) —
+**Handed Over**, shown only on a New order. A handed-over ticket has no button;
+it is done. Cancel and Void live in the ticket detail behind a typed-reason
+confirm, because reversing an order is deliberate, not a fast-repeated tap.
 
 ## Timers
 

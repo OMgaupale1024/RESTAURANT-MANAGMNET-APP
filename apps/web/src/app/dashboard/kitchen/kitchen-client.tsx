@@ -3,9 +3,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
-  BellRing,
   CheckCircle2,
-  ChefHat,
   Receipt,
   UserRound,
   Volume2,
@@ -31,7 +29,6 @@ import { connectSocket } from '@/lib/socket';
 import {
   DANGER_STATUSES,
   OrderDetail,
-  QUICK,
   StatusBadge,
   timeShort,
   TYPE_LABEL,
@@ -51,10 +48,35 @@ import { useToast } from '@/components/ui/toast';
  * re-renders; the screen never reloads.
  */
 
-const COLUMNS: Array<{ status: string; title: string; icon: LucideIcon; empty: string }> = [
-  { status: 'PLACED', title: 'New', icon: Receipt, empty: 'New orders from the till land here instantly.' },
-  { status: 'PREPARING', title: 'Preparing', icon: ChefHat, empty: 'Tap Start on a new ticket to begin cooking.' },
-  { status: 'READY', title: 'Ready', icon: BellRing, empty: 'Tap Ready when a ticket is plated for pickup.' },
+/**
+ * Two operational sections only. The shopkeeper prepares the food physically;
+ * OraOS does not track PREPARING/READY. One manual action — "Handed Over" —
+ * moves a new ticket straight to the terminal handed-over state (COMPLETED),
+ * which is what "handed to the customer, rider or pickup" means for every
+ * order type. PREPARING/READY remain valid backend statuses (historical
+ * records, admin Orders screen); the kitchen just doesn't surface them.
+ */
+const COLUMNS: Array<{
+  status: string;
+  title: string;
+  icon: LucideIcon;
+  emptyTitle: string;
+  empty: string;
+}> = [
+  {
+    status: 'PLACED',
+    title: 'New orders',
+    icon: Receipt,
+    emptyTitle: 'No new orders',
+    empty: 'New orders from the till land here instantly.',
+  },
+  {
+    status: 'COMPLETED',
+    title: 'Handed over',
+    icon: CheckCircle2,
+    emptyTitle: 'No orders handed over yet',
+    empty: 'Tap “Handed Over” once the food is given to the customer, rider or pickup.',
+  },
 ];
 const BOARD_STATUSES = COLUMNS.map((c) => c.status);
 
@@ -81,22 +103,10 @@ function delayLabel(ms: number): string {
   return mins >= 60 ? `${Math.floor(mins / 60)}h` : `${mins}m`;
 }
 
-/** How many recently completed tickets the collapsible strip keeps. */
-const DONE_SHOWN = 10;
+/** How many recently handed-over tickets the "Handed over" section keeps. */
+const HANDED_SHOWN = 20;
 /** State cap so a screen left open for days cannot grow without bound. */
 const MAX_ORDERS = 150;
-
-/**
- * Kitchen action verbs, mapped to the shared state machine (order-detail QUICK).
- * The vocabulary is the line cook's — Start → Ready → Deliver — where the admin
- * Orders screen says "Complete"; the underlying transition (→ COMPLETED) is the
- * same one, so this only relabels, it never changes the flow.
- */
-const ACTION_LABEL: Record<string, string> = {
-  PLACED: 'Start',
-  PREPARING: 'Ready',
-  READY: 'Deliver',
-};
 
 /** Order-type badge tone: the exceptions (dine-in, delivery) stand out; takeaway
  *  — the counter default — stays quiet but is still shown. */
@@ -349,10 +359,6 @@ export function KitchenClient() {
     setAskDanger(null);
   }
 
-  const done = (orders ?? [])
-    .filter((o) => o.status === 'COMPLETED')
-    .slice(0, DONE_SHOWN);
-
   return (
     <div className="theme-dark flex h-[calc(100dvh-3.5rem)] flex-col overflow-y-auto bg-page px-4 pt-4 pb-2 text-ink md:h-dvh md:px-6">
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
@@ -386,7 +392,7 @@ export function KitchenClient() {
       </div>
 
       {orders === null ? (
-        <div className="mt-4 grid flex-1 gap-4 md:grid-cols-3" role="status" aria-busy="true" aria-label="Loading kitchen board">
+        <div className="mt-4 grid flex-1 gap-4 md:grid-cols-2" role="status" aria-busy="true" aria-label="Loading kitchen board">
           {COLUMNS.map((c) => (
             <div key={c.status} className="space-y-3">
               <Skeleton className="h-7 w-28" />
@@ -396,11 +402,18 @@ export function KitchenClient() {
           ))}
         </div>
       ) : (
-        <div className="mt-4 grid min-h-0 flex-1 gap-4 md:grid-cols-3">
+        <div className="mt-4 grid min-h-0 flex-1 gap-4 md:grid-cols-2">
           {COLUMNS.map((col) => {
+            // New orders read oldest-first (a work queue); handed-over reads
+            // newest-first and is capped — a screen left open for days must not
+            // accumulate every completed ticket forever.
+            const handed = col.status === 'COMPLETED';
             const tickets = orders
               .filter((o) => o.status === col.status)
-              .sort((a, b) => a.orderNumber - b.orderNumber);
+              .sort((a, b) =>
+                handed ? b.orderNumber - a.orderNumber : a.orderNumber - b.orderNumber,
+              )
+              .slice(0, handed ? HANDED_SHOWN : undefined);
             return (
               <section
                 key={col.status}
@@ -416,7 +429,7 @@ export function KitchenClient() {
                   <Badge className="ml-auto tabular-nums">{tickets.length}</Badge>
                 </h2>
                 {tickets.length === 0 ? (
-                  <EmptyState icon={col.icon} title={`No ${col.title.toLowerCase()} orders`} body={col.empty} />
+                  <EmptyState icon={col.icon} title={col.emptyTitle} body={col.empty} />
                 ) : (
                   <ul className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 md:overflow-y-auto">
                     {tickets.map((o, i) => (
@@ -438,36 +451,6 @@ export function KitchenClient() {
             );
           })}
         </div>
-      )}
-
-      {/* Recently completed — out of the way but reachable without leaving the board. */}
-      {done.length > 0 && (
-        <details className="mt-3 shrink-0 rounded-xl border border-line bg-surface/40">
-          <summary className="cursor-pointer list-none px-3 py-2.5 text-[13px] font-semibold tracking-wide uppercase select-none [&::-webkit-details-marker]:hidden">
-            <span className="inline-flex items-center gap-2">
-              <CheckCircle2 aria-hidden className="size-4 text-success-text" />
-              Delivered
-              <Badge className="tabular-nums">{done.length}</Badge>
-              <span className="text-[11px] font-normal text-ink-3 normal-case">tap to expand</span>
-            </span>
-          </summary>
-          <ul className="flex flex-wrap gap-2 px-3 pb-3">
-            {done.map((o) => (
-              <li key={o.id}>
-                <button
-                  type="button"
-                  onClick={() => open(o.id)}
-                  className="rounded-lg border border-line bg-surface px-3 py-2 text-[13px] transition-colors duration-120 hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
-                >
-                  <span className="font-mono font-semibold tabular-nums">#{o.orderNumber}</span>
-                  <span className="ml-2 text-ink-3 tabular-nums">
-                    {timeShort(o.placedAt ?? o.createdAt)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </details>
       )}
 
       <Sheet
@@ -547,13 +530,16 @@ const Ticket = memo(function Ticket({
   onOpen: (id: string) => void;
   onAdvance: (id: string, to: string) => void;
 }) {
-  const quick = QUICK[order.status];
+  // A new ticket gets the single handoff action; a handed-over one is done.
+  const isNew = order.status === 'PLACED';
   const since = order.placedAt ?? order.createdAt;
   // "If relevant" per the spec: a pay-later ticket the counter must collect on.
   // Fully-paid orders (the POS default) stay unmarked — no money noise.
   const unpaid = !order.payments.some((p) => p.status === 'CAPTURED');
   const ageMs = now - new Date(since).getTime();
-  const stale = ageMs >= STALE_MS;
+  // Staleness only applies to un-handed-over tickets — a handed-over one is
+  // finished, not forgotten, however long ago it was placed.
+  const stale = isNew && ageMs >= STALE_MS;
   return (
     <li
       className={cn('list-none', liveArrival ? 'animate-slide-in-left' : 'animate-fade-up')}
@@ -603,7 +589,14 @@ const Ticket = memo(function Ticket({
             <Badge variant={TYPE_VARIANT[order.orderType] ?? 'neutral'}>
               {TYPE_LABEL[order.orderType] ?? order.orderType}
             </Badge>
-            <Elapsed since={since} />
+            {isNew ? (
+              <Elapsed since={since} />
+            ) : (
+              // Handed over — a calm timestamp, not the escalating timer.
+              <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 font-mono text-[13px] font-semibold text-ink-3 tabular-nums">
+                {timeShort(since)}
+              </span>
+            )}
           </span>
         </div>
 
@@ -649,18 +642,19 @@ const Ticket = memo(function Ticket({
           </p>
         )}
 
-        {quick && (
+        {isNew && (
+          // The one and only manual action: NEW -> HANDED OVER (COMPLETED).
           <Button
             variant="primary"
             size="lg"
             disabled={busy}
             onClick={(e) => {
               e.stopPropagation();
-              onAdvance(order.id, quick.to);
+              onAdvance(order.id, 'COMPLETED');
             }}
             className="mt-3 w-full"
           >
-            {busy ? '…' : (ACTION_LABEL[order.status] ?? quick.label)}
+            {busy ? '…' : 'Handed Over'}
           </Button>
         )}
       </div>

@@ -236,10 +236,12 @@ describe('Orders (e2e)', () => {
       }
     });
 
-    it('refuses a skipped step (PLACED -> COMPLETED without paying)', async () => {
-      const t = await newTenant('Skip Cafe');
+    it('allows the one-tap handoff PLACED -> COMPLETED', async () => {
+      const t = await newTenant('Handoff Cafe');
       const o = await placeOrder(t).expect(201);
-      await setStatus(t.token, o.body.id, 'COMPLETED').expect(409);
+      // The kitchen "Handed Over" button skips PREPARING/READY.
+      const res = await setStatus(t.token, o.body.id, 'COMPLETED').expect(200);
+      expect(res.body.status).toBe('COMPLETED');
     });
 
     it('refuses to resurrect a terminal order', async () => {

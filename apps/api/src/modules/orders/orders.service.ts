@@ -591,9 +591,9 @@ export class OrdersService {
    *   1. The state machine (order-status.ts) — is this move legal at all?
    *   2. The permission (checked in the controller) — may THIS user make it?
    *
-   * Both are needed. A cashier with order.update must not be able to jump
-   * PLACED -> COMPLETED and skip payment; a manager with order.void must still
-   * not be able to un-void.
+   * Both are needed. The state machine refuses illegal jumps (CANCELLED ->
+   * COMPLETED to resurrect a refunded order); the permission gate stops a
+   * manager with order.void from, say, un-voiding.
    */
   async updateStatus(
     orderId: string,
