@@ -1032,26 +1032,13 @@ function SuppliersSheet({
         ) : (
           <ul className="space-y-2">
             {suppliers.map((s) => (
-              <li
+              <SupplierRow
                 key={s.id}
-                className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-[13px] font-medium">{s.name}</p>
-                  {s.phone && (
-                    <p className="truncate font-mono text-[12px] text-ink-3">{s.phone}</p>
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => void deactivate(s)}
-                  className="shrink-0 text-ink-3 hover:text-danger"
-                >
-                  Remove
-                </Button>
-              </li>
+                supplier={s}
+                onChanged={onChanged}
+                onRemove={() => void deactivate(s)}
+                parentBusy={busy}
+              />
             ))}
           </ul>
         )}
@@ -1083,5 +1070,123 @@ function SuppliersSheet({
         </form>
       </div>
     </Sheet>
+  );
+}
+
+/**
+ * One supplier row: name + phone, with inline edit and Remove (deactivate).
+ * Self-contained (owns its own update call + toast), mirroring BatchRow — the
+ * sheet just lists these. Edit was the one supplier lifecycle action missing;
+ * the backend PATCH already existed.
+ */
+function SupplierRow({
+  supplier,
+  onChanged,
+  onRemove,
+  parentBusy,
+}: {
+  supplier: Supplier;
+  onChanged: () => void;
+  onRemove: () => void;
+  parentBusy: boolean;
+}) {
+  const { accessToken, setAccessToken } = useAuth();
+  const onNewToken = useCallback((t: string) => setAccessToken(t), [setAccessToken]);
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(supplier.name);
+  const [phone, setPhone] = useState(supplier.phone ?? '');
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    const trimmed = name.trim();
+    if (!accessToken || !trimmed) return;
+    setBusy(true);
+    try {
+      // Empty phone clears it (the field is falsy-checked on display); the
+      // server leaves anything undefined untouched.
+      await updateSupplier(accessToken, onNewToken, supplier.id, {
+        name: trimmed,
+        phone: phone.trim(),
+      });
+      toast({ title: 'Supplier updated', variant: 'success' });
+      setEditing(false);
+      onChanged();
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not update the supplier',
+        variant: 'danger',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function cancel() {
+    setName(supplier.name);
+    setPhone(supplier.phone ?? '');
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <li className="space-y-2 rounded-lg border border-line bg-surface px-3 py-2.5">
+        <Field label="Name">
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={120}
+            className="h-8 text-[13px]"
+          />
+        </Field>
+        <Field label="Phone (optional)">
+          <Input
+            inputMode="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            maxLength={40}
+            className="h-8 text-[13px]"
+          />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" disabled={busy} onClick={cancel}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy || !name.trim()}
+            onClick={() => void save()}
+          >
+            {busy ? 'Saving…' : 'Save'}
+          </Button>
+        </div>
+      </li>
+    );
+  }
+
+  return (
+    <li className="flex items-center justify-between gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+      <div className="min-w-0">
+        <p className="truncate text-[13px] font-medium">{supplier.name}</p>
+        {supplier.phone && (
+          <p className="truncate font-mono text-[12px] text-ink-3">{supplier.phone}</p>
+        )}
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button variant="ghost" size="sm" disabled={parentBusy} onClick={() => setEditing(true)}>
+          Edit
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={parentBusy}
+          onClick={onRemove}
+          className="text-ink-3 hover:text-danger"
+        >
+          Remove
+        </Button>
+      </div>
+    </li>
   );
 }
