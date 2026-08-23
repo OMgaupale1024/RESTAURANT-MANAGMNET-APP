@@ -144,7 +144,7 @@ type PlannedProduct = {
 };
 
 /** Expand the menu into an ordered flat list. Variant rows become three
- *  distinct products "<Variant> <Base>"; sortOrder preserves card order. */
+ *  distinct products "<Base> (<Variant>)"; sortOrder preserves card order. */
 function planProducts(): PlannedProduct[] {
   const out: PlannedProduct[] = [];
   for (const cat of MENU) {
@@ -158,7 +158,7 @@ function planProducts(): PlannedProduct[] {
         ] as const) {
           out.push({
             category: cat.name,
-            name: `${label} ${item.base}`,
+            name: `${item.base} (${label})`,
             priceMinor: item.prices[variant] * 100,
             sortOrder: order++,
           });
