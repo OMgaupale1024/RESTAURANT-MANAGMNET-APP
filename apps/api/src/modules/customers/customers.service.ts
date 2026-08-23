@@ -35,23 +35,31 @@ export class CustomersService {
     const take = Math.min(query.limit ?? 50, 100);
     const q = query.q?.trim();
 
+    // Archived customers drop out of the CRM list by default; include=all shows
+    // them so they can be found and restored.
+    const activeFilter = query.include === 'all' ? {} : { isActive: true };
+
     return this.prisma.tx(async (db) => {
       const customers = await db.customer.findMany({
         take,
-        where: q
-          ? {
-              OR: [
-                { name: { contains: q, mode: 'insensitive' } },
-                // Digits-only, so a search for "98765 43210" still matches.
-                { phone: { contains: normalizePhone(q) || q } },
-              ],
-            }
-          : undefined,
+        where: {
+          ...activeFilter,
+          ...(q
+            ? {
+                OR: [
+                  { name: { contains: q, mode: 'insensitive' } },
+                  // Digits-only, so a search for "98765 43210" still matches.
+                  { phone: { contains: normalizePhone(q) || q } },
+                ],
+              }
+            : {}),
+        },
         select: {
           id: true,
           name: true,
           phone: true,
           email: true,
+          isActive: true,
           createdAt: true,
         },
         orderBy: { name: 'asc' },
@@ -148,6 +156,7 @@ export class CustomersService {
           email: true,
           birthday: true,
           notes: true,
+          isActive: true,
           createdAt: true,
         },
       });
@@ -325,12 +334,12 @@ export class CustomersService {
     return this.prisma.tx(async (db) => {
       const existing = await db.customer.findFirst({
         where: { id },
-        select: { id: true },
+        select: { id: true, isActive: true },
       });
       if (!existing) throw new NotFoundException('Customer not found');
 
       try {
-        return await db.customer.update({
+        const updated = await db.customer.update({
           where: { id },
           data: {
             ...(dto.name !== undefined ? { name: dto.name } : {}),
@@ -340,9 +349,27 @@ export class CustomersService {
               ? { birthday: dto.birthday ? new Date(dto.birthday) : null }
               : {}),
             ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+            ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
           },
-          select: { id: true, name: true, phone: true, email: true },
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            email: true,
+            isActive: true,
+          },
         });
+        // Archiving/restoring is a lifecycle change worth remembering (Timeline
+        // + the per-customer activity feed); a plain field edit is not. entityId
+        // only — no PII copied into the audit metadata.
+        if (dto.isActive !== undefined && dto.isActive !== existing.isActive) {
+          await this.events.record(db, {
+            action: dto.isActive ? 'customer.restored' : 'customer.archived',
+            entityType: 'customer',
+            entityId: id,
+          });
+        }
+        return updated;
       } catch (e) {
         if (isUniqueViolation(e)) {
           throw new ConflictException(

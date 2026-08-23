@@ -39,10 +39,12 @@ function exportCustomersCsv(list: CustomerSummary[]) {
   );
   downloadCsv(`customers-${new Date().toISOString().slice(0, 10)}.csv`, csv);
 }
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { Field, Input, Textarea } from '@/components/ui/input';
-import { Modal } from '@/components/ui/modal';
+import { ConfirmDialog, Modal } from '@/components/ui/modal';
+import { Segmented } from '@/components/ui/segmented';
 import { SegmentChip } from '@/components/ui/segment-chip';
 import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -68,6 +70,8 @@ function dayShort(iso: string | null): string {
 const ACTIVITY_LABELS: Record<string, string> = {
   'customer.created': 'Added as a customer',
   'customer.updated': 'Details updated',
+  'customer.archived': 'Archived',
+  'customer.restored': 'Restored',
   'loyalty.earned': 'Points earned',
   'loyalty.redeemed': 'Points redeemed',
   'loyalty.adjusted': 'Points adjusted',
@@ -96,6 +100,7 @@ export function CustomersClient() {
 
   const [rows, setRows] = useState<CustomerSummary[] | null>(null);
   const [q, setQ] = useState('');
+  const [filter, setFilter] = useState<'ACTIVE' | 'ARCHIVED'>('ACTIVE');
   const [adding, setAdding] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<CustomerDetail | null>(null);
@@ -111,10 +116,13 @@ export function CustomersClient() {
     if (!accessToken) return;
     let cancelled = false;
     // Debounced: a keystroke per request would hammer the API.
+    const archived = filter === 'ARCHIVED';
     const timer = setTimeout(() => {
-      listCustomers(accessToken, onNewToken, q.trim() || undefined)
+      listCustomers(accessToken, onNewToken, q.trim() || undefined, archived)
         .then((list) => {
-          if (!cancelled) setRows(list);
+          if (cancelled) return;
+          // include=all returns both; the Archived tab shows only the archived.
+          setRows(archived ? list.filter((c) => !c.isActive) : list);
         })
         .catch((e: unknown) => {
           if (!cancelled) {
@@ -129,7 +137,7 @@ export function CustomersClient() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [accessToken, onNewToken, q, reloadKey, toast]);
+  }, [accessToken, onNewToken, q, filter, reloadKey, toast]);
 
   const open = useCallback(
     (id: string) => {
@@ -193,7 +201,7 @@ export function CustomersClient() {
         </div>
       </div>
 
-      {!loading && list.length > 0 && !q && (
+      {!loading && list.length > 0 && !q && filter === 'ACTIVE' && (
         <div className="mt-4 grid grid-cols-2 gap-4 lg:grid-cols-3">
           <StatCard label="Customers" value={list.length} format={String} />
           <StatCard label="New this month" value={newThisMonth} format={String} />
@@ -201,21 +209,31 @@ export function CustomersClient() {
         </div>
       )}
 
-      <div className="relative mt-4 max-w-xs">
-        <Search
-          aria-hidden
-          className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-3"
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <Segmented
+          options={[
+            { key: 'ACTIVE', label: 'Active' },
+            { key: 'ARCHIVED', label: 'Archived' },
+          ]}
+          value={filter}
+          onChange={setFilter}
         />
-        <Input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setQ('');
-          }}
-          placeholder="Name or phone…"
-          aria-label="Search customers"
-          className="pl-9"
-        />
+        <div className="relative min-w-0 flex-1 basis-52 sm:max-w-xs">
+          <Search
+            aria-hidden
+            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-3"
+          />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setQ('');
+            }}
+            placeholder="Name or phone…"
+            aria-label="Search customers"
+            className="pl-9"
+          />
+        </div>
       </div>
 
       <div className="mt-4 rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgb(0_0_0/0.04)]">
@@ -231,6 +249,12 @@ export function CustomersClient() {
               icon={SearchX}
               title="No matching customers"
               body="Search matches names and phone numbers."
+            />
+          ) : filter === 'ARCHIVED' ? (
+            <EmptyState
+              icon={UsersRound}
+              title="No archived customers"
+              body="Archive a customer from their profile to hide them here without losing their history."
             />
           ) : (
             <EmptyState
@@ -264,7 +288,11 @@ export function CustomersClient() {
                   key={c.id}
                   onClick={() => open(c.id)}
                   aria-selected={selectedId === c.id}
-                  className={cn('animate-fade-up', selectedId === c.id && 'bg-surface-2')}
+                  className={cn(
+                    'animate-fade-up',
+                    selectedId === c.id && 'bg-surface-2',
+                    !c.isActive && 'opacity-60',
+                  )}
                 >
                   <Td>
                     <span className="flex items-center gap-2">
@@ -278,6 +306,7 @@ export function CustomersClient() {
                       >
                         {c.name}
                       </button>
+                      {!c.isActive && <Badge>Archived</Badge>}
                       {c.segment && <SegmentChip segment={c.segment} />}
                     </span>
                   </Td>
@@ -354,6 +383,7 @@ function CustomerSheet({
 
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const [form, setForm] = useState({
     name: detail.name,
     phone: detail.phone,
@@ -405,6 +435,27 @@ function CustomerSheet({
     } catch (e) {
       toast({
         title: e instanceof ApiRequestError ? e.message : 'Could not save',
+        variant: 'danger',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setArchived(next: boolean) {
+    if (!accessToken) return;
+    setBusy(true);
+    try {
+      await updateCustomer(accessToken, onNewToken, detail.id, { isActive: next });
+      const fresh = await getCustomer(accessToken, onNewToken, detail.id);
+      toast({
+        title: next ? 'Customer restored' : 'Customer archived',
+        variant: 'success',
+      });
+      onSaved(fresh);
+    } catch (e) {
+      toast({
+        title: e instanceof ApiRequestError ? e.message : 'Could not update',
         variant: 'danger',
       });
     } finally {
@@ -634,9 +685,53 @@ function CustomerSheet({
         </section>
       )}
 
-      <Button variant="secondary" onClick={() => setEditing(true)}>
-        Edit customer
-      </Button>
+      <div className="space-y-3 border-t border-line pt-4">
+        <Button variant="secondary" onClick={() => setEditing(true)} className="w-full">
+          Edit customer
+        </Button>
+        {detail.isActive ? (
+          <>
+            <p className="text-[12px] text-ink-3">
+              Archiving hides them from the customer list. Their orders, loyalty
+              and history stay, and they reappear if they order again.
+            </p>
+            <Button
+              variant="danger"
+              disabled={busy}
+              onClick={() => setConfirmArchive(true)}
+              className="w-full"
+            >
+              Archive customer
+            </Button>
+          </>
+        ) : (
+          <>
+            <p className="text-[12px] text-ink-3">
+              This customer is archived. Restore them to show them in the list again.
+            </p>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => void setArchived(true)}
+              className="w-full"
+            >
+              Restore customer
+            </Button>
+          </>
+        )}
+      </div>
+
+      <ConfirmDialog
+        open={confirmArchive}
+        onClose={() => setConfirmArchive(false)}
+        onConfirm={() => {
+          setConfirmArchive(false);
+          void setArchived(false);
+        }}
+        title={`Archive ${detail.name}?`}
+        body="They disappear from the customer list but nothing is deleted — orders, loyalty points and history are kept, and you can restore them anytime."
+        confirmLabel="Archive customer"
+      />
     </div>
   );
 }

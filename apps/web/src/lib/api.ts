@@ -911,6 +911,7 @@ export type CustomerSummary = {
   name: string;
   phone: string;
   email: string | null;
+  isActive: boolean;
   createdAt: string;
   stats: {
     visits: number;
@@ -957,12 +958,22 @@ export type CustomerDetail = CustomerSummary & {
   };
 };
 
-export const listCustomers = (token: string, onNewToken: Retry, q?: string) =>
-  authedFetch<CustomerSummary[]>(
-    q ? `/customers?q=${encodeURIComponent(q)}` : '/customers',
+export const listCustomers = (
+  token: string,
+  onNewToken: Retry,
+  q?: string,
+  includeArchived?: boolean,
+) => {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (includeArchived) params.set('include', 'all');
+  const qs = params.toString();
+  return authedFetch<CustomerSummary[]>(
+    qs ? `/customers?${qs}` : '/customers',
     token,
     onNewToken,
   );
+};
 
 export const getCustomer = (token: string, onNewToken: Retry, id: string) =>
   authedFetch<CustomerDetail>(`/customers/${id}`, token, onNewToken);
@@ -1044,6 +1055,7 @@ export const updateCustomer = (
     email?: string | null;
     birthday?: string | null;
     notes?: string | null;
+    isActive?: boolean;
   },
 ) =>
   authedFetch<unknown>(`/customers/${id}`, token, onNewToken, {

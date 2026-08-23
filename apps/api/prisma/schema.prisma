@@ -1003,6 +1003,12 @@ model Customer {
   /// makes it drift across one.
   birthday     DateTime? @db.Date
   notes        String?
+  /// Archived customers (isActive=false) drop out of the CRM list but are NEVER
+  /// deleted: their orders, loyalty ledger and history must survive, and the
+  /// POS phone lookup still finds them so a returning customer is not duplicated
+  /// (and can be restored). Same deactivate-not-delete discipline as products,
+  /// ingredients, suppliers and staff.
+  isActive     Boolean   @default(true) @map("is_active")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
@@ -1114,7 +1120,7 @@ model LoyaltySettings {
   redeemAmountMinor Int @default(100) @map("redeem_amount_minor")
 
   /// Fewest points a single redemption may spend (0 = no floor).
-  minimumRedeemPoints Int @default(0) @map("minimum_redeem_points")
+  minimumRedeemPoints         Int  @default(0) @map("minimum_redeem_points")
   /// Most points one order may redeem, or null for no ceiling.
   maximumRedeemPointsPerOrder Int? @map("maximum_redeem_points_per_order")
 

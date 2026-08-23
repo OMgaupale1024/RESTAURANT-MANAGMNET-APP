@@ -1,7 +1,9 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsEmail,
+  IsIn,
   IsOptional,
   IsString,
   Matches,
@@ -84,6 +86,12 @@ export class UpdateCustomerDto {
   @IsString()
   @MaxLength(1000)
   notes?: string;
+
+  /** Archive (false) or restore (true). Deactivate-not-delete, so history and
+   *  loyalty survive. */
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 export class FindCustomersQuery {
@@ -93,6 +101,11 @@ export class FindCustomersQuery {
   @MaxLength(120)
   @Transform(({ value }) => String(value).trim())
   q?: string;
+
+  /** 'all' also returns archived customers; default lists only active ones. */
+  @IsOptional()
+  @IsIn(['all'])
+  include?: string;
 
   @IsOptional()
   @Type(() => Number)

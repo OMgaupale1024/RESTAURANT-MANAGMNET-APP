@@ -281,6 +281,114 @@ describe('Customers (e2e)', () => {
     });
   });
 
+  describe('archiving (deactivate-not-delete)', () => {
+    const list = (token: string, qs = '') =>
+      api()
+        .get(`/api/v1/customers${qs}`)
+        .set('Authorization', `Bearer ${token}`);
+    const setActive = (token: string, id: string, isActive: boolean) =>
+      api()
+        .patch(`/api/v1/customers/${id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ isActive });
+
+    it('archives a customer out of the list and restores it back', async () => {
+      const t = await newTenant('Archive Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Retired Regular',
+        phone: '9333300001',
+      }).expect(201);
+
+      // Present by default.
+      const before = await list(t.token).expect(200);
+      expect(before.body.map((x: { id: string }) => x.id)).toContain(c.body.id);
+
+      await setActive(t.token, c.body.id, false).expect(200);
+
+      // Gone from the default list…
+      const after = await list(t.token).expect(200);
+      expect(after.body.map((x: { id: string }) => x.id)).not.toContain(
+        c.body.id,
+      );
+      // …but include=all still returns it, flagged archived.
+      const all = await list(t.token, '?include=all').expect(200);
+      const found = all.body.find((x: { id: string }) => x.id === c.body.id);
+      expect(found).toBeDefined();
+      expect(found.isActive).toBe(false);
+
+      // Restore brings it back.
+      await setActive(t.token, c.body.id, true).expect(200);
+      const restored = await list(t.token).expect(200);
+      expect(restored.body.map((x: { id: string }) => x.id)).toContain(
+        c.body.id,
+      );
+    });
+
+    it('still finds an archived customer by phone (no history lost, no duplicate at the till)', async () => {
+      const t = await newTenant('Return Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Comes Back',
+        phone: '9333300002',
+      }).expect(201);
+      await setActive(t.token, c.body.id, false).expect(200);
+
+      // The POS lookup must still resolve them, or a returning customer would be
+      // created afresh and their loyalty/history orphaned.
+      const found = await api()
+        .get('/api/v1/customers/by-phone/9333300002')
+        .set('Authorization', `Bearer ${t.token}`)
+        .expect(200);
+      expect(found.body?.id).toBe(c.body.id);
+    });
+
+    it('records customer.archived and customer.restored audit events', async () => {
+      const t = await newTenant('Audit Archive Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Tracked Person',
+        phone: '9333300003',
+      }).expect(201);
+
+      await setActive(t.token, c.body.id, false).expect(200);
+      await setActive(t.token, c.body.id, true).expect(200);
+
+      const events = await owner.auditLog.findMany({
+        where: { entityType: 'customer', entityId: c.body.id },
+        select: { action: true },
+      });
+      const actions = events.map((e) => e.action);
+      expect(actions).toContain('customer.archived');
+      expect(actions).toContain('customer.restored');
+    });
+
+    it('does not re-emit an event when isActive is unchanged', async () => {
+      const t = await newTenant('Noop Archive Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Already Active',
+        phone: '9333300004',
+      }).expect(201);
+      // Already active → setting active again is a no-op, no event.
+      await setActive(t.token, c.body.id, true).expect(200);
+      const events = await owner.auditLog.findMany({
+        where: {
+          entityType: 'customer',
+          entityId: c.body.id,
+          action: { in: ['customer.archived', 'customer.restored'] },
+        },
+      });
+      expect(events).toHaveLength(0);
+    });
+
+    it('a KITCHEN user cannot archive a customer (403)', async () => {
+      const t = await newTenant('RBAC Archive Cafe');
+      const c = await addCustomer(t.token, {
+        name: 'Protected',
+        phone: '9333300005',
+      }).expect(201);
+      const kitchen = await becomeRole(t, 'KITCHEN');
+      await setActive(kitchen, c.body.id, false).expect(403);
+    });
+  });
+
   describe('tenant isolation (PII)', () => {
     it("never lists another tenant's customers", async () => {
       const a = await newTenant('Iso A');
